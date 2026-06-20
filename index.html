@@ -418,20 +418,29 @@ function makeIdea(text) {
     text
   };
 }
+function makeSeedIdea(text) {
+  return { ...makeIdea(text), seeded: true };
+}
 const DEFAULT_IDEAS = {
   move: ["Morning walk", "Yoga", "Swim", "Dance", "Hike"],
   connect: ["Call a friend", "Coffee date", "Snail mail greeting", "Host a dinner"],
   contribute: ["Volunteer", "Mentor", "Random kindness", "Donate items", "Cook for someone", "Write a card"],
   learn: ["Journal", "Read", "Podcast", "Online course", "Gratitude list"],
-  make: ["New recipe", "Garden", "Watercolor", "Bake"],
-  explore: ["Museum", "Day trip", "New restaurant", "Neighborhood walk"],
+  make: ["Draw", "Sew", "Woodwork", "Cookies", "Mosaic"],
+  explore: ["Museum", "Day trip", "New restaurant", "New neighborhood"],
   rest: ["Nap", "Long bath", "Slow morning", "People watch", "Do nothing"],
   gsd: ["Clear a drawer", "Auto bill pay", "Schedule appointments", "Backburner task"]
 };
 const CAT_SUGGESTIONS = [
-  { label: "Get outside", desc: "Nature and sunlight exposure for mood and circadian health" },
-  { label: "Play",        desc: "Unstructured, joyful activity is essential at every age" },
+  { label: "Get outside", desc: null },
+  { label: "Play",        desc: null },
+  { label: "Cook",        desc: null },
 ];
+const SUGGESTION_IDEAS = {
+  "Get outside": ["Walk", "Hike", "Garden", "Picnic", "Sit in the sun"],
+  "Play":        ["Board games", "Shoot hoops", "Improv", "Mini golf", "Karaoke"],
+  "Cook":        ["New recipe", "Cook a big batch", "Bake", "Farmers market haul"],
+};
 const DAY_ABB = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const MONTHS_S = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -561,12 +570,16 @@ function Cell({
   doneLines,
   onToggleDone,
   nudgeLineIdx,
-  onNudgeClick
+  onNudgeClick,
+  externalDragging,
+  onExternalLineDragOver,
+  onExternalDragLeave
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
   const [hovered, setHovered] = useState(false);
   const [isCellDragging, setIsCellDragging] = useState(false);
+  const [isDragHovered, setIsDragHovered] = useState(false);
   const [hoveredLine, setHoveredLine] = useState(null);
   const [dragLineIdx, setDragLineIdx] = useState(null);
   const [dragOverIdx, setDragOverIdx] = useState(null);
@@ -587,6 +600,13 @@ function Cell({
       autoResize(taRef.current);
     }
   }, [editing]);
+  useEffect(() => {
+    if (!externalDragging) {
+      setDragOverIdx(null);
+      setDragOverPos(null);
+      setIsDragHovered(false);
+    }
+  }, [externalDragging]);
   useEffect(() => {
     if (linkingIdx !== null && linkRef.current) linkRef.current.focus();
   }, [linkingIdx]);
@@ -625,14 +645,14 @@ function Cell({
   }
   function handleLineDragOver(e, i) {
     e.preventDefault();
-    if (dragLineIdx === null) {
-      return;
-    }
+    if (dragLineIdx === null && !externalDragging) return;
     e.stopPropagation();
     if (dragLineIdx === i) return;
     const rect = e.currentTarget.getBoundingClientRect();
+    const pos = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
     setDragOverIdx(i);
-    setDragOverPos(e.clientY < rect.top + rect.height / 2 ? "before" : "after");
+    setDragOverPos(pos);
+    if (externalDragging && dragLineIdx === null) onExternalLineDragOver?.(i, pos);
   }
   function handleLineDrop(e, i) {
     e.preventDefault();
@@ -671,7 +691,7 @@ function Cell({
   const isPastOrToday = !isFuture;
   const filled = hasEntry(value);
   const lines = filled ? value.split("\n").filter(l => l.trim()) : [];
-  const isMultiLine = lines.length > 1;
+  const isMultiLine = lines.length > 1 || (externalDragging && lines.length === 1);
   const bg = filled && !isFuture ? "#ffffff" : "#F0EFED";
   const textColor = isFuture ? "#A8A29E" : cat.color;
   const textOpacity = 1;
@@ -711,11 +731,15 @@ function Cell({
       setHovered(false);
       setHoveredLine(null);
     },
+    onDragEnter: externalDragging && !filled ? e => { e.preventDefault(); setIsDragHovered(true); } : undefined,
+    onDragLeave: externalDragging && !filled ? e => {
+      if (!e.currentTarget.contains(e.relatedTarget)) setIsDragHovered(false);
+    } : undefined,
     style: {
       padding: isPastOrToday && filled && !editing ? "8px 10px" : "8px 6px",
       paddingBottom: isPastOrToday && nudgeLineIdx !== null && filled && !editing ? 26 : !readOnly && filled && !editing ? 22 : undefined,
       cursor: readOnly ? "default" : "text",
-      background: bg,
+      background: isDragHovered ? `${cat.color}18` : bg,
       transition: "background 0.15s ease",
       display: "flex",
       alignItems: "flex-start",
@@ -936,9 +960,16 @@ function Cell({
       width: "100%",
       opacity: textOpacity,
       paddingBottom: !readOnly && linkingIdx !== null ? 24 : 0
-    }
+    },
+    onDragLeave: externalDragging ? e => {
+      if (!e.currentTarget.contains(e.relatedTarget)) {
+        setDragOverIdx(null);
+        setDragOverPos(null);
+        onExternalDragLeave?.();
+      }
+    } : undefined
   }, lines.map((line, i) => {
-    const isOver = dragOverIdx === i && dragLineIdx !== null && dragLineIdx !== i;
+    const isOver = dragOverIdx === i && ((dragLineIdx !== null && dragLineIdx !== i) || (dragLineIdx === null && externalDragging));
     const lineDone = isPastOrToday && doneLines?.has(i);
     const lineColor = isPastOrToday ? lineDone ? cat.color : "#B0ACA8" : textColor;
     return /*#__PURE__*/React.createElement("div", {
@@ -953,11 +984,10 @@ function Cell({
         display: "flex",
         alignItems: "center",
         padding: "1px 0",
-        borderTop: "none",
-        borderBottom: "none",
         opacity: dragLineIdx === i ? 0.3 : 1,
-        background: isOver ? `${cat.color}15` : "transparent",
-        transition: "opacity 0.1s ease,background 0.1s ease",
+        background: "transparent",
+        boxShadow: isOver && dragOverPos === "before" ? `0 -2px 0 ${cat.color}` : isOver && dragOverPos === "after" ? `0 2px 0 ${cat.color}` : "none",
+        transition: "opacity 0.1s ease, box-shadow 0.05s ease",
         position: "relative"
       }
     }, !readOnly && (hovered || dragLineIdx === i) && /*#__PURE__*/React.createElement("div", {
@@ -1605,7 +1635,7 @@ function SciencePage({
     label: "Goal Setting",
     headline: "Specific, challenging goals consistently outperform vague ones — or none at all.",
     body: "Locke and Latham spent 35 years establishing one of the most replicated findings in psychology: specific, challenging goals produce dramatically better outcomes than vague ones. \"Do your best\" is nearly as ineffective as no goal at all. The mechanism: specificity focuses attention, difficulty increases effort, and putting it in writing makes the goal feel like identity rather than intention.",
-    connection: "The weekly goal column — the \"of 7\" target for each category — isn't decoration. Setting even a modest target activates this mechanism at the start of every week.",
+    connection: "The weekly goal column — the \"of 7\" target for each pillar — isn't decoration. Setting even a modest target activates this mechanism at the start of every week.",
     bar: "Specific beats vague, every time",
     barLabel: "Write it down. Make it concrete. Make it a stretch. Vague intentions like \"move more this week\" don't activate the same focus and commitment as a specific weekly target.",
     chips: [{
@@ -2351,7 +2381,7 @@ function SciencePage({
       lineHeight: 1.8,
       maxWidth: 480
     }
-  }, "A meaningful life emerges from deliberate choices across a handful of domains — chosen with care, planned with intention, and reflected on honestly. Not every category every day. But enough of them, often enough, that your week reliably contains what matters."))));
+  }, "A meaningful life emerges from deliberate choices across a handful of domains — chosen with care, planned with intention, and reflected on honestly. Not every pillar every day. But enough of them, often enough, that your week reliably contains what matters."))));
 }
 function Planner() {
   const [offset, setOffset] = useState(0);
@@ -2364,12 +2394,14 @@ function Planner() {
     } catch {}
     const defaults = {};
     Object.entries(DEFAULT_IDEAS).forEach(([catId, texts]) => {
-      defaults[catId] = texts.map(makeIdea);
+      defaults[catId] = texts.map(makeSeedIdea);
     });
     return defaults;
   });
   const [ideaPanelCatId, setIdeaPanelCatId] = useState(null);
   const [catSuggestionsOpen, setCatSuggestionsOpen] = useState(false);
+  const [catTyping, setCatTyping] = useState(false);
+  const [catCustomInput, setCatCustomInput] = useState("");
 
   const [draggingCell, setDraggingCell] = useState(null);
   const [editingIdeaLinkedUrl, setEditingIdeaLinkedUrl] = useState(null);
@@ -2813,23 +2845,30 @@ function Planner() {
   }
   function deleteCat(id) {
     if (cats.length <= 1) return;
-    if (!window.confirm(`Delete "${cats.find(c => c.id === id)?.label}"?`)) return;
+    const cat = cats.find(c => c.id === id);
+    if (!cat) return;
+    const hasIdeas = (ideas[id] || []).some(i => !i.seeded);
+    let hasPlannerContent = false;
+    if (!hasIdeas) {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith("planner:week:")) {
+          try {
+            const weekData = JSON.parse(localStorage.getItem(k) || "{}");
+            if (Object.values(weekData).some(day => day && day[id] && day[id].trim())) {
+              hasPlannerContent = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
+    if (hasIdeas || hasPlannerContent) {
+      if (!window.confirm(`Deleting "${cat.label}" will also remove all its ideas and any planned activities. Delete anyway?`)) return;
+    }
     saveCats(cats.filter(c => c.id !== id));
   }
   function addCat() {
-    const used = cats.map(c => c.color);
-    const pal = COLOR_PALETTE.find(p => !used.includes(p.color)) || COLOR_PALETTE[cats.length % COLOR_PALETTE.length];
-    const nc = {
-      id: `cat_${Date.now()}`,
-      label: "New",
-      color: pal.color,
-      bg: pal.bg
-    };
-    saveCats([...cats, nc]);
-    setTimeout(() => {
-      setRenamingId(nc.id);
-      setRenameVal("New");
-    }, 50);
     setCatSuggestionsOpen(true);
   }
   function addCatFromSuggestion(label) {
@@ -2842,6 +2881,14 @@ function Planner() {
       bg: pal.bg
     };
     saveCats([...cats, nc]);
+    const seedTexts = SUGGESTION_IDEAS[label]
+      || DEFAULT_IDEAS[label.toLowerCase()];
+    if (seedTexts) {
+      saveIdeas({ ...ideas, [nc.id]: seedTexts.map(makeSeedIdea) });
+    }
+    setCatSuggestionsOpen(false);
+    setCatTyping(false);
+    setCatCustomInput("");
   }
   function handleRowDragStart(e, id) {
     setDraggedId(id);
@@ -3377,7 +3424,7 @@ function Planner() {
       color: "#78716C",
       fontWeight: 600
     }
-  }, "Category")), /*#__PURE__*/React.createElement("div", {
+  }, "Pillars")), /*#__PURE__*/React.createElement("div", {
     style: {
       borderLeft: "1px solid #E8E5E3",
       background: "#FAFAF9",
@@ -3473,7 +3520,8 @@ function Planner() {
     }, /*#__PURE__*/React.createElement("div", {
       onMouseEnter: () => setHoveredId(cat.id),
       onMouseLeave: () => setHoveredId(null),
-      onClick: () => {
+      onClick: e => {
+        if (e.detail === 2) return;
         if (renamingId === cat.id) return;
         panelOpen ? closeSidebar() : openIdeasSidebar(cat.id);
       },
@@ -3545,6 +3593,10 @@ function Planner() {
     }) : /*#__PURE__*/React.createElement("span", {
       onDoubleClick: isOwnView ? e => {
         e.stopPropagation();
+        closeSidebar();
+        setCatSuggestionsOpen(false);
+        setCatTyping(false);
+        setCatCustomInput("");
         startRename(cat);
       } : undefined,
       title: isOwnView ? "Double-click to rename" : undefined,
@@ -3565,7 +3617,7 @@ function Planner() {
         e.stopPropagation();
         openReflectWithItem("", cat.label, cat.color);
       },
-      title: "Reflect on this category",
+      title: "Reflect on this pillar",
       style: {
         background: "none",
         border: "none",
@@ -3693,7 +3745,7 @@ function Planner() {
           borderLeft: "1px solid #E8E5E3",
           display: "flex",
           flexDirection: "column",
-          boxShadow: isDropTarget ? hasEntry(val) ? `inset 0 -3px 0 0 ${cat.color}` : `inset 0 0 0 2px ${cat.color}60` : "none",
+          boxShadow: isDropTarget ? hasEntry(val) ? "none" : `inset 0 0 0 2px ${cat.color}` : "none",
           transition: "box-shadow 0.1s ease"
         },
         onDragOver: isOwnView ? e => e.preventDefault() : undefined,
@@ -3735,13 +3787,16 @@ function Planner() {
             }));
           } catch {}
         } : null,
-        onCellDragEnd: isOwnView ? () => setDraggingCell(null) : null,
+        onCellDragEnd: isOwnView ? () => { setDraggingCell(null); setCrossCellHover(null); } : null,
         onLineDragStart: isOwnView ? lineIdx => setDraggingLine({
           ds,
           catId: cat.id,
           lineIdx
         }) : null,
         onLineDragEnd: isOwnView ? () => setDraggingLine(null) : null,
+        externalDragging: isDropTarget,
+        onExternalLineDragOver: isOwnView ? (lineIdx, pos) => setCrossCellHover({ lineIdx, pos }) : null,
+        onExternalDragLeave: isOwnView ? () => setCrossCellHover(null) : null,
         onEditStart: isOwnView ? () => openIdeasSidebar(cat.id) : null,
         onReflect: isOwnView ? text => openReflectWithItem(text, cat.label, cat.color, ds) : null,
         doneLines: new Set(displayDone[ds]?.[cat.id] || []),
@@ -3768,7 +3823,7 @@ function Planner() {
       padding: "2px 0",
       fontWeight: 500
     }
-  }, "+ Add category"))), /*#__PURE__*/React.createElement("div", {
+  }, "+ Add pillar"))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -3905,7 +3960,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v6.19.4")), showGoalPopup && /*#__PURE__*/React.createElement("div", {
+  }, "v6.19.22")), showGoalPopup && /*#__PURE__*/React.createElement("div", {
     onClick: () => setShowGoalPopup(false),
     style: {
       position: "fixed",
@@ -4646,12 +4701,8 @@ function Planner() {
       }
     }, "REFLECT"))));
   })(), catSuggestionsOpen && /*#__PURE__*/React.createElement("div", {
-    onClick: () => { setCatSuggestionsOpen(false); setCatTyping(false); setCatCustomInput(""); },
-    style: { position: "fixed", inset: 0, zIndex: 200 }
-  }, /*#__PURE__*/React.createElement("div", {
-    onClick: e => e.stopPropagation(),
     style: {
-      position: "absolute",
+      position: "fixed",
       top: 0,
       right: 28,
       bottom: 0,
@@ -4660,7 +4711,8 @@ function Planner() {
       borderLeft: "2px solid #E7E5E4",
       boxShadow: "-6px 0 28px rgba(0,0,0,0.09)",
       display: "flex",
-      flexDirection: "column"
+      flexDirection: "column",
+      zIndex: 200
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4681,7 +4733,7 @@ function Planner() {
     }, "Idea List"),
     /*#__PURE__*/React.createElement("div", {
       style: { fontSize: 13, fontWeight: 700, color: "#1C1917", textTransform: "uppercase", letterSpacing: "0.08em" }
-    }, "Add Category"),
+    }, "Add Pillar"),
     /*#__PURE__*/React.createElement("div", {
       style: { fontSize: 11, color: "#A8A29E", marginTop: 2 }
     }, "Tap to add · or create your own")
@@ -4693,12 +4745,33 @@ function Planner() {
     style: { flex: 1, overflowY: "auto", padding: "12px 14px" }
   },
     CAT_SUGGESTIONS.map(s => {
-      const alreadyAdded = cats.some(c => c.label.toLowerCase() === s.label.toLowerCase());
+      const existingCat = cats.find(c => c.label.toLowerCase() === s.label.toLowerCase());
+      if (existingCat) {
+        return /*#__PURE__*/React.createElement("div", {
+          key: s.label,
+          style: {
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "10px 12px",
+            marginBottom: 6,
+            background: "#F7F6F4",
+            border: "1px solid #E7E5E4",
+            borderRadius: 10,
+            opacity: 0.38,
+            cursor: "default"
+          }
+        }, /*#__PURE__*/React.createElement("div", {
+          style: { width: 6, height: 6, borderRadius: "50%", background: existingCat.color, flexShrink: 0 }
+        }), /*#__PURE__*/React.createElement("div", {
+          style: { fontSize: 13, color: "#78716C", fontWeight: 500 }
+        }, s.label));
+      }
       return /*#__PURE__*/React.createElement(CatSuggestionItem, {
         key: s.label,
         label: s.label,
         desc: s.desc,
-        disabled: alreadyAdded,
+        disabled: false,
         onClick: () => addCatFromSuggestion(s.label)
       });
     }),
@@ -4706,6 +4779,16 @@ function Planner() {
       style: { borderTop: "1px dashed #E7E5E4", margin: "10px 2px 8px" }
     }),
     DEFAULT_CATS.map(dc => {
+      const inCats = cats.some(c => c.label.toLowerCase() === dc.label.toLowerCase());
+      if (!inCats) {
+        return /*#__PURE__*/React.createElement(CatSuggestionItem, {
+          key: dc.id,
+          label: dc.label,
+          desc: null,
+          disabled: false,
+          onClick: () => addCatFromSuggestion(dc.label)
+        });
+      }
       return /*#__PURE__*/React.createElement("div", {
         key: dc.id,
         style: {
@@ -4729,8 +4812,35 @@ function Planner() {
   ),
   /*#__PURE__*/React.createElement("div", {
     style: { padding: "12px 14px", borderTop: "1px solid #E8E5E3", flexShrink: 0 }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: addCat,
+  }, catTyping ? /*#__PURE__*/React.createElement("input", {
+    autoFocus: true,
+    value: catCustomInput,
+    onChange: e => setCatCustomInput(e.target.value),
+    onBlur: () => {
+      if (catCustomInput.trim()) addCatFromSuggestion(catCustomInput.trim());
+      setCatTyping(false);
+      setCatCustomInput("");
+    },
+    onKeyDown: e => {
+      if (e.key === "Enter" && catCustomInput.trim()) { addCatFromSuggestion(catCustomInput.trim()); setCatTyping(false); setCatCustomInput(""); }
+      if (e.key === "Escape") { setCatTyping(false); setCatCustomInput(""); }
+    },
+    placeholder: "Pillar name…",
+    style: {
+      width: "100%",
+      padding: "11px",
+      borderRadius: 9,
+      border: "1.5px solid " + SUGG_COLOR + "60",
+      background: "none",
+      outline: "none",
+      fontSize: 13,
+      color: "#1C1917",
+      fontFamily: "'DM Sans',sans-serif",
+      boxSizing: "border-box",
+      fontWeight: 500
+    }
+  }) : /*#__PURE__*/React.createElement("button", {
+    onClick: () => { setCatTyping(true); setCatCustomInput(""); },
     style: {
       width: "100%",
       padding: "11px",
@@ -4744,7 +4854,7 @@ function Planner() {
       fontFamily: "inherit",
       letterSpacing: "0.02em"
     }
-  }, "+ Add category")))), pendingImport && /*#__PURE__*/React.createElement("div", {
+  }, "+ Add pillar"))), pendingImport && /*#__PURE__*/React.createElement("div", {
     onClick: () => setPendingImport(null),
     style: {
       position: "fixed",
