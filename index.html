@@ -573,7 +573,9 @@ function Cell({
   onNudgeClick,
   externalDragging,
   onExternalLineDragOver,
-  onExternalDragLeave
+  onExternalDragLeave,
+  reflectedItemTexts,
+  onOpenReflections
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
@@ -690,6 +692,34 @@ function Cell({
   const readOnly = !onSave;
   const isPastOrToday = !isFuture;
   const filled = hasEntry(value);
+  const isReflected = !!(reflectedItemTexts && filled && reflectedItemTexts.has(plainOf(value)));
+  function isLineReflected(line) {
+    return !!(reflectedItemTexts && reflectedItemTexts.has(plainOf(line)));
+  }
+  function reflectBubbleSvg(color, isFilled) {
+    return /*#__PURE__*/React.createElement("svg", {
+      width: "11",
+      height: "11",
+      viewBox: "0 0 24 24",
+      fill: isFilled ? color : "none",
+      stroke: color,
+      strokeWidth: "1.7",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }, /*#__PURE__*/React.createElement("path", {
+      d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "6.5",
+      cy: "21",
+      r: "2.2",
+      fill: isFilled ? color : "none"
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "3.5",
+      cy: "24",
+      r: "1.4",
+      fill: isFilled ? color : "none"
+    }));
+  }
   const lines = filled ? value.split("\n").filter(l => l.trim()) : [];
   const isMultiLine = lines.length > 1 || (externalDragging && lines.length === 1);
   const bg = filled && !isFuture ? "#ffffff" : "#F0EFED";
@@ -761,7 +791,7 @@ function Cell({
       zIndex: 3,
       alignItems: "center"
     }
-  }, onReflect && /*#__PURE__*/React.createElement("button", {
+  }, onReflect && !isReflected && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       onReflect(plainOf(value));
@@ -772,31 +802,24 @@ function Cell({
       border: "none",
       cursor: "pointer",
       padding: 0,
-      opacity: 0.75,
-      color: "#7C3AED",
       display: "flex",
       alignItems: "center"
     }
-  }, /*#__PURE__*/React.createElement("svg", {
-    width: "11",
-    height: "11",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: "1.7",
-    strokeLinecap: "round",
-    strokeLinejoin: "round"
-  }, /*#__PURE__*/React.createElement("path", {
-    d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
-  }), /*#__PURE__*/React.createElement("circle", {
-    cx: "6.5",
-    cy: "21",
-    r: "2.2"
-  }), /*#__PURE__*/React.createElement("circle", {
-    cx: "3.5",
-    cy: "24",
-    r: "1.4"
-  }))), /*#__PURE__*/React.createElement("button", {
+  }, reflectBubbleSvg("#B8B3B0", false)), isReflected && /*#__PURE__*/React.createElement("button", {
+    onClick: e => {
+      e.stopPropagation();
+      onOpenReflections?.(plainOf(value));
+    },
+    title: "View / edit reflection",
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      padding: 0,
+      display: "flex",
+      alignItems: "center"
+    }
+  }, reflectBubbleSvg(cat.color, true)), /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       const m = value.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
@@ -1062,7 +1085,7 @@ function Cell({
         gap: 3,
         alignItems: "center"
       }
-    }, onReflect && /*#__PURE__*/React.createElement("button", {
+    }, !isLineReflected(lines[i]) && onReflect && /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
         onReflect(plainOf(lines[i]));
@@ -1073,31 +1096,24 @@ function Cell({
         border: "none",
         cursor: "pointer",
         padding: 0,
-        opacity: 0.75,
-        color: "#7C3AED",
         display: "flex",
         alignItems: "center"
       }
-    }, /*#__PURE__*/React.createElement("svg", {
-      width: "11",
-      height: "11",
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: "currentColor",
-      strokeWidth: "1.7",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "6.5",
-      cy: "21",
-      r: "2.2"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "3.5",
-      cy: "24",
-      r: "1.4"
-    }))), /*#__PURE__*/React.createElement("button", {
+    }, reflectBubbleSvg("#B8B3B0", false)), isLineReflected(lines[i]) && /*#__PURE__*/React.createElement("button", {
+      onClick: e => {
+        e.stopPropagation();
+        onOpenReflections?.(plainOf(lines[i]));
+      },
+      title: "View / edit reflection",
+      style: {
+        background: "none",
+        border: "none",
+        cursor: "pointer",
+        padding: 0,
+        display: "flex",
+        alignItems: "center"
+      }
+    }, reflectBubbleSvg(cat.color, true)), /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
         const m = lines[i].match(/^\[([^\]]+)\]\(([^)]+)\)$/);
@@ -2656,6 +2672,31 @@ function Planner() {
     setNewEntryId(entry.id);
     setTimeout(() => setNewEntryId(null), 400);
   }
+  function openReflectionsOnly(itemText) {
+    if (!sidebarOpen) {
+      const catId = lastIdeaCatId || displayCats[0]?.id;
+      if (catId) setIdeaPanelCatId(catId);
+    }
+    setSidebarTab('reflections');
+    setSidebarOpen(true);
+    if (itemText) {
+      const entries = journal[weekStart] || [];
+      const idx = entries.findIndex(e => e.linkedItem?.itemText?.trim() === itemText.trim() && e.text?.trim());
+      if (idx > 0) {
+        const reordered = [...entries];
+        const [found] = reordered.splice(idx, 1);
+        reordered.unshift(found);
+        const next = { ...journal, [weekStart]: reordered };
+        setJournal(next);
+        store.set("planner:journal", JSON.stringify(next));
+        setNewEntryId(found.id);
+        setTimeout(() => setNewEntryId(null), 600);
+      } else if (idx === 0) {
+        setNewEntryId(entries[0].id);
+        setTimeout(() => setNewEntryId(null), 600);
+      }
+    }
+  }
   function closeSidebar() {
     setSidebarOpen(false);
     setEditingIdeaId(null);
@@ -3093,6 +3134,16 @@ function Planner() {
   const totalFilled = displayCats.reduce((s, cat) => s + dates.filter(d => hasEntry(displayData[ymd(d)]?.[cat.id])).length, 0);
   const colTemplate = `${LABEL_W}px 68px repeat(7,1fr)`;
   const weekStart = ymd(dates[0]);
+  const reflectedItemTexts = React.useMemo(() => {
+    const entries = journal[weekStart] || [];
+    const set = new Set();
+    entries.forEach(e => {
+      if (e.text && e.text.trim() && e.linkedItem && e.linkedItem.itemText) {
+        set.add(e.linkedItem.itemText.trim());
+      }
+    });
+    return set;
+  }, [journal, weekStart]);
   if (showScience) return /*#__PURE__*/React.createElement(SciencePage, {
     onBack: () => setShowScience(false)
   });
@@ -3802,7 +3853,9 @@ function Planner() {
         doneLines: new Set(displayDone[ds]?.[cat.id] || []),
         onToggleDone: isOwnView ? lineIdx => toggleDone(ds, cat.id, lineIdx) : null,
         nudgeLineIdx: isOwnView && nudgeItem?.ds === ds && nudgeItem?.catId === cat.id ? nudgeItem.lineIdx : null,
-        onNudgeClick: isOwnView ? () => openReflectionSidebar(true) : null
+        onNudgeClick: isOwnView ? () => openReflectionSidebar(true) : null,
+        reflectedItemTexts: isOwnView ? reflectedItemTexts : null,
+        onOpenReflections: isOwnView ? openReflectionsOnly : null
       }));
     })), isTarget && dragPos === "below" && dropLine);
   }), isOwnView && /*#__PURE__*/React.createElement("div", {
