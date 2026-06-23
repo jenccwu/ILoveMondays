@@ -675,7 +675,8 @@ function Cell({
     resetLineDrag();
   }
   function applyLink(urlOverride) {
-    const url = (urlOverride !== undefined ? urlOverride : linkUrl).trim();
+    if (linkingIdx === null) return;
+    const url = (typeof urlOverride === "string" ? urlOverride : linkUrl).trim();
     if (linkingIdx === -1) {
       const plain = value.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
       onSave(url ? `[${plain}](${url})` : plain);
@@ -915,7 +916,7 @@ function Cell({
         setLinkUrl("");
       }
     },
-    onBlur: applyLink,
+    onBlur: e => applyLink(e.target.value),
     placeholder: "Paste URL · click away to save",
     style: {
       flex: 1,
@@ -1306,11 +1307,12 @@ function Cell({
       gap: 4,
       boxShadow: "0 1px 4px rgba(109,40,217,0.15)"
     }
-  }, /*#__PURE__*/React.createElement("span", null, "✦"), /*#__PURE__*/React.createElement("span", null, "How did it go?"))));
+  }, /*#__PURE__*/React.createElement("span", null, "How did it go?"))));
 }
 function JournalEntry({
   entry,
   onSave,
+  onSaveMood,
   onDelete,
   readOnly,
   autoFocus
@@ -1320,6 +1322,9 @@ function JournalEntry({
   const [expanded, setExpanded] = useState(false);
   const taRef = useRef(null);
   const PREVIEW = 120;
+  const FEEL_EMOJIS = ["😩", "😔", "😑", "😊", "😄"];
+  const mood = entry.mood || null;
+  const isFeel = entry.type === 'feel';
   const isLong = text.length > PREVIEW;
   useEffect(() => {
     setText(entry.text);
@@ -1382,14 +1387,23 @@ function JournalEntry({
   }, "×")), entry.linkedItem && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      alignItems: "center",
-      gap: 5,
+      flexDirection: "column",
+      gap: 2,
       marginBottom: 8,
-      padding: "4px 8px",
+      padding: "5px 8px",
       background: `${entry.linkedItem.catColor}12`,
       borderRadius: 6,
       border: `1px solid ${entry.linkedItem.catColor}25`
     }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 5
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 5 }
   }, /*#__PURE__*/React.createElement("svg", {
     width: "8",
     height: "8",
@@ -1413,25 +1427,55 @@ function JournalEntry({
       fontWeight: 700,
       color: entry.linkedItem.catColor,
       textTransform: "uppercase",
-      letterSpacing: "0.08em",
-      flexShrink: 0
+      letterSpacing: "0.08em"
     }
-  }, entry.linkedItem.catLabel), entry.linkedItem.itemText && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+  }, entry.linkedItem.catLabel)), entry.linkedItem?.eventDate && /*#__PURE__*/React.createElement("span", {
     style: {
-      fontSize: 10,
-      color: "#C4BFBC",
+      fontSize: 9,
+      fontWeight: 600,
+      color: entry.linkedItem.catColor,
+      opacity: 0.7,
       flexShrink: 0
     }
-  }, "·"), /*#__PURE__*/React.createElement("span", {
+  }, (() => {
+    const d = new Date(entry.linkedItem.eventDate + 'T12:00:00');
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+  })())), entry.linkedItem.itemText && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 11,
-      color: "#57534E",
+      color: "#78716C",
       fontWeight: 500,
       overflow: "hidden",
       textOverflow: "ellipsis",
-      whiteSpace: "nowrap"
+      whiteSpace: "nowrap",
+      paddingLeft: 13
     }
-  }, entry.linkedItem.itemText))), editing ? /*#__PURE__*/React.createElement("textarea", {
+  }, entry.linkedItem.itemText)), isFeel && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 5,
+      marginBottom: 8,
+      padding: "4px 8px",
+      background: "#EDE9FE",
+      borderRadius: 6,
+      border: "1px solid #C4B5FD",
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 9,
+      fontWeight: 700,
+      color: "#7C3AED",
+      textTransform: "uppercase",
+      letterSpacing: "0.08em",
+      flexShrink: 0
+    }
+  }, "I feel"), mood && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+    style: { fontSize: 10, color: "#C4B5FD", flexShrink: 0 }
+  }, "·"), /*#__PURE__*/React.createElement("span", {
+    style: { fontSize: 15, lineHeight: 1 }
+  }, mood))), editing ? /*#__PURE__*/React.createElement("textarea", {
     ref: taRef,
     value: text,
     onChange: e => {
@@ -2578,6 +2622,7 @@ function Planner() {
   }
   function saveEntry(ds, cid, text) {
     if (!isOwnView) return;
+    const wasEmpty = !hasEntry(data[ds]?.[cid]);
     const next = {
       ...data,
       [ds]: {
@@ -2589,10 +2634,10 @@ function Planner() {
     if (next[ds] && Object.keys(next[ds]).length === 0) delete next[ds];
     setData(next);
     store.set(key, JSON.stringify(next));
-    // Auto-mark all lines as done when saving to a past day
-    if (text && ds < todayStr) {
-      const lines = text.split("\n").filter(l => l.trim());
-      const lineIndices = lines.map((_, i) => i);
+    // Auto-mark all lines as done when entering a NEW item into a past day cell
+    if (text && wasEmpty && ds < todayStr) {
+      const newLines = text.split("\n").filter(l => l.trim());
+      const lineIndices = newLines.map((_, i) => i);
       const nextDone = {
         ...done,
         [ds]: {
@@ -2655,7 +2700,8 @@ function Planner() {
         if (itemText && cat) entry.linkedItem = {
           catLabel: cat.label,
           catColor: cat.color,
-          itemText
+          itemText,
+          eventDate: nudgeItem.ds
         };
       }
       const next = {
@@ -2675,15 +2721,15 @@ function Planner() {
     }
     setSidebarTab('reflections');
     setSidebarOpen(true);
-    const entryTs = date ? new Date(date + 'T12:00:00').toISOString() : new Date().toISOString();
     const entry = {
       id: `jentry_${Date.now()}`,
-      timestamp: entryTs,
+      timestamp: new Date().toISOString(),
       text: "",
       linkedItem: {
         catLabel,
         catColor,
         itemText: itemText || "",
+        ...(date ? { eventDate: date } : {}),
         ...(wasCompleted !== null ? { wasCompleted } : {})
       }
     };
@@ -4037,7 +4083,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v6.23.2")), showGoalPopup && /*#__PURE__*/React.createElement("div", {
+  }, "v6.23.14")), showGoalPopup && /*#__PURE__*/React.createElement("div", {
     onClick: () => setShowGoalPopup(false),
     style: {
       position: "fixed",
@@ -4162,11 +4208,12 @@ function Planner() {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
-    const addReflectEntry = (text = "") => {
+    const addReflectEntry = (text = "", opts = {}) => {
       const entry = {
         id: `jentry_${Date.now()}`,
         timestamp: new Date().toISOString(),
-        text
+        text,
+        ...opts
       };
       const next = {
         ...journal,
@@ -4522,53 +4569,6 @@ function Planner() {
       }
     }, "+ Add idea"))), sidebarTab === 'reflections' && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       style: {
-        flexShrink: 0,
-        borderBottom: "1px solid #E8E5E3",
-        background: "#FAFAF9"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex"
-      }
-    }, dates.map((d, i) => {
-      const ds = ymd(d),
-        isFutureDay = ds > todayStr,
-        rating = displayRatings[ds];
-      const EMOJIS = ["😔", "😐", "😊"];
-      return /*#__PURE__*/React.createElement("div", {
-        key: ds,
-        onClick: !isFutureDay && isOwnView ? () => cycleRating(ds) : undefined,
-        title: !isFutureDay && isOwnView ? rating ? `${EMOJIS[rating - 1]} — tap to change` : "Tap to rate your day" : undefined,
-        style: {
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: "7px 0",
-          cursor: !isFutureDay && isOwnView ? "pointer" : "default",
-          gap: 3,
-          opacity: isFutureDay ? 0.3 : 1
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 8,
-          fontWeight: 700,
-          color: "#C4BFBC"
-        }
-      }, DAY_ABB[i][0]), /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 14,
-          lineHeight: 1
-        }
-      }, rating ? EMOJIS[rating - 1] : /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: "#E0DEDD",
-          fontSize: 14
-        }
-      }, "·")));
-    }))), /*#__PURE__*/React.createElement("div", {
-      style: {
         flex: 1,
         overflowY: "auto",
         padding: "14px 18px",
@@ -4648,7 +4648,37 @@ function Planner() {
         fontWeight: 500,
         lineHeight: 1.2
       }
-    }, q))), (journal[weekStart] || []).length === 0 && /*#__PURE__*/React.createElement("div", {
+    }, q)), isOwnView && /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+        background: "#F0EFED",
+        borderRadius: 20,
+        padding: "5px 10px",
+        fontSize: 11,
+        color: "#78716C",
+        fontFamily: "inherit",
+        fontWeight: 500,
+        lineHeight: 1.2,
+        flexShrink: 0
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: { pointerEvents: "none" }
+    }, "I feel"), ["😩", "😔", "😑", "😊", "😄"].map(emoji => /*#__PURE__*/React.createElement("span", {
+      key: emoji,
+      onClick: () => addReflectEntry("", { type: 'feel', mood: emoji }),
+      style: {
+        fontSize: 14,
+        cursor: "pointer",
+        lineHeight: 1,
+        userSelect: "none",
+        opacity: 0.75,
+        transition: "opacity 0.1s ease"
+      },
+      onMouseEnter: e => e.currentTarget.style.opacity = "1",
+      onMouseLeave: e => e.currentTarget.style.opacity = "0.75"
+    }, emoji)))), (journal[weekStart] || []).length === 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         textAlign: "center",
         padding: "24px 0",
@@ -4664,6 +4694,17 @@ function Planner() {
           [weekStart]: (journal[weekStart] || []).map(e => e.id === entry.id ? {
             ...e,
             text
+          } : e)
+        };
+        setJournal(next);
+        store.set("planner:journal", JSON.stringify(next));
+      },
+      onSaveMood: mood => {
+        const next = {
+          ...journal,
+          [weekStart]: (journal[weekStart] || []).map(e => e.id === entry.id ? {
+            ...e,
+            mood: mood || undefined
           } : e)
         };
         setJournal(next);
