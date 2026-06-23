@@ -794,7 +794,7 @@ function Cell({
   }, onReflect && !isReflected && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
-      onReflect(plainOf(value));
+      onReflect(plainOf(value), !!(doneLines?.has(0)));
     },
     title: "Reflect on this",
     style: {
@@ -1088,7 +1088,7 @@ function Cell({
     }, !isLineReflected(lines[i]) && onReflect && /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
-        onReflect(plainOf(lines[i]));
+        onReflect(plainOf(lines[i]), !!(doneLines?.has(i)));
       },
       title: "Reflect on this",
       style: {
@@ -1390,15 +1390,24 @@ function JournalEntry({
       borderRadius: 6,
       border: `1px solid ${entry.linkedItem.catColor}25`
     }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 6,
-      height: 6,
-      borderRadius: "50%",
-      background: entry.linkedItem.catColor,
-      flexShrink: 0
-    }
-  }), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "8",
+    height: "8",
+    viewBox: "0 0 10 10",
+    style: { flexShrink: 0 }
+  }, entry.linkedItem.wasCompleted === false ? /*#__PURE__*/React.createElement("circle", {
+    cx: "5",
+    cy: "5",
+    r: "4",
+    fill: "none",
+    stroke: entry.linkedItem.catColor,
+    strokeWidth: "1.5"
+  }) : /*#__PURE__*/React.createElement("circle", {
+    cx: "5",
+    cy: "5",
+    r: "5",
+    fill: entry.linkedItem.catColor
+  })), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 9,
       fontWeight: 700,
@@ -2580,6 +2589,20 @@ function Planner() {
     if (next[ds] && Object.keys(next[ds]).length === 0) delete next[ds];
     setData(next);
     store.set(key, JSON.stringify(next));
+    // Auto-mark all lines as done when saving to a past day
+    if (text && ds < todayStr) {
+      const lines = text.split("\n").filter(l => l.trim());
+      const lineIndices = lines.map((_, i) => i);
+      const nextDone = {
+        ...done,
+        [ds]: {
+          ...(done[ds] || {}),
+          [cid]: lineIndices
+        }
+      };
+      setDone(nextDone);
+      store.set("planner:done", JSON.stringify(nextDone));
+    }
   }
   function toggleDone(ds, catId, lineIdx) {
     if (!isOwnView) return;
@@ -2645,7 +2668,7 @@ function Planner() {
       setTimeout(() => setNewEntryId(null), 400);
     }
   }
-  function openReflectWithItem(itemText, catLabel, catColor, date = null) {
+  function openReflectWithItem(itemText, catLabel, catColor, date = null, wasCompleted = null) {
     if (!sidebarOpen) {
       const catId = lastIdeaCatId || displayCats[0]?.id;
       if (catId) setIdeaPanelCatId(catId);
@@ -2660,7 +2683,8 @@ function Planner() {
       linkedItem: {
         catLabel,
         catColor,
-        itemText: itemText || ""
+        itemText: itemText || "",
+        ...(wasCompleted !== null ? { wasCompleted } : {})
       }
     };
     const next = {
@@ -3849,7 +3873,7 @@ function Planner() {
         onExternalLineDragOver: isOwnView ? (lineIdx, pos) => setCrossCellHover({ lineIdx, pos }) : null,
         onExternalDragLeave: isOwnView ? () => setCrossCellHover(null) : null,
         onEditStart: isOwnView ? () => openIdeasSidebar(cat.id) : null,
-        onReflect: isOwnView ? text => openReflectWithItem(text, cat.label, cat.color, ds) : null,
+        onReflect: isOwnView ? (text, wasCompleted) => openReflectWithItem(text, cat.label, cat.color, ds, wasCompleted) : null,
         doneLines: new Set(displayDone[ds]?.[cat.id] || []),
         onToggleDone: isOwnView ? lineIdx => toggleDone(ds, cat.id, lineIdx) : null,
         nudgeLineIdx: isOwnView && nudgeItem?.ds === ds && nudgeItem?.catId === cat.id ? nudgeItem.lineIdx : null,
@@ -4013,7 +4037,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v6.22.1")), showGoalPopup && /*#__PURE__*/React.createElement("div", {
+  }, "v6.23.2")), showGoalPopup && /*#__PURE__*/React.createElement("div", {
     onClick: () => setShowGoalPopup(false),
     style: {
       position: "fixed",
