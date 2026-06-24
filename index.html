@@ -627,6 +627,10 @@ function Cell({
       setDraft(value || "");
       setEditing(false);
     }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      e.target.blur();
+    }
   }
   function deleteLine(i) {
     const ls = value.split("\n").filter(l => l.trim());
@@ -1482,6 +1486,12 @@ function JournalEntry({
       setText(e.target.value);
       autoResize(e.target);
     },
+    onKeyDown: e => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        e.target.blur();
+      }
+    },
     onBlur: () => {
       setEditing(false);
       onSave(text);
@@ -1503,7 +1513,7 @@ function JournalEntry({
       minHeight: 54
     }
   }) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
-    onClick: !readOnly && text ? () => {
+    onClick: !readOnly ? () => {
       setEditing(true);
       setExpanded(true);
     } : undefined,
@@ -1514,7 +1524,7 @@ function JournalEntry({
       fontStyle: text ? "normal" : "italic",
       lineHeight: 1.6,
       whiteSpace: "pre-wrap",
-      cursor: !readOnly && text ? "text" : "default",
+      cursor: !readOnly ? "text" : "default",
       wordBreak: "break-word"
     }
   }, text ? expanded || !isLong ? text : text.slice(0, PREVIEW).trimEnd() + '…' : "Empty reflection"), isLong && /*#__PURE__*/React.createElement("button", {
@@ -4083,7 +4093,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v6.23.14")), showGoalPopup && /*#__PURE__*/React.createElement("div", {
+  }, "v6.23.16")), showGoalPopup && /*#__PURE__*/React.createElement("div", {
     onClick: () => setShowGoalPopup(false),
     style: {
       position: "fixed",
@@ -4395,7 +4405,10 @@ function Planner() {
         onChange: e => setIdeaEditVal(e.target.value),
         onBlur: () => commitIdeaEdit(pc.id, idea.id),
         onKeyDown: e => {
-          if (e.key === "Enter") commitIdeaEdit(pc.id, idea.id);
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commitIdeaEdit(pc.id, idea.id);
+          }
           if (e.key === "Escape") {
             setEditingIdeaId(null);
             setIdeaEditVal("");
