@@ -575,7 +575,11 @@ function Cell({
   onExternalLineDragOver,
   onExternalDragLeave,
   reflectedItemTexts,
-  onOpenReflections
+  onOpenReflections,
+  date,
+  requestEdit,
+  onEditConsumed,
+  onTabNext
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
@@ -612,6 +616,12 @@ function Cell({
   useEffect(() => {
     if (linkingIdx !== null && linkRef.current) linkRef.current.focus();
   }, [linkingIdx]);
+  useEffect(() => {
+    if (requestEdit && onSave) {
+      setEditing(true);
+      onEditConsumed?.();
+    }
+  }, [requestEdit]);
   function commit() {
     setEditing(false);
     const t = draft.trim();
@@ -630,6 +640,11 @@ function Cell({
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       e.target.blur();
+    }
+    if (e.key === "Tab" && !e.shiftKey && onTabNext) {
+      e.preventDefault();
+      commit();
+      onTabNext();
     }
   }
   function deleteLine(i) {
@@ -697,9 +712,9 @@ function Cell({
   const readOnly = !onSave;
   const isPastOrToday = !isFuture;
   const filled = hasEntry(value);
-  const isReflected = !!(reflectedItemTexts && filled && reflectedItemTexts.has(plainOf(value)));
+  const isReflected = !!(reflectedItemTexts && filled && reflectedItemTexts.has(`${plainOf(value)}::${date || ''}`));
   function isLineReflected(line) {
-    return !!(reflectedItemTexts && reflectedItemTexts.has(plainOf(line)));
+    return !!(reflectedItemTexts && reflectedItemTexts.has(`${plainOf(line)}::${date || ''}`));
   }
   function reflectBubbleSvg(color, isFilled) {
     return /*#__PURE__*/React.createElement("svg", {
@@ -813,7 +828,7 @@ function Cell({
   }, reflectBubbleSvg("#B8B3B0", false)), isReflected && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
-      onOpenReflections?.(plainOf(value));
+      onOpenReflections?.(plainOf(value), date);
     },
     title: "View / edit reflection",
     style: {
@@ -1107,7 +1122,7 @@ function Cell({
     }, reflectBubbleSvg("#B8B3B0", false)), isLineReflected(lines[i]) && /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
-        onOpenReflections?.(plainOf(lines[i]));
+        onOpenReflections?.(plainOf(lines[i]), date);
       },
       title: "View / edit reflection",
       style: {
@@ -2521,6 +2536,7 @@ function Planner() {
   const [sidebarTab, setSidebarTab] = useState('ideas');
   const [lastIdeaCatId, setLastIdeaCatId] = useState(null);
   const [nudgeItem, setNudgeItem] = useState(null);
+  const [pendingEditCell, setPendingEditCell] = useState(null);
   const [showExportOptions, setShowExportOptions] = useState(false);
   const [pendingExportName, setPendingExportName] = useState("");
   const [exportIncludeReflections, setExportIncludeReflections] = useState(false);
@@ -2752,7 +2768,7 @@ function Planner() {
     setNewEntryId(entry.id);
     setTimeout(() => setNewEntryId(null), 400);
   }
-  function openReflectionsOnly(itemText) {
+  function openReflectionsOnly(itemText, date = null) {
     if (!sidebarOpen) {
       const catId = lastIdeaCatId || displayCats[0]?.id;
       if (catId) setIdeaPanelCatId(catId);
@@ -2761,7 +2777,12 @@ function Planner() {
     setSidebarOpen(true);
     if (itemText) {
       const entries = journal[weekStart] || [];
-      const idx = entries.findIndex(e => e.linkedItem?.itemText?.trim() === itemText.trim() && e.text?.trim());
+      const idx = entries.findIndex(e => {
+        if (!e.linkedItem?.itemText || !e.text?.trim()) return false;
+        if (e.linkedItem.itemText.trim() !== itemText.trim()) return false;
+        if (date) return (e.linkedItem.eventDate || '') === date;
+        return true;
+      });
       if (idx > 0) {
         const reordered = [...entries];
         const [found] = reordered.splice(idx, 1);
@@ -3219,7 +3240,8 @@ function Planner() {
     const set = new Set();
     entries.forEach(e => {
       if (e.text && e.text.trim() && e.linkedItem && e.linkedItem.itemText) {
-        set.add(e.linkedItem.itemText.trim());
+        const key = `${e.linkedItem.itemText.trim()}::${e.linkedItem.eventDate || ''}`;
+        set.add(key);
       }
     });
     return set;
@@ -3862,7 +3884,7 @@ function Planner() {
       cx: "3.5",
       cy: "24",
       r: "1.4"
-    })))), dates.map(d => {
+    })))), dates.map((d, dateIdx) => {
       const ds = ymd(d),
         isToday = ds === todayStr,
         isFuture = ds > todayStr,
@@ -3935,7 +3957,11 @@ function Planner() {
         nudgeLineIdx: isOwnView && nudgeItem?.ds === ds && nudgeItem?.catId === cat.id ? nudgeItem.lineIdx : null,
         onNudgeClick: isOwnView ? () => openReflectionSidebar(true) : null,
         reflectedItemTexts: isOwnView ? reflectedItemTexts : null,
-        onOpenReflections: isOwnView ? openReflectionsOnly : null
+        onOpenReflections: isOwnView ? openReflectionsOnly : null,
+        date: ds,
+        requestEdit: isOwnView && pendingEditCell?.ds === ds && pendingEditCell?.catId === cat.id,
+        onEditConsumed: () => setPendingEditCell(null),
+        onTabNext: isOwnView && dateIdx < dates.length - 1 ? () => setPendingEditCell({ ds: ymd(dates[dateIdx + 1]), catId: cat.id }) : null
       }));
     })), isTarget && dragPos === "below" && dropLine);
   }), isOwnView && /*#__PURE__*/React.createElement("div", {
@@ -4093,7 +4119,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v6.23.16")), showGoalPopup && /*#__PURE__*/React.createElement("div", {
+  }, "v6.24.2")), showGoalPopup && /*#__PURE__*/React.createElement("div", {
     onClick: () => setShowGoalPopup(false),
     style: {
       position: "fixed",
