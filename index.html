@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>I Love Mondays</title>
+  <title>My Planner</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=Playfair+Display:ital,wght@0,700;0,900;1,700&display=swap" rel="stylesheet">
   <script>/**
@@ -807,9 +807,13 @@ function Cell({
       top: 3,
       right: 3,
       display: "flex",
-      gap: 3,
-      zIndex: 3,
-      alignItems: "center"
+      gap: 4,
+      zIndex: 6,
+      alignItems: "center",
+      background: "rgba(255,255,255,0.94)",
+      borderRadius: 8,
+      padding: "3px 5px",
+      boxShadow: "0 1px 5px rgba(0,0,0,0.16)"
     }
   }, onReflect && !isReflected && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
@@ -888,13 +892,13 @@ function Cell({
     title: "Drag to another day",
     style: {
       position: "absolute",
-      left: 3,
+      left: 2,
       top: "50%",
       transform: "translateY(-50%)",
       cursor: "grab",
-      zIndex: 3,
+      zIndex: 5,
       padding: 2,
-      opacity: 0.5,
+      opacity: 0.45,
       color: "#57534E"
     }
   }, /*#__PURE__*/React.createElement(GripIcon, null)), !readOnly && linkingIdx !== null && /*#__PURE__*/React.createElement("div", {
@@ -1092,18 +1096,22 @@ function Cell({
         flex: 1,
         textAlign: isPastOrToday ? "left" : "center",
         userSelect: "text",
-        paddingRight: !readOnly && hoveredLine === i && dragLineIdx === null ? 52 : 0,
         transition: "color 0.2s ease"
       }
     }, renderWithLinks(line, lineColor)), !readOnly && hoveredLine === i && dragLineIdx === null && linkingIdx !== i && /*#__PURE__*/React.createElement("div", {
       style: {
         position: "absolute",
-        right: 0,
+        right: 2,
         top: "50%",
         transform: "translateY(-50%)",
         display: "flex",
-        gap: 3,
-        alignItems: "center"
+        gap: 4,
+        zIndex: 6,
+        alignItems: "center",
+        background: "rgba(255,255,255,0.94)",
+        borderRadius: 8,
+        padding: "2px 5px",
+        boxShadow: "0 1px 5px rgba(0,0,0,0.16)"
       }
     }, !isLineReflected(lines[i]) && onReflect && /*#__PURE__*/React.createElement("button", {
       onClick: e => {
@@ -1190,9 +1198,13 @@ function Cell({
     onClick: e => e.stopPropagation(),
     title: "Drag to reschedule",
     style: {
+      position: "absolute",
+      left: 2,
+      top: "50%",
+      transform: "translateY(-50%)",
+      zIndex: 5,
       cursor: "grab",
-      flexShrink: 0,
-      opacity: 0.5,
+      opacity: 0.45,
       color: "#57534E",
       display: "flex",
       alignItems: "center"
@@ -1243,7 +1255,6 @@ function Cell({
       flex: 1,
       fontWeight: 500,
       userSelect: "text",
-      paddingRight: !readOnly && hovered ? 36 : 0,
       transition: "color 0.2s ease"
     }
   }, renderWithLinks(value, doneLines?.has(0) ? cat.color : "#B0ACA8"))) : /*#__PURE__*/React.createElement("span", {
@@ -1259,9 +1270,7 @@ function Cell({
       fontWeight: 500,
       opacity: textOpacity,
       userSelect: "text",
-      paddingBottom: !readOnly && linkingIdx === -1 ? 20 : 0,
-      paddingLeft: !readOnly && (hovered || isCellDragging) ? 14 : 0,
-      paddingRight: !readOnly && hovered ? 36 : 0
+      paddingBottom: !readOnly && linkingIdx === -1 ? 20 : 0
     }
   }, renderWithLinks(value, textColor)) : !readOnly && /*#__PURE__*/React.createElement("span", {
     style: {
@@ -3646,9 +3655,9 @@ function Planner() {
       isHovered = hoveredId === cat.id;
     const panelOpen = sidebarOpen && sidebarTab === 'ideas' && ideaPanelCatId === cat.id;
     const n = dates.filter(d => ymd(d) <= todayStr && hasEntry(displayData[ymd(d)]?.[cat.id])).length;
-    const goal = displayGoals[cat.id] ?? null;
-    const pct = goal ? n / goal : null;
-    const accentColor = goal === null ? "#78716C" : isFutureWeek ? "#C4BFBC" : n >= goal ? "#16A34A" : pct >= 0.7 ? "#22C55E" : pct >= 0.4 ? "#F59E0B" : "#EF4444";
+    const goal = getGoal(cat.id);
+    const pct = n / goal;
+    const accentColor = isFutureWeek ? "#C4BFBC" : n >= goal ? "#16A34A" : pct >= 0.7 ? "#22C55E" : pct >= 0.4 ? "#F59E0B" : "#EF4444";
     const dropLine = /*#__PURE__*/React.createElement("div", {
       style: {
         height: 2,
@@ -3838,7 +3847,7 @@ function Planner() {
         color: accentColor,
         lineHeight: 1
       }
-    }, n), goal !== null && /*#__PURE__*/React.createElement("span", {
+    }, n), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 10,
         color: "#C4BFBC",
@@ -3849,7 +3858,7 @@ function Planner() {
     }, "of ", goal), isOwnView && hoveredGoalCatId === cat.id && !isFutureWeek && /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
-        openReflectWithItem(goal !== null ? `${n} of ${goal} days` : `${n} day${n !== 1 ? "s" : ""}`, cat.label, cat.color);
+        openReflectWithItem(`${n} of ${goal} days`, cat.label, cat.color);
       },
       title: "Reflect on goal progress",
       style: {
@@ -4119,7 +4128,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v6.27.1")), showGoalPopup && /*#__PURE__*/React.createElement("div", {
+  }, "v6.30.4")), showGoalPopup && /*#__PURE__*/React.createElement("div", {
     onClick: () => setShowGoalPopup(false),
     style: {
       position: "fixed",
@@ -4181,7 +4190,7 @@ function Planner() {
       gap: 12
     }
   }, displayCats.map(cat => {
-    const goal = displayGoals[cat.id] ?? null;
+    const goal = getGoal(cat.id);
     return /*#__PURE__*/React.createElement("div", {
       key: cat.id,
       style: {
@@ -4223,7 +4232,7 @@ function Planner() {
       key: v,
       onClick: () => isOwnView && saveGoals({
         ...goals,
-        [cat.id]: v === goal ? null : v
+        [cat.id]: v
       }),
       style: {
         flex: 1,
