@@ -745,7 +745,7 @@ function Cell({
   const bg = filled && !isFuture ? "#ffffff" : "#F0EFED";
   const textColor = isFuture ? "#A8A29E" : cat.color;
   const textOpacity = 1;
-  const placeholderColor = "#D0CCC8";
+  const placeholderColor = "#C4BFBC";
   const chainIcon = /*#__PURE__*/React.createElement("svg", {
     width: "11",
     height: "11",
@@ -829,7 +829,7 @@ function Cell({
       display: "flex",
       alignItems: "center"
     }
-  }, reflectBubbleSvg("#B8B3B0", false)), isReflected && /*#__PURE__*/React.createElement("button", {
+  }, reflectBubbleSvg("#C4BFBC", false)), isReflected && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       onOpenReflections?.(plainOf(value), date);
@@ -857,7 +857,7 @@ function Cell({
       cursor: "pointer",
       padding: 0,
       lineHeight: 1,
-      color: "#B8B3B0",
+      color: "#C4BFBC",
       display: "flex",
       alignItems: "center"
     }
@@ -872,7 +872,7 @@ function Cell({
       cursor: "pointer",
       fontSize: 14,
       lineHeight: 1,
-      color: "#B8B3B0",
+      color: "#C4BFBC",
       padding: 0
     }
   }, "×")), !readOnly && (hovered || isCellDragging) && filled && !editing && !isMultiLine && linkingIdx === null && !isPastOrToday && /*#__PURE__*/React.createElement("div", {
@@ -1018,7 +1018,7 @@ function Cell({
   }, lines.map((line, i) => {
     const isOver = dragOverIdx === i && ((dragLineIdx !== null && dragLineIdx !== i) || (dragLineIdx === null && externalDragging));
     const lineDone = isPastOrToday && doneLines?.has(i);
-    const lineColor = isPastOrToday ? lineDone ? cat.color : "#B0ACA8" : textColor;
+    const lineColor = isPastOrToday ? lineDone ? cat.color : "#A8A29E" : textColor;
     return /*#__PURE__*/React.createElement("div", {
       key: i,
       onDragOver: readOnly ? undefined : e => handleLineDragOver(e, i),
@@ -1127,7 +1127,7 @@ function Cell({
         display: "flex",
         alignItems: "center"
       }
-    }, reflectBubbleSvg("#B8B3B0", false)), isLineReflected(lines[i]) && /*#__PURE__*/React.createElement("button", {
+    }, reflectBubbleSvg("#C4BFBC", false)), isLineReflected(lines[i]) && /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
         onOpenReflections?.(plainOf(lines[i]), date);
@@ -1155,7 +1155,7 @@ function Cell({
         cursor: "pointer",
         padding: 0,
         lineHeight: 1,
-        color: "#B8B3B0",
+        color: "#C4BFBC",
         display: "flex",
         alignItems: "center"
       }
@@ -1170,7 +1170,7 @@ function Cell({
         cursor: "pointer",
         fontSize: 12,
         lineHeight: 1,
-        color: "#B8B3B0",
+        color: "#C4BFBC",
         padding: 0
       }
     }, "×")));
@@ -1248,7 +1248,7 @@ function Cell({
   }))), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 13,
-      color: doneLines?.has(0) ? cat.color : "#B0ACA8",
+      color: doneLines?.has(0) ? cat.color : "#A8A29E",
       lineHeight: 1.5,
       whiteSpace: "pre-wrap",
       wordBreak: "break-word",
@@ -1257,7 +1257,7 @@ function Cell({
       userSelect: "text",
       transition: "color 0.2s ease"
     }
-  }, renderWithLinks(value, doneLines?.has(0) ? cat.color : "#B0ACA8"))) : /*#__PURE__*/React.createElement("span", {
+  }, renderWithLinks(value, doneLines?.has(0) ? cat.color : "#A8A29E"))) : /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 13,
       color: textColor,
@@ -1580,7 +1580,7 @@ function CatSuggestionItem({label, desc, onClick, disabled}) {
       padding: "10px 12px",
       marginBottom: 6,
       background: disabled ? "#F7F6F4" : hovered ? `${SUGG_BG}` : SUGG_BG,
-      border: "1px solid " + (disabled ? "#E7E5E4" : SUGG_COLOR + "30"),
+      border: "1px solid " + (disabled ? "#E8E5E3" : SUGG_COLOR + "30"),
       borderRadius: 10,
       opacity: disabled ? 0.42 : 1,
       cursor: disabled ? "default" : "pointer",
@@ -1598,7 +1598,7 @@ function CatSuggestionItem({label, desc, onClick, disabled}) {
 }
 const navBtn = {
   background: "none",
-  border: "1px solid #E7E5E4",
+  border: "1px solid #E8E5E3",
   borderRadius: 8,
   padding: "5px 16px",
   cursor: "pointer",
@@ -1853,7 +1853,7 @@ function SciencePage({
   };
   const rule = {
     border: "none",
-    borderTop: "1px solid #E8E5E2",
+    borderTop: "1px solid #E8E5E3",
     margin: "44px 0"
   };
   function Chip({
@@ -1893,7 +1893,7 @@ function SciencePage({
         letterSpacing: "0.03em",
         padding: "3px 9px",
         borderRadius: 20,
-        border: "1px solid #D0CCC8",
+        border: "1px solid #C4BFBC",
         color: "#A8A29E",
         display: "inline-block"
       }
@@ -2128,7 +2128,7 @@ function SciencePage({
   })), "I Love Mondays")), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 44,
-      borderBottom: "1px solid #E8E5E2",
+      borderBottom: "1px solid #E8E5E3",
       paddingBottom: 40
     }
   }, /*#__PURE__*/React.createElement("div", {
@@ -2175,7 +2175,7 @@ function SciencePage({
     onClick: () => setTab('liveit'),
     style: {
       background: liveItActive ? "#FFF7F5" : "#fff",
-      border: `2px solid ${liveItActive ? "#EA580C" : "#E8E5E2"}`,
+      border: `2px solid ${liveItActive ? "#EA580C" : "#E8E5E3"}`,
       boxShadow: liveItActive ? "0 4px 18px rgba(234,88,12,0.11)" : "none",
       borderRadius: 16,
       padding: "20px 18px 18px",
@@ -2234,7 +2234,7 @@ function SciencePage({
       gap: 5,
       fontSize: 11,
       fontWeight: 700,
-      color: liveItActive ? "#EA580C" : "#B8B3B0",
+      color: liveItActive ? "#EA580C" : "#C4BFBC",
       letterSpacing: "0.02em",
       transition: "color 0.18s ease"
     }
@@ -2246,7 +2246,7 @@ function SciencePage({
     onClick: () => setTab('planit'),
     style: {
       background: !liveItActive ? "#F0FDF4" : "#fff",
-      border: `2px solid ${!liveItActive ? "#15803D" : "#E8E5E2"}`,
+      border: `2px solid ${!liveItActive ? "#15803D" : "#E8E5E3"}`,
       boxShadow: !liveItActive ? "0 4px 18px rgba(21,128,61,0.09)" : "none",
       borderRadius: 16,
       padding: "20px 18px 18px",
@@ -2269,7 +2269,7 @@ function SciencePage({
       height: 4,
       borderRadius: 2,
       width: `${w}%`,
-      background: !liveItActive ? `rgba(21,128,61,${0.25 + i * 0.08})` : "#E8E5E2",
+      background: !liveItActive ? `rgba(21,128,61,${0.25 + i * 0.08})` : "#E8E5E3",
       transition: "background 0.18s ease"
     }
   }))), /*#__PURE__*/React.createElement("div", {
@@ -2304,7 +2304,7 @@ function SciencePage({
       gap: 5,
       fontSize: 11,
       fontWeight: 700,
-      color: !liveItActive ? "#15803D" : "#B8B3B0",
+      color: !liveItActive ? "#15803D" : "#C4BFBC",
       letterSpacing: "0.02em",
       transition: "color 0.18s ease"
     }
@@ -2368,7 +2368,7 @@ function SciencePage({
     onClick: () => setTab(liveItActive ? 'planit' : 'liveit'),
     style: {
       background: "#fff",
-      border: "1px solid #E8E5E2",
+      border: "1px solid #E8E5E3",
       borderRadius: 9,
       padding: "8px 16px",
       cursor: "pointer",
@@ -2385,7 +2385,7 @@ function SciencePage({
       e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.07)";
     },
     onMouseLeave: e => {
-      e.currentTarget.style.borderColor = "#E8E5E2";
+      e.currentTarget.style.borderColor = "#E8E5E3";
       e.currentTarget.style.boxShadow = "none";
     }
   }, liveItActive ? "Read Plan It →" : "Read Live It →")), /*#__PURE__*/React.createElement("hr", {
@@ -2426,7 +2426,7 @@ function SciencePage({
       padding: "13px 15px",
       background: "#fff",
       borderRadius: 8,
-      border: "1px solid #E8E5E2",
+      border: "1px solid #E8E5E3",
       textDecoration: "none",
       display: "block",
       transition: "all 0.12s"
@@ -2436,7 +2436,7 @@ function SciencePage({
       e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.06)";
     },
     onMouseLeave: e => {
-      e.currentTarget.style.borderColor = "#E8E5E2";
+      e.currentTarget.style.borderColor = "#E8E5E3";
       e.currentTarget.style.boxShadow = "none";
     }
   }, /*#__PURE__*/React.createElement("div", {
@@ -2536,6 +2536,7 @@ function Planner() {
   const [namePromptVal, setNamePromptVal] = useState("");
   const [importConfirm, setImportConfirm] = useState(null);
   const [showViewDropdown, setShowViewDropdown] = useState(false);
+  const [showStartFreshConfirm, setShowStartFreshConfirm] = useState(false);
   const viewDropdownRef = useRef(null);
   const [ratings, setRatings] = useState({});
   const [journal, setJournal] = useState({});
@@ -3013,6 +3014,26 @@ function Planner() {
     store.set("planner:importedViews", JSON.stringify(updated));
     if (activeViewId === id) setActiveViewId("own");
   }
+  function startFresh() {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("planner:") && k !== "planner:importedViews") {
+        localStorage.removeItem(k);
+      }
+    }
+    setData({});
+    setCats(DEFAULT_CATS);
+    setIdeas({});
+    setGoals({});
+    setDone({});
+    setRatings({});
+    setJournal({});
+    setUserName("");
+    setOffset(0);
+    setActiveViewId("own");
+    setShowStartFreshConfirm(false);
+    setShowViewDropdown(false);
+  }
   function startRename(cat) {
     setRenamingId(cat.id);
     setRenameVal(cat.label);
@@ -3423,7 +3444,7 @@ function Planner() {
       top: "calc(100% + 6px)",
       left: 0,
       background: "#fff",
-      border: "1px solid #E7E5E4",
+      border: "1px solid #E8E5E3",
       borderRadius: 10,
       boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
       minWidth: 200,
@@ -3587,7 +3608,54 @@ function Planner() {
     y1: "3",
     x2: "12",
     y2: "15"
-  })), "Import"))))), /*#__PURE__*/React.createElement("div", {
+  })), "Import")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderTop: "1px solid #E8E5E3"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setShowViewDropdown(false);
+      setShowStartFreshConfirm(true);
+    },
+    style: {
+      width: "100%",
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "10px 14px",
+      background: "#fff",
+      border: "none",
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 12,
+      fontWeight: 500,
+      color: "#DC2626",
+      textAlign: "left"
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "13",
+    height: "13",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M3 6h18"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "10",
+    y1: "11",
+    x2: "10",
+    y2: "17"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "14",
+    y1: "11",
+    x2: "14",
+    y2: "17"
+  })), "Start Fresh"))))), /*#__PURE__*/React.createElement("div", {
     style: {
       background: "#fff",
       overflow: "hidden",
@@ -3823,7 +3891,7 @@ function Planner() {
         cursor: "pointer",
         fontSize: 15,
         lineHeight: 1,
-        color: "#C4B5AA",
+        color: "#C4BFBC",
         padding: 0,
         flexShrink: 0
       }
@@ -3909,7 +3977,7 @@ function Planner() {
     })), isTarget && dragPos === "below" && dropLine);
   }), isOwnView && /*#__PURE__*/React.createElement("div", {
     style: {
-      borderTop: "1px dashed #E7E5E4",
+      borderTop: "1px dashed #E8E5E3",
       padding: "8px 14px"
     }
   }, /*#__PURE__*/React.createElement("button", {
@@ -3948,7 +4016,7 @@ function Planner() {
       padding: 0,
       textAlign: "left",
       textDecoration: "underline",
-      textDecorationColor: "#D0CCC8",
+      textDecorationColor: "#C4BFBC",
       textUnderlineOffset: 3
     },
     onMouseEnter: e => {
@@ -3957,7 +4025,7 @@ function Planner() {
     },
     onMouseLeave: e => {
       e.currentTarget.style.color = "#78716C";
-      e.currentTarget.style.textDecorationColor = "#D0CCC8";
+      e.currentTarget.style.textDecorationColor = "#C4BFBC";
     }
   }, "The science behind I Love Mondays →"), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4013,7 +4081,7 @@ function Planner() {
     y2: "15"
   })), "Import"), /*#__PURE__*/React.createElement("span", {
     style: {
-      color: "#E7E5E4",
+      color: "#E8E5E3",
       fontSize: 11
     }
   }, "|"), /*#__PURE__*/React.createElement("button", {
@@ -4058,11 +4126,11 @@ function Planner() {
   }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
-      color: "#D0CCC8",
+      color: "#C4BFBC",
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v7.4.2")), (() => {
+  }, "v7.4.10")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -4098,7 +4166,7 @@ function Planner() {
       style: {
         width: 272,
         background: "#fff",
-        borderLeft: "2px solid #E7E5E4",
+        borderLeft: "2px solid #E8E5E3",
         boxShadow: "-6px 0 28px rgba(0,0,0,0.09)",
         display: "flex",
         flexDirection: "column"
@@ -4153,7 +4221,7 @@ function Planner() {
         color: pc.color,
         marginBottom: 2
       }
-    }, "Idea List", !isOwnView && /*#__PURE__*/React.createElement("span", {
+    }, "Ideas", !isOwnView && /*#__PURE__*/React.createElement("span", {
       style: {
         color: "#A8A29E",
         fontWeight: 500,
@@ -4432,36 +4500,35 @@ function Planner() {
       }
     }, "+ Add idea"))), sidebarTab === 'reflections' && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       style: {
-        flex: 1,
-        overflowY: "auto",
-        padding: "14px 18px",
-        display: "flex",
-        flexDirection: "column"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
+        padding: "16px 18px 12px",
+        borderBottom: "1px solid #E8E5E3",
+        flexShrink: 0,
         display: "flex",
         alignItems: "flex-start",
-        justifyContent: "space-between",
-        marginBottom: 12,
-        flexShrink: 0
+        justifyContent: "space-between"
       }
     }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 11,
-        fontWeight: 700,
-        letterSpacing: "0.08em",
+        fontSize: 10,
+        fontWeight: 600,
+        letterSpacing: "0.1em",
         textTransform: "uppercase",
-        color: "#7C3AED",
+        color: "#78716C",
         marginBottom: 2
       }
-    }, "Weekly Reflections"), /*#__PURE__*/React.createElement("div", {
+    }, "Reflections"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: "#1C1917"
+      }
+    }, weekLabel(dates)), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
-        color: "#A8A29E",
-        fontWeight: 500
+        color: "#C4BFBC",
+        marginTop: 2
       }
-    }, weekLabel(dates))), /*#__PURE__*/React.createElement("button", {
+    }, "How is your week going?")), /*#__PURE__*/React.createElement("button", {
       onClick: closeSidebar,
       style: {
         background: "none",
@@ -4475,6 +4542,14 @@ function Planner() {
         flexShrink: 0
       }
     }, "×")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        overflowY: "auto",
+        padding: "14px 18px",
+        display: "flex",
+        flexDirection: "column"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexWrap: "wrap",
@@ -4592,48 +4667,13 @@ function Planner() {
         alignItems: "flex-start",
         justifyContent: "space-between"
       }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 10
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 20,
-        height: 20,
-        flexShrink: 0,
-        marginTop: 1,
-        color: "#1C1917"
-      }
-    }, /*#__PURE__*/React.createElement("svg", {
-      width: "20",
-      height: "20",
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: "currentColor",
-      strokeWidth: "1.6",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("g", {
-      transform: "rotate(18 12 12)"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M12 6v12"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M12 9c-2.5-5-9-4.5-8-0.5c0.8 3 4.5 4 8 1.5"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M12 9c2.5-5 9-4.5 8-0.5c-0.8 3-4.5 4-8 1.5"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M12 13c-1.3-1.8-5.5-1.8-5.5 0.8c0 1.8 1.8 3.5 5.5 1.7"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M12 13c1.3-1.8 5.5-1.8 5.5 0.8c0 1.8-1.8 3.5-5.5 1.7"
-    })))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         fontWeight: 600,
         letterSpacing: "0.1em",
         textTransform: "uppercase",
-        color: "#1C1917",
+        color: "#78716C",
         marginBottom: 2
       }
     }, "Intentions", !isOwnView && /*#__PURE__*/React.createElement("span", {
@@ -4645,11 +4685,17 @@ function Planner() {
       }
     }, " · read only")), /*#__PURE__*/React.createElement("div", {
       style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: "#1C1917"
+      }
+    }, weekLabel(dates)), /*#__PURE__*/React.createElement("div", {
+      style: {
         fontSize: 11,
-        color: "#A8A29E",
+        color: "#C4BFBC",
         marginTop: 2
       }
-    }, weekLabel(dates)))), /*#__PURE__*/React.createElement("button", {
+    }, "Set a weekly target for any pillar")), /*#__PURE__*/React.createElement("button", {
       onClick: closeSidebar,
       style: {
         background: "none",
@@ -4668,14 +4714,7 @@ function Planner() {
         overflowY: "auto",
         padding: "14px 16px"
       }
-    }, noGoalCats.length > 0 && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: "#78716C",
-        lineHeight: 1.6,
-        marginBottom: 14
-      }
-    }, "Set a weekly target for any pillar."), goalCats.length === 0 && noGoalCats.length === 0 && /*#__PURE__*/React.createElement("div", {
+    }, noGoalCats.length === 0 && goalCats.length === 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12,
         color: "#A8A29E",
@@ -4913,7 +4952,7 @@ function Planner() {
       style: {
         width: 28,
         background: "#F7F6F4",
-        borderLeft: "1px solid #E0DEDD",
+        borderLeft: "1px solid #E8E5E3",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -4922,41 +4961,6 @@ function Planner() {
         flexShrink: 0
       }
     }, /*#__PURE__*/React.createElement("div", {
-      onClick: () => sidebarOpen && sidebarTab === 'goals' ? closeSidebar() : openGoalsSidebar(),
-      title: "Intentions",
-      style: {
-        width: "100%",
-        height: 44,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: "pointer",
-        background: sidebarOpen && sidebarTab === 'goals' ? "#fff" : "transparent",
-        transition: "background 0.15s ease",
-        color: sidebarOpen && sidebarTab === 'goals' ? "#1C1917" : "#B0ACA8"
-      }
-    }, /*#__PURE__*/React.createElement("svg", {
-      width: "18",
-      height: "18",
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: "currentColor",
-      strokeWidth: "1.6",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("g", {
-      transform: "rotate(18 12 12)"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M12 6v12"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M12 9c-2.5-5-9-4.5-8-0.5c0.8 3 4.5 4 8 1.5"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M12 9c2.5-5 9-4.5 8-0.5c-0.8 3-4.5 4-8 1.5"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M12 13c-1.3-1.8-5.5-1.8-5.5 0.8c0 1.8 1.8 3.5 5.5 1.7"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M12 13c1.3-1.8 5.5-1.8 5.5 0.8c0 1.8-1.8 3.5-5.5 1.7"
-    })))), /*#__PURE__*/React.createElement("div", {
       onClick: () => sidebarOpen && sidebarTab === 'ideas' ? closeSidebar() : openIdeasSidebar(lastIdeaCatId || displayCats[0]?.id),
       title: "Ideas",
       style: {
@@ -4968,7 +4972,7 @@ function Planner() {
         cursor: "pointer",
         background: sidebarOpen && sidebarTab === 'ideas' ? "#fff" : "transparent",
         transition: "background 0.15s ease",
-        color: sidebarOpen && sidebarTab === 'ideas' ? "#1C1917" : "#B0ACA8"
+        color: sidebarOpen && sidebarTab === 'ideas' ? "#1C1917" : "#A8A29E"
       }
     }, /*#__PURE__*/React.createElement("svg", {
       width: "18",
@@ -5010,7 +5014,7 @@ function Planner() {
         cursor: "pointer",
         background: isOwnView && (draggingCell || draggingLine) ? "#EDE9FE" : sidebarOpen && sidebarTab === 'reflections' ? "#fff" : "transparent",
         transition: "background 0.15s ease",
-        color: isOwnView && (draggingCell || draggingLine) ? "#7C3AED" : sidebarOpen && sidebarTab === 'reflections' ? "#7C3AED" : "#B0ACA8",
+        color: isOwnView && (draggingCell || draggingLine) ? "#7C3AED" : sidebarOpen && sidebarTab === 'reflections' ? "#7C3AED" : "#A8A29E",
         gap: 2
       }
     }, /*#__PURE__*/React.createElement("svg", {
@@ -5041,7 +5045,42 @@ function Planner() {
         opacity: 0.8,
         lineHeight: 1
       }
-    }, "REFLECT"))));
+    }, "REFLECT")), /*#__PURE__*/React.createElement("div", {
+      onClick: () => sidebarOpen && sidebarTab === 'goals' ? closeSidebar() : openGoalsSidebar(),
+      title: "Intentions",
+      style: {
+        width: "100%",
+        height: 44,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+        background: sidebarOpen && sidebarTab === 'goals' ? "#fff" : "transparent",
+        transition: "background 0.15s ease",
+        color: sidebarOpen && sidebarTab === 'goals' ? "#1C1917" : "#A8A29E"
+      }
+    }, /*#__PURE__*/React.createElement("svg", {
+      width: "18",
+      height: "18",
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: "1.6",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }, /*#__PURE__*/React.createElement("g", {
+      transform: "rotate(18 12 12)"
+    }, /*#__PURE__*/React.createElement("path", {
+      d: "M12 6v12"
+    }), /*#__PURE__*/React.createElement("path", {
+      d: "M12 9c-2.5-5-9-4.5-8-0.5c0.8 3 4.5 4 8 1.5"
+    }), /*#__PURE__*/React.createElement("path", {
+      d: "M12 9c2.5-5 9-4.5 8-0.5c-0.8 3-4.5 4-8 1.5"
+    }), /*#__PURE__*/React.createElement("path", {
+      d: "M12 13c-1.3-1.8-5.5-1.8-5.5 0.8c0 1.8 1.8 3.5 5.5 1.7"
+    }), /*#__PURE__*/React.createElement("path", {
+      d: "M12 13c1.3-1.8 5.5-1.8 5.5 0.8c0 1.8-1.8 3.5-5.5 1.7"
+    }))))));
   })(), catSuggestionsOpen && /*#__PURE__*/React.createElement("div", {
     style: {
       position: "fixed",
@@ -5050,7 +5089,7 @@ function Planner() {
       bottom: 0,
       width: 272,
       background: "#fff",
-      borderLeft: "2px solid #E7E5E4",
+      borderLeft: "2px solid #E8E5E3",
       boxShadow: "-6px 0 28px rgba(0,0,0,0.09)",
       display: "flex",
       flexDirection: "column",
@@ -5072,7 +5111,7 @@ function Planner() {
   }), /*#__PURE__*/React.createElement("div", null,
     /*#__PURE__*/React.createElement("div", {
       style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: SUGG_COLOR, marginBottom: 2 }
-    }, "Idea List"),
+    }, "Ideas"),
     /*#__PURE__*/React.createElement("div", {
       style: { fontSize: 13, fontWeight: 700, color: "#1C1917", textTransform: "uppercase", letterSpacing: "0.08em" }
     }, "Add Pillar"),
@@ -5098,7 +5137,7 @@ function Planner() {
             padding: "10px 12px",
             marginBottom: 6,
             background: "#F7F6F4",
-            border: "1px solid #E7E5E4",
+            border: "1px solid #E8E5E3",
             borderRadius: 10,
             opacity: 0.38,
             cursor: "default"
@@ -5118,7 +5157,7 @@ function Planner() {
       });
     }),
     /*#__PURE__*/React.createElement("div", {
-      style: { borderTop: "1px dashed #E7E5E4", margin: "10px 2px 8px" }
+      style: { borderTop: "1px dashed #E8E5E3", margin: "10px 2px 8px" }
     }),
     DEFAULT_CATS.map(dc => {
       const inCats = cats.some(c => c.label.toLowerCase() === dc.label.toLowerCase());
@@ -5140,7 +5179,7 @@ function Planner() {
           padding: "10px 12px",
           marginBottom: 6,
           background: "#F7F6F4",
-          border: "1px solid #E7E5E4",
+          border: "1px solid #E8E5E3",
           borderRadius: 10,
           opacity: 0.38,
           cursor: "default"
@@ -5196,7 +5235,91 @@ function Planner() {
       fontFamily: "inherit",
       letterSpacing: "0.02em"
     }
-  }, "+ Add pillar"))), pendingImport && /*#__PURE__*/React.createElement("div", {
+  }, "+ Add pillar"))), showStartFreshConfirm && /*#__PURE__*/React.createElement("div", {
+    onClick: () => setShowStartFreshConfirm(false),
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 300,
+      background: "rgba(0,0,0,0.3)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      background: "#fff",
+      borderRadius: 18,
+      border: "1px solid #E8E5E3",
+      boxShadow: "0 12px 48px rgba(0,0,0,0.18)",
+      padding: "28px 28px 24px",
+      width: "100%",
+      maxWidth: 400
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      letterSpacing: "0.12em",
+      textTransform: "uppercase",
+      color: "#A8A29E",
+      fontWeight: 600,
+      marginBottom: 6
+    }
+  }, "Start Fresh"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: "#1C1917",
+      marginBottom: 4
+    }
+  }, "This can't be undone"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: "#78716C",
+      marginBottom: 20,
+      lineHeight: 1.5
+    }
+  }, "This permanently deletes every entry, idea, reflection, and intention across all weeks, and returns your pillars to the defaults. Views you've imported from others are not affected. Export a backup first if you want to keep any of this."), /*#__PURE__*/React.createElement("button", {
+    onClick: startFresh,
+    style: {
+      width: "100%",
+      padding: "14px 16px",
+      borderRadius: 12,
+      border: "1.5px solid #FECACA",
+      background: "#FFF5F5",
+      cursor: "pointer",
+      textAlign: "left",
+      fontFamily: "inherit"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "#DC2626",
+      marginBottom: 3
+    }
+  }, "Yes, start fresh"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#78716C",
+      lineHeight: 1.4
+    }
+  }, "Everything is wiped and you're back to a blank week.")), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowStartFreshConfirm(false),
+    style: {
+      marginTop: 16,
+      width: "100%",
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12,
+      color: "#A8A29E",
+      fontFamily: "inherit",
+      padding: "4px 0"
+    }
+  }, "Cancel"))), pendingImport && /*#__PURE__*/React.createElement("div", {
     onClick: () => setPendingImport(null),
     style: {
       position: "fixed",
@@ -5213,7 +5336,7 @@ function Planner() {
     style: {
       background: "#fff",
       borderRadius: 18,
-      border: "1px solid #E7E5E4",
+      border: "1px solid #E8E5E3",
       boxShadow: "0 12px 48px rgba(0,0,0,0.18)",
       padding: "28px 28px 24px",
       width: "100%",
@@ -5253,7 +5376,7 @@ function Planner() {
     style: {
       padding: "14px 16px",
       borderRadius: 12,
-      border: "1.5px solid #E7E5E4",
+      border: "1.5px solid #E8E5E3",
       background: "#FAFAF9",
       cursor: "pointer",
       textAlign: "left",
@@ -5326,7 +5449,7 @@ function Planner() {
     style: {
       background: "#fff",
       borderRadius: 18,
-      border: "1px solid #E7E5E4",
+      border: "1px solid #E8E5E3",
       boxShadow: "0 12px 48px rgba(0,0,0,0.18)",
       padding: "28px 28px 24px",
       width: "100%",
@@ -5375,7 +5498,7 @@ function Planner() {
       width: "100%",
       padding: "10px 12px",
       borderRadius: 9,
-      border: "1.5px solid #E7E5E4",
+      border: "1.5px solid #E8E5E3",
       outline: "none",
       fontSize: 14,
       fontFamily: "'DM Sans',sans-serif",
@@ -5423,7 +5546,7 @@ function Planner() {
     style: {
       background: "#fff",
       borderRadius: 18,
-      border: "1px solid #E7E5E4",
+      border: "1px solid #E8E5E3",
       boxShadow: "0 12px 48px rgba(0,0,0,0.18)",
       padding: "24px 24px 20px",
       width: "100%",
