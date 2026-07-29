@@ -494,6 +494,131 @@ function weekLabel(dates) {
 function hasEntry(val) {
   return typeof val === "string" && val.trim().length > 0;
 }
+// --- Entry data model (v2): activities are objects with a stable id and a
+// list of pillar tags, instead of a raw newline-joined string living inside
+// exactly one pillar's cell. `entries` is shaped { [ds]: { [entryId]: Entry } }.
+// Entry = { id, text, pillars: [catId,...], done, sched: {start,duration}|null, order }
+function genEntryId() {
+  return "e_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+function pillarsOrDefault(pillars) {
+  return Array.isArray(pillars) && pillars.length ? pillars : [UNTAGGED_CAT.id];
+}
+// One-time upgrade of a week's legacy-shaped data (+ the done/times blobs that
+// used to live alongside it) into the new entry-object shape. Every migrated
+// entry keeps exactly the one pillar it already had.
+function migrateWeekToEntries(oldData, oldDone, oldTimes) {
+  const weekEntries = {};
+  let counter = 0;
+  Object.entries(oldData || {}).forEach(([ds, byCat]) => {
+    Object.entries(byCat || {}).forEach(([catId, val]) => {
+      if (!hasEntry(val)) return;
+      const lines = val.split("\n").filter(l => l.trim());
+      lines.forEach((text, lineIdx) => {
+        const id = genEntryId();
+        const doneArr = oldDone?.[ds]?.[catId] || [];
+        const rawSched = oldTimes?.[ds]?.[catId]?.[lineIdx] || null;
+        const sched = rawSched ? (typeof rawSched === "string" ? { start: rawSched, duration: CAL_DEFAULT_DURATION } : rawSched) : null;
+        weekEntries[ds] = weekEntries[ds] || {};
+        weekEntries[ds][id] = {
+          id,
+          text,
+          pillars: [catId],
+          done: doneArr.includes(lineIdx),
+          sched,
+          order: counter++
+        };
+      });
+    });
+  });
+  return weekEntries;
+}
+// Reads a week's stored value, migrating on the fly if it's still in the old
+// shape (detected by the absence of the __v:2 envelope).
+function loadWeekEntries(rawJson, doneBlob, timesBlob) {
+  if (!rawJson) return {};
+  if (rawJson.__v === 2 && rawJson.entries) return rawJson.entries;
+  return migrateWeekToEntries(rawJson, doneBlob, timesBlob);
+}
+function packWeekEntries(weekEntries) {
+  return { __v: 2, entries: weekEntries };
+}
+// Derives the legacy { data, done, times } shape (plus a parallel
+// entryPillars map) from entries, so all existing rendering/interaction code
+// (Cell, CalendarView, computeIntentionProgress, etc.) keeps working
+// unchanged. An entry tagged to more than one pillar simply appears —
+// consistently, sharing one done-state and one schedule — in every pillar's
+// derived list.
+function deriveLegacyView(weekEntries) {
+  const data = {}, done = {}, times = {}, entryPillars = {}, entryIds = {};
+  Object.entries(weekEntries || {}).forEach(([ds, byId]) => {
+    const list = Object.values(byId).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    list.forEach(e => {
+      pillarsOrDefault(e.pillars).forEach(catId => {
+        const prior = data[ds]?.[catId] || "";
+        const lineIdx = hasEntry(prior) ? prior.split("\n").filter(l => l.trim()).length : 0;
+        data[ds] = data[ds] || {};
+        data[ds][catId] = hasEntry(prior) ? prior + "\n" + e.text : e.text;
+        if (e.done) {
+          done[ds] = done[ds] || {};
+          done[ds][catId] = done[ds][catId] || [];
+          done[ds][catId].push(lineIdx);
+        }
+        if (e.sched) {
+          times[ds] = times[ds] || {};
+          times[ds][catId] = times[ds][catId] || {};
+          times[ds][catId][lineIdx] = e.sched;
+        }
+        entryPillars[ds] = entryPillars[ds] || {};
+        entryPillars[ds][catId] = entryPillars[ds][catId] || {};
+        entryPillars[ds][catId][lineIdx] = pillarsOrDefault(e.pillars);
+        entryIds[ds] = entryIds[ds] || {};
+        entryIds[ds][catId] = entryIds[ds][catId] || {};
+        entryIds[ds][catId][lineIdx] = e.id;
+      });
+    });
+  });
+  return { data, done, times, entryPillars, entryIds };
+}
+// Resolves the (ds, catId, lineIdx) address that Cell/CalendarView operate on
+// back to the actual underlying entry object.
+function entryAt(weekEntries, ds, catId, lineIdx) {
+  const byId = weekEntries?.[ds] || {};
+  const list = Object.values(byId)
+    .filter(e => pillarsOrDefault(e.pillars).includes(catId))
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  return list[lineIdx] || null;
+}
+// Reconciles a freshly-typed multi-line cell string against the entries that
+// previously backed that (ds, catId) cell, preserving id/done/sched/pillars
+// for lines whose position or exact text still matches, so an in-place text
+// edit doesn't lose its done-checkmark, schedule, or other pillar tags.
+function reconcileCellLines(existingList, newLines, catId) {
+  const used = new Array(existingList.length).fill(false);
+  let result;
+  if (newLines.length === existingList.length) {
+    // Line count unchanged: match purely by position, exactly like the old
+    // model always did (done/times were plain index-based arrays, so editing
+    // a line's wording in place never touched its done-state either).
+    result = newLines.map((text, i) => {
+      used[i] = true;
+      return { ...existingList[i], text };
+    });
+  } else {
+    // Line count changed (an add or a remove): match by exact text so the
+    // untouched lines keep their identity/done/sched regardless of the
+    // shift in position, and only genuinely new text becomes a new entry.
+    result = newLines.map(text => {
+      const foundIdx = existingList.findIndex((e, j) => !used[j] && e.text === text);
+      if (foundIdx !== -1) {
+        used[foundIdx] = true;
+        return existingList[foundIdx];
+      }
+      return { id: genEntryId(), text, pillars: [catId], done: false, sched: null, isNew: true };
+    });
+  }
+  return { result, used };
+}
 function autoResize(el) {
   if (!el) return;
   el.style.height = "auto";
@@ -2486,6 +2611,8 @@ function CalendarView({
   data,
   isOwnView,
   times,
+  entryPillars,
+  entryIds,
   onScheduleItem,
   onResizeItem,
   done,
@@ -2507,7 +2634,7 @@ function CalendarView({
   const [hoveredKey, setHoveredKey] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [editName, setEditName] = useState("");
-  const [editCatId, setEditCatId] = useState(null);
+  const [editPillarIds, setEditPillarIds] = useState([]);
   const [editLinkUrl, setEditLinkUrl] = useState(null);
   const [editUnscheduled, setEditUnscheduled] = useState(false);
   const [editDate, setEditDate] = useState(null);
@@ -2521,11 +2648,11 @@ function CalendarView({
     min = (min % 1440 + 1440) % 1440;
     return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
   }
-  function openEdit(ds, catId, lineIdx, text, sched) {
+  function openEdit(ds, catId, lineIdx, text, sched, allPillars) {
     const m = text.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     setEditName(m ? m[1] : text);
     setEditLinkUrl(m ? m[2] : null);
-    setEditCatId(catId);
+    setEditPillarIds(allPillars && allPillars.length ? allPillars : [catId]);
     setEditDate(ds);
     if (sched) {
       setEditUnscheduled(false);
@@ -2541,7 +2668,7 @@ function CalendarView({
   function openCreate(ds, hour, minute) {
     setEditName("");
     setEditLinkUrl(null);
-    setEditCatId(null);
+    setEditPillarIds([]);
     setEditDate(ds);
     if (hour != null) {
       setEditUnscheduled(false);
@@ -2555,12 +2682,15 @@ function CalendarView({
     }
     setEditingItem({ ds, isNew: true });
   }
+  function togglePillarForEdit(catId) {
+    setEditPillarIds(prev => prev.includes(catId) ? prev.filter(id => id !== catId) : [...prev, catId]);
+  }
   function saveEdit() {
     if (!editName.trim()) {
       setEditingItem(null);
       return;
     }
-    const finalCatId = editCatId || UNTAGGED_CAT.id;
+    const finalPillars = editPillarIds.length ? editPillarIds : [UNTAGGED_CAT.id];
     const targetDs = editDate || editingItem?.ds;
     let sched = null;
     if (!editUnscheduled) {
@@ -2571,9 +2701,9 @@ function CalendarView({
       sched = { start: editStart, duration };
     }
     if (editingItem?.isNew) {
-      if (onCreateItem) onCreateItem(targetDs, finalCatId, editName.trim(), editLinkUrl, sched);
+      if (onCreateItem) onCreateItem(targetDs, finalPillars, editName.trim(), editLinkUrl, sched);
     } else if (editingItem && onEditItem) {
-      onEditItem(editingItem.ds, editingItem.catId, editingItem.lineIdx, editName.trim(), finalCatId, editLinkUrl, sched, targetDs);
+      onEditItem(editingItem.ds, editingItem.catId, editingItem.lineIdx, editName.trim(), finalPillars, editLinkUrl, sched, targetDs);
     }
     setEditingItem(null);
   }
@@ -2713,23 +2843,60 @@ function CalendarView({
     });
     return result;
   }
+  // Builds the left-edge accent for an item: a solid color for a single
+  // pillar (unchanged from before), or stacked hard-stop color bands when
+  // tagged to more than one. Also decides the done-state fill: a single
+  // pillar keeps its own tinted fill, but a multi-pillar item uses a neutral
+  // fill instead of picking one tag's color over the others.
+  function pillarAccent(allCats, isDone) {
+    const real = (allCats || []).filter(c => c.id !== UNTAGGED_CAT.id);
+    if (real.length === 0) {
+      return { border: null, fill: isDone ? PLAN_BG : "#fff" };
+    }
+    if (real.length === 1) {
+      const c = real[0];
+      return { border: isDone ? c.color : c.color + FADE, fill: isDone ? c.bg || PLAN_BG : "#fff" };
+    }
+    const seg = 100 / real.length;
+    const stops = real.map((c, i) => {
+      const col = isDone ? c.color : c.color + FADE;
+      return `${col} ${i * seg}%, ${col} ${(i + 1) * seg}%`;
+    }).join(", ");
+    return { border: `linear-gradient(to bottom, ${stops})`, fill: isDone ? "#F0EFED" : "#fff" };
+  }
   function itemsForDay(ds) {
     const list = [];
-    [...cats, UNTAGGED_CAT].forEach(cat => {
+    const seenIds = new Set();
+    const allCatsList = [...cats, UNTAGGED_CAT];
+    const catById = {};
+    allCatsList.forEach(c => catById[c.id] = c);
+    allCatsList.forEach(cat => {
       const val = data[ds]?.[cat.id] || "";
       if (!hasEntry(val)) return;
       const lines = val.split("\n").filter(l => l.trim());
       lines.forEach((line, lineIdx) => {
+        const id = entryIds?.[ds]?.[cat.id]?.[lineIdx];
+        // An entry tagged to more than one pillar shows up once per pillar in
+        // the derived data; only keep its first (lowest pillar-order)
+        // occurrence so it renders exactly once in the calendar.
+        if (id) {
+          if (seenIds.has(id)) return;
+          seenIds.add(id);
+        }
         const sched = normalizeSched(times[ds]?.[cat.id]?.[lineIdx] || null);
         const isDone = !!done?.[ds]?.[cat.id]?.includes(lineIdx);
         const isReflected = !!(reflectedItemTexts && reflectedItemTexts.has(`${plainOf(line)}::${ds}`));
+        const allPillars = entryPillars?.[ds]?.[cat.id]?.[lineIdx] || [cat.id];
+        const allCats = allPillars.map(pid => catById[pid] || cat).filter(Boolean);
         list.push({
           cat,
           lineIdx,
           text: line,
           sched,
           isDone,
-          isReflected
+          isReflected,
+          allPillars,
+          allCats
         });
       });
     });
@@ -2748,7 +2915,7 @@ function CalendarView({
     const ideaText = e?.dataTransfer?.getData("text/plain");
     if (ideaCatId && ideaText && ideaText.trim() && onCreateItem) {
       const start = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-      onCreateItem(ds, ideaCatId, ideaText.trim(), null, { start, duration: CAL_DEFAULT_DURATION });
+      onCreateItem(ds, [ideaCatId], ideaText.trim(), null, { start, duration: CAL_DEFAULT_DURATION });
     }
     setDragOverSlot(null);
   }
@@ -2762,7 +2929,7 @@ function CalendarView({
     const ideaCatId = e?.dataTransfer?.getData("application/x-idea-cat");
     const ideaText = e?.dataTransfer?.getData("text/plain");
     if (ideaCatId && ideaText && ideaText.trim() && onCreateItem) {
-      onCreateItem(ds, ideaCatId, ideaText.trim(), null, null);
+      onCreateItem(ds, [ideaCatId], ideaText.trim(), null, null);
     }
     setDragOverSlot(null);
   }
@@ -2942,6 +3109,7 @@ function CalendarView({
       const isHoveredThis = hoveredKey === itemKey;
       const isNudgeThis = isPastOrToday && nudgeItem && nudgeItem.ds === ds && nudgeItem.catId === it.cat.id && nudgeItem.lineIdx === it.lineIdx;
       const nameColor = it.isDone ? "#1C1917" : PLAN_TEXT;
+      const accent = pillarAccent(it.allCats, it.isDone);
       return /*#__PURE__*/React.createElement("div", {
         key: itemKey,
         draggable: isOwnView,
@@ -2955,7 +3123,7 @@ function CalendarView({
         onMouseLeave: () => setHoveredKey(prev => prev === itemKey ? null : prev),
         onClick: isOwnView && onEditItem ? e => {
           e.stopPropagation();
-          openEdit(ds, it.cat.id, it.lineIdx, it.text, it.sched);
+          openEdit(ds, it.cat.id, it.lineIdx, it.text, it.sched, it.allPillars);
         } : undefined,
         title: plainOf(it.text),
         style: {
@@ -2963,14 +3131,12 @@ function CalendarView({
           fontSize: 12,
           padding: "3px 6px",
           borderRadius: 5,
-          background: it.isDone ? (it.cat.bg || PLAN_BG) : "#fff",
+          background: accent.fill,
           color: nameColor,
           borderTop: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
           borderRight: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
           borderBottom: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
-          borderLeft: it.cat.id === UNTAGGED_CAT.id
-            ? `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`
-            : `3px solid ${it.isDone ? it.cat.color : it.cat.color + FADE}`,
+          borderLeft: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
           cursor: isOwnView ? "grab" : "default",
           maxWidth: 110,
           overflow: isHoveredThis || isNudgeThis ? "visible" : "hidden",
@@ -2983,7 +3149,17 @@ function CalendarView({
           alignItems: "center",
           gap: 4
         }
-      }, /*#__PURE__*/React.createElement("span", {
+      }, accent.border && /*#__PURE__*/React.createElement("span", {
+        style: {
+          position: "absolute",
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: 3,
+          borderRadius: "5px 0 0 5px",
+          ...(accent.border.startsWith("linear-gradient") ? { backgroundImage: accent.border } : { background: accent.border })
+        }
+      }), /*#__PURE__*/React.createElement("span", {
         style: {
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -3224,6 +3400,7 @@ function CalendarView({
       const isNudgeThis = isPastOrToday && nudgeItem && nudgeItem.ds === ds && nudgeItem.catId === it.cat.id && nudgeItem.lineIdx === it.lineIdx;
       const nameColor = it.isDone ? "#1C1917" : PLAN_TEXT;
       const showTime = it.numCols === 1 && plainOf(it.text).length <= 22;
+      const accent = pillarAccent(it.allCats, it.isDone);
       return /*#__PURE__*/React.createElement("div", {
         key: itemKey,
         draggable: isOwnView && !it.isResizingThis,
@@ -3254,7 +3431,7 @@ function CalendarView({
         onMouseLeave: () => setHoveredKey(prev => prev === itemKey ? null : prev),
         onClick: isOwnView && onEditItem ? e => {
           e.stopPropagation();
-          openEdit(ds, it.cat.id, it.lineIdx, it.text, it.sched);
+          openEdit(ds, it.cat.id, it.lineIdx, it.text, it.sched, it.allPillars);
         } : undefined,
         title: `${plainOf(it.text)} (${timeLabel})`,
         style: {
@@ -3263,13 +3440,11 @@ function CalendarView({
           width: widthCalc,
           top,
           height,
-          background: it.isDone ? (it.cat.bg || PLAN_BG) : "#fff",
+          background: accent.fill,
           borderTop: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
           borderRight: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
           borderBottom: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
-          borderLeft: it.cat.id === UNTAGGED_CAT.id
-            ? `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`
-            : `3px solid ${it.isDone ? it.cat.color : it.cat.color + FADE}`,
+          borderLeft: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
           borderRadius: 4,
           padding: "0 6px",
           fontSize: 12,
@@ -3285,7 +3460,17 @@ function CalendarView({
           opacity: isDimmed(it.cat.id) ? 0.25 : 1,
           transition: "opacity 0.15s ease"
         }
-      }, /*#__PURE__*/React.createElement("div", {
+      }, accent.border && /*#__PURE__*/React.createElement("span", {
+        style: {
+          position: "absolute",
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: 3,
+          borderRadius: "4px 0 0 4px",
+          ...(accent.border.startsWith("linear-gradient") ? { backgroundImage: accent.border } : { background: accent.border })
+        }
+      }), /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           flexDirection: "row",
@@ -3539,17 +3724,17 @@ function CalendarView({
       color: "#A8A29E",
       fontWeight: 600
     }
-  }, "Pillar"), /*#__PURE__*/React.createElement("div", {
+  }, "Pillars"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexWrap: "wrap",
       gap: 6
     }
   }, cats.map(cat => {
-    const sel = editCatId === cat.id;
+    const sel = editPillarIds.includes(cat.id);
     return /*#__PURE__*/React.createElement("button", {
       key: cat.id,
-      onClick: () => setEditCatId(prev => prev === cat.id ? null : cat.id),
+      onClick: () => togglePillarForEdit(cat.id),
       style: {
         display: "flex",
         alignItems: "center",
@@ -3564,7 +3749,18 @@ function CalendarView({
         borderRadius: 20,
         padding: "4px 10px 4px 8px"
       }
-    }, /*#__PURE__*/React.createElement("span", {
+    }, sel ? /*#__PURE__*/React.createElement("svg", {
+      width: "9",
+      height: "9",
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: cat.color,
+      strokeWidth: "3",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }, /*#__PURE__*/React.createElement("polyline", {
+      points: "20 6 9 17 4 12"
+    })) : /*#__PURE__*/React.createElement("span", {
       style: {
         width: 7,
         height: 7,
@@ -3738,7 +3934,7 @@ function CalendarView({
 }
 function Planner() {
   const [offset, setOffset] = useState(0);
-  const [data, setData] = useState({});
+  const [entries, setEntries] = useState({});
   const [cats, setCats] = useState(DEFAULT_CATS);
   const [ideas, setIdeas] = useState(() => {
     try {
@@ -3781,7 +3977,6 @@ function Planner() {
   const [importedViews, setImportedViews] = useState([]);
   const [activeViewId, setActiveViewId] = useState("own");
   const [pendingImport, setPendingImport] = useState(null);
-  const [done, setDone] = useState({});
   const [userName, setUserName] = useState("");
   const [showNamePrompt, setShowNamePrompt] = useState(false);
   const [namePromptVal, setNamePromptVal] = useState("");
@@ -3802,24 +3997,54 @@ function Planner() {
   const [exportIncludeReflections, setExportIncludeReflections] = useState(false);
   const [showScience, setShowScience] = useState(false);
   const [viewMode, setViewMode] = useState("calendar");
-  const [times, setTimes] = useState({});
   const dates = weekDates(offset);
   const key = weekKey(dates);
   const timesKey = "times:" + key;
   const todayStr = ymd(new Date());
   const isFutureWeek = ymd(dates[0]) > todayStr;
+  // entries is the source of truth for the currently-loaded week; data/done/
+  // times are derived from it so every existing consumer (Cell, CalendarView,
+  // computeIntentionProgress, etc.) keeps working against the same shapes it
+  // always has.
+  const legacyView = React.useMemo(() => deriveLegacyView(entries), [entries]);
+  const data = legacyView.data;
+  const done = legacyView.done;
+  const times = legacyView.times;
+  const entryPillars = legacyView.entryPillars;
+  const entryIds = legacyView.entryIds;
+  function updateEntries(updater) {
+    setEntries(prev => {
+      const next = updater(prev);
+      store.set(key, JSON.stringify(packWeekEntries(next)));
+      return next;
+    });
+  }
   useEffect(() => {
     try {
       const r = store.get(key);
-      setData(r ? JSON.parse(r.value) : {});
+      const raw = r ? JSON.parse(r.value) : null;
+      let doneBlob = {}, timesBlob = {};
+      if (!(raw && raw.__v === 2)) {
+        // Legacy week: pull the old global done blob and this week's old
+        // times blob once, purely to seed the one-time migration below.
+        try {
+          const dr = store.get("planner:done");
+          doneBlob = dr ? JSON.parse(dr.value) : {};
+        } catch {}
+        try {
+          const tr = store.get(timesKey);
+          timesBlob = tr ? JSON.parse(tr.value) : {};
+        } catch {}
+      }
+      const weekEntries = loadWeekEntries(raw, doneBlob, timesBlob);
+      setEntries(weekEntries);
+      if (!(raw && raw.__v === 2) && raw) {
+        // Persist the upgraded shape immediately so this week won't need to
+        // be migrated again next time it's opened.
+        store.set(key, JSON.stringify(packWeekEntries(weekEntries)));
+      }
     } catch {
-      setData({});
-    }
-    try {
-      const r = store.get(timesKey);
-      setTimes(r ? JSON.parse(r.value) : {});
-    } catch {
-      setTimes({});
+      setEntries({});
     }
   }, [key]);
   useEffect(() => {
@@ -3842,10 +4067,6 @@ function Planner() {
     try {
       const r = store.get("planner:userName");
       if (r) setUserName(r.value);
-    } catch {}
-    try {
-      const r = store.get("planner:done");
-      if (r) setDone(JSON.parse(r.value));
     } catch {}
     try {
       const r = store.get("planner:ratings");
@@ -3877,6 +4098,8 @@ function Planner() {
   const displayGoals = activeView ? activeView.goals : goals;
   const displayDone = activeView ? activeView.done || {} : done;
   const displayTimes = activeView ? {} : times;
+  const displayEntryPillars = activeView ? activeView.entryPillars || {} : entryPillars;
+  const displayEntryIds = activeView ? activeView.entryIds || {} : entryIds;
   const displayRatings = activeView ? activeView.ratings || {} : ratings;
   function getGoal(catId) {
     return displayGoals[catId] ?? null;
@@ -3920,74 +4143,74 @@ function Planner() {
       setDraggingCell(null);
       return;
     }
-    const {
-      ds: srcDs,
-      catId: srcCatId,
-      val
-    } = dc;
-    const next = {
-      ...data
-    };
-    if (next[srcDs]) {
-      const d = {
-        ...next[srcDs]
-      };
-      delete d[srcCatId];
-      Object.keys(d).length === 0 ? delete next[srcDs] : next[srcDs] = d;
-    }
-    const existing = next[targetDs]?.[targetCatId] || "";
-    next[targetDs] = {
-      ...next[targetDs],
-      [targetCatId]: hasEntry(existing) ? existing + "\n" + val : val
-    };
-    setData(next);
-    store.set(key, JSON.stringify(next));
+    const { ds: srcDs, catId: srcCatId } = dc;
+    updateEntries(prev => {
+      const srcList = Object.values(prev[srcDs] || {})
+        .filter(e => pillarsOrDefault(e.pillars).includes(srcCatId))
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      if (srcList.length === 0) return prev;
+      const next = { ...prev };
+      const srcBucket = { ...(next[srcDs] || {}) };
+      srcList.forEach(e => delete srcBucket[e.id]);
+      if (Object.keys(srcBucket).length === 0) delete next[srcDs];else next[srcDs] = srcBucket;
+      const targetBucket = { ...(next[targetDs] || {}) };
+      let order = Object.values(targetBucket).reduce((m, e) => Math.max(m, e.order ?? 0), -1) + 1;
+      srcList.forEach(e => {
+        const pillars = targetCatId === srcCatId ? pillarsOrDefault(e.pillars) : Array.from(new Set([...pillarsOrDefault(e.pillars), targetCatId]));
+        targetBucket[e.id] = { ...e, pillars, order: order++ };
+      });
+      next[targetDs] = targetBucket;
+      return next;
+    });
     setDraggingCell(null);
   }
   function saveEntry(ds, cid, text) {
     if (!isOwnView) return;
-    const wasEmpty = !hasEntry(data[ds]?.[cid]);
-    const next = {
-      ...data,
-      [ds]: {
-        ...data[ds],
-        [cid]: text
-      }
-    };
-    if (!text) delete next[ds][cid];
-    if (next[ds] && Object.keys(next[ds]).length === 0) delete next[ds];
-    setData(next);
-    store.set(key, JSON.stringify(next));
-    // Auto-mark all lines as done when entering a NEW item into a past day cell
-    if (text && wasEmpty && ds < todayStr) {
-      const newLines = text.split("\n").filter(l => l.trim());
-      const lineIndices = newLines.map((_, i) => i);
-      const nextDone = {
-        ...done,
-        [ds]: {
-          ...(done[ds] || {}),
-          [cid]: lineIndices
-        }
-      };
-      setDone(nextDone);
-      store.set("planner:done", JSON.stringify(nextDone));
-    }
+    updateEntries(prev => {
+      const byId = prev[ds] || {};
+      const existingList = Object.values(byId)
+        .filter(e => pillarsOrDefault(e.pillars).includes(cid))
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      const wasEmpty = existingList.length === 0;
+      const newLines = text ? text.split("\n").filter(l => l.trim()) : [];
+      // Auto-mark all lines as done when entering a NEW item into a past day cell
+      const autoMarkDone = newLines.length > 0 && wasEmpty && ds < todayStr;
+      const { result: reconciled } = reconcileCellLines(existingList, newLines, cid);
+      const keptIds = new Set(reconciled.map(e => e.id));
+      const nextDs = { ...byId };
+      existingList.forEach(e => {
+        if (keptIds.has(e.id)) return;
+        // No longer present in this pillar's lines: drop just this tag if the
+        // entry has others, otherwise delete it outright.
+        const remaining = pillarsOrDefault(e.pillars).filter(p => p !== cid);
+        if (remaining.length > 0) nextDs[e.id] = { ...e, pillars: remaining };else delete nextDs[e.id];
+      });
+      let order = Object.values(nextDs).reduce((m, e) => Math.max(m, e.order ?? 0), -1) + 1;
+      reconciled.forEach(e => {
+        const carried = byId[e.id];
+        nextDs[e.id] = {
+          id: e.id,
+          text: e.text,
+          pillars: carried ? pillarsOrDefault(carried.pillars) : [cid],
+          done: carried ? carried.done : autoMarkDone,
+          sched: carried ? carried.sched : null,
+          order: carried ? carried.order : order++
+        };
+      });
+      const next = { ...prev };
+      if (Object.keys(nextDs).length === 0) delete next[ds];else next[ds] = nextDs;
+      return next;
+    });
   }
   function toggleDone(ds, catId, lineIdx) {
     if (!isOwnView) return;
-    const dayDone = done[ds] || {};
-    const catSet = new Set(dayDone[catId] || []);
-    const isChecking = !catSet.has(lineIdx);
-    if (catSet.has(lineIdx)) catSet.delete(lineIdx);else catSet.add(lineIdx);
-    const next = {
-      ...done,
-      [ds]: {
-        ...dayDone,
-        [catId]: [...catSet]
-      }
-    };
-    setDone(next);
-    store.set("planner:done", JSON.stringify(next));
+    const e = entryAt(entries, ds, catId, lineIdx);
+    if (!e) return;
+    const isChecking = !e.done;
+    updateEntries(prev => ({
+      ...prev,
+      [ds]: { ...prev[ds], [e.id]: { ...prev[ds][e.id], done: isChecking } }
+    }));
     if (isChecking && !(ds > todayStr)) {
       setNudgeItem({
         ds,
@@ -4199,12 +4422,6 @@ function Planner() {
         if (r) setGoals(JSON.parse(r.value));
       } catch {}
       try {
-        const r = store.get("planner:done");
-        if (r) setDone(JSON.parse(r.value));else setDone({});
-      } catch {
-        setDone({});
-      }
-      try {
         const r = store.get("planner:ratings");
         if (r) setRatings(JSON.parse(r.value));else setRatings({});
       } catch {
@@ -4218,9 +4435,21 @@ function Planner() {
       }
       try {
         const r = store.get(key);
-        setData(r ? JSON.parse(r.value) : {});
+        const raw = r ? JSON.parse(r.value) : null;
+        let doneBlob = {}, timesBlob = {};
+        if (!(raw && raw.__v === 2)) {
+          try {
+            const dr = store.get("planner:done");
+            doneBlob = dr ? JSON.parse(dr.value) : {};
+          } catch {}
+          try {
+            const tr = store.get(timesKey);
+            timesBlob = tr ? JSON.parse(tr.value) : {};
+          } catch {}
+        }
+        setEntries(loadWeekEntries(raw, doneBlob, timesBlob));
       } catch {
-        setData({});
+        setEntries({});
       }
       setActiveViewId("own");
       setPendingImport(null);
@@ -4234,18 +4463,32 @@ function Planner() {
       const exportedAt = meta.exportedAt ? new Date(meta.exportedAt) : new Date();
       const exName = meta.exportedBy || "Friend";
       const dateStr = `${MONTHS_S[exportedAt.getMonth()]} ${exportedAt.getDate()}, ${exportedAt.getFullYear()}`;
-      const allData = {};
+      // Merge every week in the imported file into one entries store, upgrading
+      // any weeks still in the old legacy shape along the way, then derive the
+      // legacy view once for display — works the same whether the backup came
+      // from an old or new version of the planner.
+      const viewDoneRaw = obj["planner:done"] ? JSON.parse(obj["planner:done"]) : {};
+      const weekEntriesAll = {};
       Object.entries(obj).forEach(([k, v]) => {
         if (k.startsWith("planner:week:")) {
           try {
-            Object.assign(allData, JSON.parse(v));
+            const parsed = JSON.parse(v);
+            const isV2 = parsed && parsed.__v === 2 && parsed.entries;
+            let weekEntries;
+            if (isV2) {
+              weekEntries = parsed.entries;
+            } else {
+              const timesRaw = obj["times:" + k] ? JSON.parse(obj["times:" + k]) : {};
+              weekEntries = migrateWeekToEntries(parsed, viewDoneRaw, timesRaw);
+            }
+            Object.assign(weekEntriesAll, weekEntries);
           } catch (e) {}
         }
       });
+      const derivedView = deriveLegacyView(weekEntriesAll);
       const viewCats = obj["planner:cats"] ? JSON.parse(obj["planner:cats"]) : DEFAULT_CATS;
       const viewIdeas = obj["planner:ideas"] ? JSON.parse(obj["planner:ideas"]) : {};
       const viewGoals = obj["planner:goals"] ? JSON.parse(obj["planner:goals"]) : {};
-      const viewDone = obj["planner:done"] ? JSON.parse(obj["planner:done"]) : {};
       const viewRatings = obj["planner:ratings"] ? JSON.parse(obj["planner:ratings"]) : {};
       const newView = {
         id: `view_${Date.now()}`,
@@ -4253,8 +4496,10 @@ function Planner() {
         cats: viewCats,
         ideas: viewIdeas,
         goals: viewGoals,
-        allData,
-        done: viewDone,
+        allData: derivedView.data,
+        done: derivedView.done,
+        entryPillars: derivedView.entryPillars,
+        entryIds: derivedView.entryIds,
         ratings: viewRatings
       };
       const updated = [...importedViews, newView];
@@ -4282,11 +4527,10 @@ function Planner() {
         localStorage.removeItem(k);
       }
     }
-    setData({});
+    setEntries({});
     setCats(DEFAULT_CATS);
     setIdeas({});
     setGoals({});
-    setDone({});
     setRatings({});
     setJournal({});
     setUserName("");
@@ -4523,50 +4767,34 @@ function Planner() {
   }
   function handleLineCellMove(e, targetDs, targetCatId) {
     if (!draggingLine) return;
-    const {
-      ds: srcDs,
-      catId: srcCatId,
-      lineIdx
-    } = draggingLine;
+    const { ds: srcDs, catId: srcCatId, lineIdx } = draggingLine;
     if (srcDs === targetDs && srcCatId === targetCatId) return;
-    const lineText = (e.dataTransfer.getData("text/plain") || "").trim();
-    if (!lineText) return;
-    const next = {
-      ...data
-    };
-    const srcLines = (next[srcDs]?.[srcCatId] || "").split("\n").filter(l => l.trim());
-    srcLines.splice(lineIdx, 1);
-    if (srcLines.length === 0) {
-      if (next[srcDs]) {
-        delete next[srcDs][srcCatId];
-        if (Object.keys(next[srcDs]).length === 0) delete next[srcDs];
-      }
-    } else {
-      next[srcDs] = {
-        ...(next[srcDs] || {}),
-        [srcCatId]: srcLines.join("\n")
-      };
-    }
-    const tgt = next[targetDs]?.[targetCatId] || "";
-    next[targetDs] = {
-      ...(next[targetDs] || {}),
-      [targetCatId]: hasEntry(tgt) ? tgt + "\n" + lineText : lineText
-    };
-    setData(next);
-    store.set(key, JSON.stringify(next));
+    const entry = entryAt(entries, srcDs, srcCatId, lineIdx);
+    if (!entry) return;
+    updateEntries(prev => {
+      const next = { ...prev };
+      const srcBucket = { ...(next[srcDs] || {}) };
+      delete srcBucket[entry.id];
+      if (Object.keys(srcBucket).length === 0) delete next[srcDs];else next[srcDs] = srcBucket;
+      const targetBucket = { ...(next[targetDs] || {}) };
+      const pillars = targetCatId === srcCatId ? pillarsOrDefault(entry.pillars) : Array.from(new Set([...pillarsOrDefault(entry.pillars), targetCatId]));
+      const order = Object.values(targetBucket).reduce((m, x) => Math.max(m, x.order ?? 0), -1) + 1;
+      targetBucket[entry.id] = { ...entry, pillars, order };
+      next[targetDs] = targetBucket;
+      return next;
+    });
     setDraggingLine(null);
   }
   function updateItemTime(ds, catId, lineIdx, timeStr) {
-    setTimes(prev => {
-      const next = { ...prev };
-      const dayTimes = { ...(next[ds] || {}) };
-      const catTimes = { ...(dayTimes[catId] || {}) };
-      if (timeStr) catTimes[lineIdx] = timeStr;else delete catTimes[lineIdx];
-      dayTimes[catId] = catTimes;
-      next[ds] = dayTimes;
-      store.set(timesKey, JSON.stringify(next));
-      return next;
-    });
+    const e = entryAt(entries, ds, catId, lineIdx);
+    if (!e) return;
+    updateEntries(prev => ({
+      ...prev,
+      [ds]: {
+        ...prev[ds],
+        [e.id]: { ...prev[ds][e.id], sched: timeStr ? { start: timeStr, duration: prev[ds][e.id].sched?.duration || CAL_DEFAULT_DURATION } : null }
+      }
+    }));
   }
   function scheduleItem(srcDs, catId, srcLineIdx, targetDs, timeStr) {
     if (!isOwnView) return;
@@ -4574,208 +4802,88 @@ function Planner() {
       updateItemTime(srcDs, catId, srcLineIdx, timeStr);
       return;
     }
-    const nextData = { ...data };
-    const srcLines = (nextData[srcDs]?.[catId] || "").split("\n").filter(l => l.trim());
-    const lineText = srcLines[srcLineIdx];
-    if (lineText === undefined) return;
-    srcLines.splice(srcLineIdx, 1);
-    if (srcLines.length === 0) {
-      if (nextData[srcDs]) {
-        const d2 = { ...nextData[srcDs] };
-        delete d2[catId];
-        if (Object.keys(d2).length === 0) delete nextData[srcDs];else nextData[srcDs] = d2;
-      }
-    } else {
-      nextData[srcDs] = { ...(nextData[srcDs] || {}), [catId]: srcLines.join("\n") };
-    }
-    const targetLines = (nextData[targetDs]?.[catId] || "").split("\n").filter(l => l.trim());
-    const newLineIdx = targetLines.length;
-    targetLines.push(lineText);
-    nextData[targetDs] = { ...(nextData[targetDs] || {}), [catId]: targetLines.join("\n") };
-    setData(nextData);
-    store.set(key, JSON.stringify(nextData));
-    setTimes(prevTimes => {
-      const next = { ...prevTimes };
-      const srcCatTimes = { ...(next[srcDs]?.[catId] || {}) };
-      delete srcCatTimes[srcLineIdx];
-      const shiftedSrcCatTimes = {};
-      Object.entries(srcCatTimes).forEach(([idx, t]) => {
-        const iN = parseInt(idx, 10);
-        shiftedSrcCatTimes[iN > srcLineIdx ? iN - 1 : iN] = t;
-      });
-      next[srcDs] = { ...(next[srcDs] || {}), [catId]: shiftedSrcCatTimes };
-      const targetCatTimes = { ...(next[targetDs]?.[catId] || {}) };
-      if (timeStr) targetCatTimes[newLineIdx] = timeStr;else delete targetCatTimes[newLineIdx];
-      next[targetDs] = { ...(next[targetDs] || {}), [catId]: targetCatTimes };
-      store.set(timesKey, JSON.stringify(next));
+    const e = entryAt(entries, srcDs, catId, srcLineIdx);
+    if (!e) return;
+    updateEntries(prev => {
+      const next = { ...prev };
+      const srcBucket = { ...(next[srcDs] || {}) };
+      delete srcBucket[e.id];
+      if (Object.keys(srcBucket).length === 0) delete next[srcDs];else next[srcDs] = srcBucket;
+      const targetBucket = { ...(next[targetDs] || {}) };
+      const order = Object.values(targetBucket).reduce((m, x) => Math.max(m, x.order ?? 0), -1) + 1;
+      targetBucket[e.id] = { ...e, sched: timeStr ? { start: timeStr, duration: e.sched?.duration || CAL_DEFAULT_DURATION } : null, order };
+      next[targetDs] = targetBucket;
       return next;
     });
   }
   function resizeItem(ds, catId, lineIdx, newDuration) {
     if (!isOwnView) return;
-    setTimes(prev => {
-      const next = { ...prev };
-      const dayTimes = { ...(next[ds] || {}) };
-      const catTimes = { ...(dayTimes[catId] || {}) };
-      const existing = catTimes[lineIdx];
-      const start = existing ? (typeof existing === "string" ? existing : existing.start) : "09:00";
-      catTimes[lineIdx] = { start, duration: newDuration };
-      dayTimes[catId] = catTimes;
-      next[ds] = dayTimes;
-      store.set(timesKey, JSON.stringify(next));
-      return next;
-    });
+    const e = entryAt(entries, ds, catId, lineIdx);
+    if (!e) return;
+    const start = e.sched?.start || "09:00";
+    updateEntries(prev => ({
+      ...prev,
+      [ds]: { ...prev[ds], [e.id]: { ...prev[ds][e.id], sched: { start, duration: newDuration } } }
+    }));
   }
   function setItemLink(ds, catId, lineIdx, url) {
     if (!isOwnView) return;
-    const lines = (data[ds]?.[catId] || "").split("\n").filter(l => l.trim());
-    if (lines[lineIdx] === undefined) return;
-    const plain = lines[lineIdx].replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
-    lines[lineIdx] = url ? `[${plain}](${url})` : plain;
-    const nextData = { ...data, [ds]: { ...(data[ds] || {}), [catId]: lines.join("\n") } };
-    setData(nextData);
-    store.set(key, JSON.stringify(nextData));
+    const e = entryAt(entries, ds, catId, lineIdx);
+    if (!e) return;
+    const plain = e.text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+    const newText = url ? `[${plain}](${url})` : plain;
+    updateEntries(prev => ({
+      ...prev,
+      [ds]: { ...prev[ds], [e.id]: { ...prev[ds][e.id], text: newText } }
+    }));
   }
   function deleteCalendarItem(ds, catId, lineIdx) {
     if (!isOwnView) return;
-    const lines = (data[ds]?.[catId] || "").split("\n").filter(l => l.trim());
-    if (lines[lineIdx] === undefined) return;
-    lines.splice(lineIdx, 1);
-    const nextData = { ...data };
-    if (lines.length === 0) {
-      if (nextData[ds]) {
-        const d2 = { ...nextData[ds] };
-        delete d2[catId];
-        if (Object.keys(d2).length === 0) delete nextData[ds];else nextData[ds] = d2;
-      }
-    } else {
-      nextData[ds] = { ...(nextData[ds] || {}), [catId]: lines.join("\n") };
-    }
-    setData(nextData);
-    store.set(key, JSON.stringify(nextData));
-    function shiftIndices(obj) {
-      const next = {};
-      Object.entries(obj || {}).forEach(([idx, v]) => {
-        const iN = parseInt(idx, 10);
-        if (iN === lineIdx) return;
-        next[iN > lineIdx ? iN - 1 : iN] = v;
-      });
-      return next;
-    }
-    setTimes(prev => {
+    const e = entryAt(entries, ds, catId, lineIdx);
+    if (!e) return;
+    updateEntries(prev => {
+      const bucket = { ...(prev[ds] || {}) };
+      // Removing an item from one pillar's column only strips that tag if
+      // the entry is tagged to others; otherwise it's deleted entirely.
+      const remaining = pillarsOrDefault(e.pillars).filter(p => p !== catId);
+      if (remaining.length > 0) bucket[e.id] = { ...e, pillars: remaining };else delete bucket[e.id];
       const next = { ...prev };
-      next[ds] = { ...(next[ds] || {}), [catId]: shiftIndices(next[ds]?.[catId]) };
-      store.set(timesKey, JSON.stringify(next));
-      return next;
-    });
-    setDone(prev => {
-      const dayDone = prev[ds] || {};
-      const catSet = new Set(dayDone[catId] || []);
-      catSet.delete(lineIdx);
-      const shifted = [...catSet].map(i => i > lineIdx ? i - 1 : i);
-      const next = { ...prev, [ds]: { ...dayDone, [catId]: shifted } };
-      store.set("planner:done", JSON.stringify(next));
+      if (Object.keys(bucket).length === 0) delete next[ds];else next[ds] = bucket;
       return next;
     });
   }
-  function editCalendarItem(ds, catId, lineIdx, newText, newCatId, linkUrl, newSched, newDs) {
+  function editCalendarItem(ds, catId, lineIdx, newText, newPillars, linkUrl, newSched, newDs) {
     if (!isOwnView) return;
     const finalText = linkUrl ? `[${newText}](${linkUrl})` : newText;
     if (!finalText.trim()) return;
+    const e = entryAt(entries, ds, catId, lineIdx);
+    if (!e) return;
     const targetDs = newDs || ds;
-    const targetCatId = newCatId || catId;
-    if (targetDs === ds && targetCatId === catId) {
-      const lines = (data[ds]?.[catId] || "").split("\n").filter(l => l.trim());
-      if (lines[lineIdx] === undefined) return;
-      lines[lineIdx] = finalText;
-      const nextData = { ...data, [ds]: { ...(data[ds] || {}), [catId]: lines.join("\n") } };
-      setData(nextData);
-      store.set(key, JSON.stringify(nextData));
-      setTimes(prev => {
-        const next = { ...prev };
-        const dayTimes = { ...(next[ds] || {}) };
-        const catTimes = { ...(dayTimes[catId] || {}) };
-        if (newSched) catTimes[lineIdx] = newSched;else delete catTimes[lineIdx];
-        dayTimes[catId] = catTimes;
-        next[ds] = dayTimes;
-        store.set(timesKey, JSON.stringify(next));
-        return next;
-      });
-      return;
-    }
-    const nextData = { ...data };
-    const srcLines = (nextData[ds]?.[catId] || "").split("\n").filter(l => l.trim());
-    if (srcLines[lineIdx] === undefined) return;
-    srcLines.splice(lineIdx, 1);
-    if (srcLines.length === 0) {
-      if (nextData[ds]) {
-        const d2 = { ...nextData[ds] };
-        delete d2[catId];
-        if (Object.keys(d2).length === 0) delete nextData[ds];else nextData[ds] = d2;
-      }
-    } else {
-      nextData[ds] = { ...(nextData[ds] || {}), [catId]: srcLines.join("\n") };
-    }
-    const targetLines = (nextData[targetDs]?.[targetCatId] || "").split("\n").filter(l => l.trim());
-    const newLineIdx = targetLines.length;
-    targetLines.push(finalText);
-    nextData[targetDs] = { ...(nextData[targetDs] || {}), [targetCatId]: targetLines.join("\n") };
-    setData(nextData);
-    store.set(key, JSON.stringify(nextData));
-    setTimes(prev => {
+    const finalPillars = newPillars && newPillars.length ? newPillars : pillarsOrDefault(e.pillars);
+    updateEntries(prev => {
       const next = { ...prev };
-      const srcCatTimes = { ...(next[ds]?.[catId] || {}) };
-      delete srcCatTimes[lineIdx];
-      const shifted = {};
-      Object.entries(srcCatTimes).forEach(([idx, t]) => {
-        const iN = parseInt(idx, 10);
-        shifted[iN > lineIdx ? iN - 1 : iN] = t;
-      });
-      next[ds] = { ...(next[ds] || {}), [catId]: shifted };
-      const targetCatTimes = { ...(next[targetDs]?.[targetCatId] || {}) };
-      if (newSched) targetCatTimes[newLineIdx] = newSched;else delete targetCatTimes[newLineIdx];
-      next[targetDs] = { ...(next[targetDs] || {}), [targetCatId]: targetCatTimes };
-      store.set(timesKey, JSON.stringify(next));
-      return next;
-    });
-    setDone(prev => {
-      const dayDone = prev[ds] || {};
-      const targetDayDone = prev[targetDs] || {};
-      const srcSet = new Set(dayDone[catId] || []);
-      const wasDone = srcSet.has(lineIdx);
-      srcSet.delete(lineIdx);
-      const shiftedSrc = [...srcSet].map(i => i > lineIdx ? i - 1 : i);
-      const next = { ...prev };
-      next[ds] = { ...dayDone, [catId]: shiftedSrc };
-      const targetSet = new Set((next[targetDs] || targetDayDone)[targetCatId] || []);
-      if (wasDone) targetSet.add(newLineIdx);
-      next[targetDs] = { ...(next[targetDs] || targetDayDone), [targetCatId]: [...targetSet] };
-      store.set("planner:done", JSON.stringify(next));
+      const srcBucket = { ...(next[ds] || {}) };
+      delete srcBucket[e.id];
+      if (Object.keys(srcBucket).length === 0) delete next[ds];else next[ds] = srcBucket;
+      const targetBucket = { ...(next[targetDs] || {}) };
+      const order = targetDs === ds ? e.order : Object.values(targetBucket).reduce((m, x) => Math.max(m, x.order ?? 0), -1) + 1;
+      targetBucket[e.id] = { ...e, text: finalText, pillars: finalPillars, sched: newSched || null, order };
+      next[targetDs] = targetBucket;
       return next;
     });
   }
-  function createCalendarItem(ds, catId, name, linkUrl, sched) {
+  function createCalendarItem(ds, pillars, name, linkUrl, sched) {
     if (!isOwnView) return;
     const finalText = linkUrl ? `[${name}](${linkUrl})` : name;
     if (!finalText.trim()) return;
-    const lines = (data[ds]?.[catId] || "").split("\n").filter(l => l.trim());
-    const newLineIdx = lines.length;
-    lines.push(finalText);
-    const nextData = { ...data, [ds]: { ...(data[ds] || {}), [catId]: lines.join("\n") } };
-    setData(nextData);
-    store.set(key, JSON.stringify(nextData));
-    if (sched) {
-      setTimes(prev => {
-        const next = { ...prev };
-        const dayTimes = { ...(next[ds] || {}) };
-        const catTimes = { ...(dayTimes[catId] || {}) };
-        catTimes[newLineIdx] = sched;
-        dayTimes[catId] = catTimes;
-        next[ds] = dayTimes;
-        store.set(timesKey, JSON.stringify(next));
-        return next;
-      });
-    }
+    const finalPillars = pillarsOrDefault(pillars);
+    updateEntries(prev => {
+      const bucket = { ...(prev[ds] || {}) };
+      const order = Object.values(bucket).reduce((m, x) => Math.max(m, x.order ?? 0), -1) + 1;
+      const id = genEntryId();
+      bucket[id] = { id, text: finalText, pillars: finalPillars, done: false, sched: sched || null, order };
+      return { ...prev, [ds]: bucket };
+    });
   }
   const totalFilled = displayCats.reduce((s, cat) => s + dates.filter(d => hasEntry(displayData[ymd(d)]?.[cat.id])).length, 0);
   const colTemplate = `${LABEL_W}px repeat(7,1fr)`;
@@ -5183,6 +5291,8 @@ function Planner() {
     data: displayData,
     isOwnView: isOwnView,
     times: displayTimes,
+    entryPillars: displayEntryPillars,
+    entryIds: displayEntryIds,
     onScheduleItem: scheduleItem,
     onResizeItem: resizeItem,
     done: displayDone,
@@ -5194,8 +5304,8 @@ function Planner() {
     onReflect: isOwnView ? (text, catLabel, catColor, ds, wasCompleted) => openReflectWithItem(text, catLabel, catColor, ds, wasCompleted) : null,
     onSetLink: isOwnView ? (ds, catId, lineIdx, url) => setItemLink(ds, catId, lineIdx, url) : null,
     onDeleteItem: isOwnView ? (ds, catId, lineIdx) => deleteCalendarItem(ds, catId, lineIdx) : null,
-    onEditItem: isOwnView ? (ds, catId, lineIdx, newText, newCatId, linkUrl, newSched, newDs) => editCalendarItem(ds, catId, lineIdx, newText, newCatId, linkUrl, newSched, newDs) : null,
-    onCreateItem: isOwnView ? (ds, catId, name, linkUrl, sched) => createCalendarItem(ds, catId, name, linkUrl, sched) : null,
+    onEditItem: isOwnView ? (ds, catId, lineIdx, newText, newPillars, linkUrl, newSched, newDs) => editCalendarItem(ds, catId, lineIdx, newText, newPillars, linkUrl, newSched, newDs) : null,
+    onCreateItem: isOwnView ? (ds, pillars, name, linkUrl, sched) => createCalendarItem(ds, pillars, name, linkUrl, sched) : null,
     onOpenPillarSidebar: isOwnView ? (catId) => openIdeasSidebar(catId) : null,
     onAddPillar: isOwnView ? addCat : null
   }) : /*#__PURE__*/React.createElement("div", {
@@ -5717,7 +5827,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v7.28.8")), (() => {
+  }, "v7.28.10")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
