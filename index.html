@@ -504,6 +504,35 @@ function genEntryId() {
 function pillarsOrDefault(pillars) {
   return Array.isArray(pillars) && pillars.length ? pillars : [UNTAGGED_CAT.id];
 }
+// Guarantees a schedule is either null or a well-formed {start,duration}
+// with a plain time-string start. Also repairs the one known corruption
+// shape (a full sched object nested inside .start, from a bug where a
+// {start,duration} object was passed where a bare time string was expected)
+// so already-saved data self-heals on load instead of crashing the render.
+function sanitizeSched(sched) {
+  if (!sched) return null;
+  if (typeof sched === "string") return { start: sched, duration: CAL_DEFAULT_DURATION };
+  if (typeof sched !== "object") return null;
+  let start = sched.start;
+  let duration = typeof sched.duration === "number" ? sched.duration : CAL_DEFAULT_DURATION;
+  while (start && typeof start === "object") {
+    duration = typeof start.duration === "number" ? start.duration : duration;
+    start = start.start;
+  }
+  if (typeof start !== "string" || !/^\d{1,2}:\d{2}$/.test(start)) return null;
+  return { start, duration };
+}
+// Every write path that schedules an item funnels through here: accepts
+// either a plain time string (the common case) or an already-complete
+// {start,duration} object (e.g. when a drag preserves an existing
+// duration), and always produces a sanitized, well-formed result.
+function resolveSchedInput(timeStr, fallbackDuration) {
+  if (!timeStr) return null;
+  if (typeof timeStr === "string") {
+    return sanitizeSched({ start: timeStr, duration: fallbackDuration || CAL_DEFAULT_DURATION });
+  }
+  return sanitizeSched(timeStr);
+}
 // One-time upgrade of a week's legacy-shaped data (+ the done/times blobs that
 // used to live alongside it) into the new entry-object shape. Every migrated
 // entry keeps exactly the one pillar it already had.
@@ -518,7 +547,7 @@ function migrateWeekToEntries(oldData, oldDone, oldTimes) {
         const id = genEntryId();
         const doneArr = oldDone?.[ds]?.[catId] || [];
         const rawSched = oldTimes?.[ds]?.[catId]?.[lineIdx] || null;
-        const sched = rawSched ? (typeof rawSched === "string" ? { start: rawSched, duration: CAL_DEFAULT_DURATION } : rawSched) : null;
+        const sched = sanitizeSched(rawSched);
         weekEntries[ds] = weekEntries[ds] || {};
         weekEntries[ds][id] = {
           id,
@@ -537,8 +566,16 @@ function migrateWeekToEntries(oldData, oldDone, oldTimes) {
 // shape (detected by the absence of the __v:2 envelope).
 function loadWeekEntries(rawJson, doneBlob, timesBlob) {
   if (!rawJson) return {};
-  if (rawJson.__v === 2 && rawJson.entries) return rawJson.entries;
-  return migrateWeekToEntries(rawJson, doneBlob, timesBlob);
+  const weekEntries = rawJson.__v === 2 && rawJson.entries ? rawJson.entries : migrateWeekToEntries(rawJson, doneBlob, timesBlob);
+  // Self-heal: repair any entry whose schedule was corrupted by a prior bug
+  // (a full sched object nested inside .start) so already-saved data loads
+  // and displays correctly rather than throwing during render.
+  Object.values(weekEntries).forEach(byId => {
+    Object.values(byId).forEach(e => {
+      e.sched = sanitizeSched(e.sched);
+    });
+  });
+  return weekEntries;
 }
 function packWeekEntries(weekEntries) {
   return { __v: 2, entries: weekEntries };
@@ -4038,9 +4075,10 @@ function Planner() {
       }
       const weekEntries = loadWeekEntries(raw, doneBlob, timesBlob);
       setEntries(weekEntries);
-      if (!(raw && raw.__v === 2) && raw) {
-        // Persist the upgraded shape immediately so this week won't need to
-        // be migrated again next time it's opened.
+      if (raw) {
+        // Persist the migrated/healed shape immediately — covers both a
+        // legacy week being upgraded and an already-v2 week whose schedule
+        // needed repairing, so the fix sticks in storage, not just this render.
         store.set(key, JSON.stringify(packWeekEntries(weekEntries)));
       }
     } catch {
@@ -4447,7 +4485,9 @@ function Planner() {
             timesBlob = tr ? JSON.parse(tr.value) : {};
           } catch {}
         }
-        setEntries(loadWeekEntries(raw, doneBlob, timesBlob));
+        const loaded = loadWeekEntries(raw, doneBlob, timesBlob);
+        setEntries(loaded);
+        if (raw) store.set(key, JSON.stringify(packWeekEntries(loaded)));
       } catch {
         setEntries({});
       }
@@ -4788,11 +4828,12 @@ function Planner() {
   function updateItemTime(ds, catId, lineIdx, timeStr) {
     const e = entryAt(entries, ds, catId, lineIdx);
     if (!e) return;
+    const sched = resolveSchedInput(timeStr, e.sched?.duration);
     updateEntries(prev => ({
       ...prev,
       [ds]: {
         ...prev[ds],
-        [e.id]: { ...prev[ds][e.id], sched: timeStr ? { start: timeStr, duration: prev[ds][e.id].sched?.duration || CAL_DEFAULT_DURATION } : null }
+        [e.id]: { ...prev[ds][e.id], sched }
       }
     }));
   }
@@ -4804,6 +4845,7 @@ function Planner() {
     }
     const e = entryAt(entries, srcDs, catId, srcLineIdx);
     if (!e) return;
+    const sched = resolveSchedInput(timeStr, e.sched?.duration);
     updateEntries(prev => {
       const next = { ...prev };
       const srcBucket = { ...(next[srcDs] || {}) };
@@ -4811,7 +4853,7 @@ function Planner() {
       if (Object.keys(srcBucket).length === 0) delete next[srcDs];else next[srcDs] = srcBucket;
       const targetBucket = { ...(next[targetDs] || {}) };
       const order = Object.values(targetBucket).reduce((m, x) => Math.max(m, x.order ?? 0), -1) + 1;
-      targetBucket[e.id] = { ...e, sched: timeStr ? { start: timeStr, duration: e.sched?.duration || CAL_DEFAULT_DURATION } : null, order };
+      targetBucket[e.id] = { ...e, sched, order };
       next[targetDs] = targetBucket;
       return next;
     });
@@ -4821,9 +4863,10 @@ function Planner() {
     const e = entryAt(entries, ds, catId, lineIdx);
     if (!e) return;
     const start = e.sched?.start || "09:00";
+    const sched = sanitizeSched({ start, duration: newDuration });
     updateEntries(prev => ({
       ...prev,
-      [ds]: { ...prev[ds], [e.id]: { ...prev[ds][e.id], sched: { start, duration: newDuration } } }
+      [ds]: { ...prev[ds], [e.id]: { ...prev[ds][e.id], sched } }
     }));
   }
   function setItemLink(ds, catId, lineIdx, url) {
@@ -4867,7 +4910,7 @@ function Planner() {
       if (Object.keys(srcBucket).length === 0) delete next[ds];else next[ds] = srcBucket;
       const targetBucket = { ...(next[targetDs] || {}) };
       const order = targetDs === ds ? e.order : Object.values(targetBucket).reduce((m, x) => Math.max(m, x.order ?? 0), -1) + 1;
-      targetBucket[e.id] = { ...e, text: finalText, pillars: finalPillars, sched: newSched || null, order };
+      targetBucket[e.id] = { ...e, text: finalText, pillars: finalPillars, sched: sanitizeSched(newSched), order };
       next[targetDs] = targetBucket;
       return next;
     });
@@ -4881,7 +4924,7 @@ function Planner() {
       const bucket = { ...(prev[ds] || {}) };
       const order = Object.values(bucket).reduce((m, x) => Math.max(m, x.order ?? 0), -1) + 1;
       const id = genEntryId();
-      bucket[id] = { id, text: finalText, pillars: finalPillars, done: false, sched: sched || null, order };
+      bucket[id] = { id, text: finalText, pillars: finalPillars, done: false, sched: sanitizeSched(sched), order };
       return { ...prev, [ds]: bucket };
     });
   }
@@ -5827,7 +5870,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v7.28.10")), (() => {
+  }, "v7.28.11")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
