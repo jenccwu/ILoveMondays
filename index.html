@@ -334,6 +334,11 @@ const store = {
     localStorage.setItem(key, val);
   }
 };
+const PLAN_BG = "#F7F6F3";
+const PLAN_TEXT = "#57534E";
+const PLAN_MUTED = "#A8A29E";
+const PLAN_RING = "#CFCDC4";
+const FADE = "90";
 const COLOR_PALETTE = [{
   color: "#2563EB",
   bg: "#EFF6FF"
@@ -371,6 +376,12 @@ const COLOR_PALETTE = [{
   color: "#6D28D9",
   bg: "#EDE9FE"
 }];
+const UNTAGGED_CAT = {
+  id: "untagged",
+  label: "None",
+  color: "#A8A29E",
+  bg: "#F0EFED"
+};
 const DEFAULT_CATS = [{
   id: "move",
   label: "Move",
@@ -445,6 +456,12 @@ const DAY_ABB = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const MONTHS_S = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const LABEL_W = 160;
+const CAL_LABEL_W = 46;
+const CAL_HOUR_START = 6;
+const CAL_HOUR_END = 21;
+const CAL_HOUR_PX = 38;
+const CAL_DEFAULT_DURATION = 60;
+const CAL_MIN_DURATION = 15;
 function getMonday(offset = 0) {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -1018,7 +1035,7 @@ function Cell({
   }, lines.map((line, i) => {
     const isOver = dragOverIdx === i && ((dragLineIdx !== null && dragLineIdx !== i) || (dragLineIdx === null && externalDragging));
     const lineDone = isPastOrToday && doneLines?.has(i);
-    const lineColor = isPastOrToday ? lineDone ? cat.color : "#A8A29E" : textColor;
+    const lineColor = lineDone ? cat.color : "#A8A29E";
     return /*#__PURE__*/React.createElement("div", {
       key: i,
       onDragOver: readOnly ? undefined : e => handleLineDragOver(e, i),
@@ -1092,6 +1109,7 @@ function Cell({
       style: {
         fontSize: 12,
         color: lineColor,
+        fontWeight: 600,
         lineHeight: 1.4,
         flex: 1,
         textAlign: isPastOrToday ? "left" : "center",
@@ -1226,26 +1244,26 @@ function Cell({
       whiteSpace: "pre-wrap",
       wordBreak: "break-word",
       flex: 1,
-      fontWeight: 500,
+      fontWeight: 600,
       userSelect: "text",
       transition: "color 0.2s ease"
     }
   }, renderWithLinks(value, doneLines?.has(0) ? cat.color : "#A8A29E"))) : /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 13,
-      color: textColor,
+      color: "#A8A29E",
       textAlign: "center",
       lineHeight: 1.5,
       whiteSpace: "pre-wrap",
       wordBreak: "break-word",
       display: "block",
       width: "100%",
-      fontWeight: 500,
+      fontWeight: 600,
       opacity: textOpacity,
       userSelect: "text",
       paddingBottom: !readOnly && linkingIdx === -1 ? 20 : 0
     }
-  }, renderWithLinks(value, textColor)) : !readOnly && /*#__PURE__*/React.createElement("span", {
+  }, renderWithLinks(value, "#A8A29E")) : !readOnly && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 18,
       color: placeholderColor,
@@ -1552,20 +1570,22 @@ function CatSuggestionItem({label, desc, onClick, disabled}) {
       gap: 8,
       padding: "10px 12px",
       marginBottom: 6,
-      background: disabled ? "#F7F6F4" : hovered ? `${SUGG_BG}` : SUGG_BG,
-      border: "1px solid " + (disabled ? "#E8E5E3" : SUGG_COLOR + "30"),
-      borderRadius: 10,
+      background: "#fff",
+      borderTop: "1px solid #EDEBE7",
+      borderRight: "1px solid #EDEBE7",
+      borderBottom: "1px solid #EDEBE7",
+      borderLeft: `3px solid ${hovered && !disabled ? "#A8A29E" : "#D6D3D1"}`,
+      borderRadius: 6,
       opacity: disabled ? 0.42 : 1,
       cursor: disabled ? "default" : "pointer",
-      filter: hovered && !disabled ? "brightness(0.96)" : "none",
-      transition: "filter 0.1s ease"
+      transition: "border-color 0.1s ease, background 0.1s ease"
     }
   }, React.createElement("div", { style: { flex: 1 } },
     React.createElement("div", {
-      style: { fontSize: 13, color: disabled ? "#78716C" : SUGG_COLOR, fontWeight: 500, lineHeight: 1.4 }
+      style: { fontSize: 13, color: hovered && !disabled ? "#1C1917" : PLAN_TEXT, fontWeight: 500, lineHeight: 1.4 }
     }, label),
     desc ? React.createElement("div", {
-      style: { fontSize: 11, color: disabled ? "#C4BFBC" : SUGG_COLOR + "99", marginTop: 2, lineHeight: 1.4 }
+      style: { fontSize: 11, color: PLAN_MUTED, marginTop: 2, lineHeight: 1.4 }
     }, desc) : null
   ));
 }
@@ -2459,6 +2479,1263 @@ function SciencePage({
     }
   }, "A meaningful life emerges from deliberate choices across a handful of domains — chosen with care, planned with intention, and reflected on honestly. Not every pillar every day. But enough of them, often enough, that your week reliably contains what matters."))));
 }
+function CalendarView({
+  dates,
+  todayStr,
+  cats,
+  data,
+  isOwnView,
+  times,
+  onScheduleItem,
+  onResizeItem,
+  done,
+  onToggleDone,
+  nudgeItem,
+  onNudgeClick,
+  reflectedItemTexts,
+  onOpenReflections,
+  onReflect,
+  onSetLink,
+  onDeleteItem,
+  onEditItem,
+  onCreateItem,
+  onOpenPillarSidebar,
+  onAddPillar
+}) {
+  const [dragItem, setDragItem] = useState(null);
+  const [selectedPillar, setSelectedPillar] = useState(null);
+  const [hoveredKey, setHoveredKey] = useState(null);
+  const [editingItem, setEditingItem] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editCatId, setEditCatId] = useState(null);
+  const [editLinkUrl, setEditLinkUrl] = useState(null);
+  const [editUnscheduled, setEditUnscheduled] = useState(false);
+  const [editDate, setEditDate] = useState(null);
+  const [editStart, setEditStart] = useState("09:00");
+  const [editEnd, setEditEnd] = useState("10:00");
+  function timeToMin(str) {
+    const [h, m] = str.split(":").map(Number);
+    return h * 60 + m;
+  }
+  function minToTime(min) {
+    min = (min % 1440 + 1440) % 1440;
+    return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+  }
+  function openEdit(ds, catId, lineIdx, text, sched) {
+    const m = text.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    setEditName(m ? m[1] : text);
+    setEditLinkUrl(m ? m[2] : null);
+    setEditCatId(catId);
+    setEditDate(ds);
+    if (sched) {
+      setEditUnscheduled(false);
+      setEditStart(sched.start);
+      setEditEnd(minToTime(timeToMin(sched.start) + sched.duration));
+    } else {
+      setEditUnscheduled(true);
+      setEditStart("09:00");
+      setEditEnd("10:00");
+    }
+    setEditingItem({ ds, catId, lineIdx });
+  }
+  function openCreate(ds, hour, minute) {
+    setEditName("");
+    setEditLinkUrl(null);
+    setEditCatId(null);
+    setEditDate(ds);
+    if (hour != null) {
+      setEditUnscheduled(false);
+      const start = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+      setEditStart(start);
+      setEditEnd(minToTime(timeToMin(start) + CAL_DEFAULT_DURATION));
+    } else {
+      setEditUnscheduled(true);
+      setEditStart("09:00");
+      setEditEnd("10:00");
+    }
+    setEditingItem({ ds, isNew: true });
+  }
+  function saveEdit() {
+    if (!editName.trim()) {
+      setEditingItem(null);
+      return;
+    }
+    const finalCatId = editCatId || UNTAGGED_CAT.id;
+    const targetDs = editDate || editingItem?.ds;
+    let sched = null;
+    if (!editUnscheduled) {
+      const startMin = timeToMin(editStart);
+      let endMin = timeToMin(editEnd);
+      if (endMin <= startMin) endMin += 1440;
+      const duration = Math.max(CAL_MIN_DURATION, endMin - startMin);
+      sched = { start: editStart, duration };
+    }
+    if (editingItem?.isNew) {
+      if (onCreateItem) onCreateItem(targetDs, finalCatId, editName.trim(), editLinkUrl, sched);
+    } else if (editingItem && onEditItem) {
+      onEditItem(editingItem.ds, editingItem.catId, editingItem.lineIdx, editName.trim(), finalCatId, editLinkUrl, sched, targetDs);
+    }
+    setEditingItem(null);
+  }
+  function togglePillarFilter(catId) {
+    setSelectedPillar(prev => {
+      const next = prev === catId ? null : catId;
+      if (next && onOpenPillarSidebar) onOpenPillarSidebar(next);
+      return next;
+    });
+  }
+  function isDimmed(catId) {
+    return selectedPillar != null && selectedPillar !== catId;
+  }
+  function plainOf(s) {
+    return s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1").trim();
+  }
+  function reflectBubbleSvg(color, isFilled) {
+    return /*#__PURE__*/React.createElement("svg", {
+      width: "10",
+      height: "10",
+      viewBox: "0 0 24 24",
+      fill: isFilled ? color : "none",
+      stroke: color,
+      strokeWidth: "2",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }, /*#__PURE__*/React.createElement("path", {
+      d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "6.5",
+      cy: "21",
+      r: "2.2",
+      fill: isFilled ? color : "none"
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "3.5",
+      cy: "24",
+      r: "1.4",
+      fill: isFilled ? color : "none"
+    }));
+  }
+  const chainIconSvg = /*#__PURE__*/React.createElement("svg", {
+    width: "10",
+    height: "10",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "3",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
+  }));
+  const [dragOverSlot, setDragOverSlot] = useState(null);
+  const [resizing, setResizing] = useState(null);
+  const [resizePreview, setResizePreview] = useState(null);
+  useEffect(() => {
+    if (!resizing) return;
+    function computeDuration(clientY) {
+      const deltaY = clientY - resizing.startY;
+      const deltaMin = Math.round(deltaY / CAL_HOUR_PX * 60 / 15) * 15;
+      return Math.max(CAL_MIN_DURATION, resizing.startDuration + deltaMin);
+    }
+    function onMove(e) {
+      setResizePreview(computeDuration(e.clientY));
+    }
+    function onUp(e) {
+      const finalDuration = computeDuration(e.clientY);
+      onResizeItem(resizing.ds, resizing.catId, resizing.lineIdx, finalDuration);
+      setResizing(null);
+      setResizePreview(null);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, [resizing]);
+  const hours = [];
+  for (let hh = CAL_HOUR_START; hh <= CAL_HOUR_END; hh++) hours.push(hh);
+  function fmtHour(hh) {
+    const period = hh < 12 ? "a" : "p";
+    let h12 = hh % 12;
+    if (h12 === 0) h12 = 12;
+    return `${h12}${period}`;
+  }
+  function fmtTime(hh, mm) {
+    const period = hh < 12 ? "a" : "p";
+    let h12 = hh % 12;
+    if (h12 === 0) h12 = 12;
+    return mm ? `${h12}:${String(mm).padStart(2, "0")}${period}` : `${h12}${period}`;
+  }
+  function normalizeSched(t) {
+    if (!t) return null;
+    if (typeof t === "string") return { start: t, duration: CAL_DEFAULT_DURATION };
+    return t;
+  }
+  function layoutOverlaps(list) {
+    const sorted = [...list].sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
+    const clusters = [];
+    let current = [];
+    let currentEnd = -Infinity;
+    sorted.forEach(it => {
+      if (current.length && it.startMin >= currentEnd) {
+        clusters.push(current);
+        current = [];
+        currentEnd = -Infinity;
+      }
+      current.push(it);
+      currentEnd = Math.max(currentEnd, it.endMin);
+    });
+    if (current.length) clusters.push(current);
+    const result = [];
+    clusters.forEach(cluster => {
+      const colEnds = [];
+      const startIdx = result.length;
+      cluster.forEach(it => {
+        let placedCol = -1;
+        for (let c = 0; c < colEnds.length; c++) {
+          if (colEnds[c] <= it.startMin) {
+            placedCol = c;
+            break;
+          }
+        }
+        if (placedCol === -1) {
+          placedCol = colEnds.length;
+          colEnds.push(it.endMin);
+        } else {
+          colEnds[placedCol] = it.endMin;
+        }
+        result.push({ ...it, col: placedCol });
+      });
+      const numCols = colEnds.length;
+      for (let i = startIdx; i < result.length; i++) result[i].numCols = numCols;
+    });
+    return result;
+  }
+  function itemsForDay(ds) {
+    const list = [];
+    [...cats, UNTAGGED_CAT].forEach(cat => {
+      const val = data[ds]?.[cat.id] || "";
+      if (!hasEntry(val)) return;
+      const lines = val.split("\n").filter(l => l.trim());
+      lines.forEach((line, lineIdx) => {
+        const sched = normalizeSched(times[ds]?.[cat.id]?.[lineIdx] || null);
+        const isDone = !!done?.[ds]?.[cat.id]?.includes(lineIdx);
+        const isReflected = !!(reflectedItemTexts && reflectedItemTexts.has(`${plainOf(line)}::${ds}`));
+        list.push({
+          cat,
+          lineIdx,
+          text: line,
+          sched,
+          isDone,
+          isReflected
+        });
+      });
+    });
+    return list;
+  }
+  function handleDropOnHour(ds, hour, minute = 0, e = null) {
+    if (dragItem) {
+      const start = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+      const duration = dragItem.duration || CAL_DEFAULT_DURATION;
+      onScheduleItem(dragItem.ds, dragItem.catId, dragItem.lineIdx, ds, { start, duration });
+      setDragItem(null);
+      setDragOverSlot(null);
+      return;
+    }
+    const ideaCatId = e?.dataTransfer?.getData("application/x-idea-cat");
+    const ideaText = e?.dataTransfer?.getData("text/plain");
+    if (ideaCatId && ideaText && ideaText.trim() && onCreateItem) {
+      const start = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+      onCreateItem(ds, ideaCatId, ideaText.trim(), null, { start, duration: CAL_DEFAULT_DURATION });
+    }
+    setDragOverSlot(null);
+  }
+  function handleDropUnscheduled(ds, e = null) {
+    if (dragItem) {
+      onScheduleItem(dragItem.ds, dragItem.catId, dragItem.lineIdx, ds, null);
+      setDragItem(null);
+      setDragOverSlot(null);
+      return;
+    }
+    const ideaCatId = e?.dataTransfer?.getData("application/x-idea-cat");
+    const ideaText = e?.dataTransfer?.getData("text/plain");
+    if (ideaCatId && ideaText && ideaText.trim() && onCreateItem) {
+      onCreateItem(ds, ideaCatId, ideaText.trim(), null, null);
+    }
+    setDragOverSlot(null);
+  }
+  function computeDropTime(e) {
+    const container = e.currentTarget.parentElement;
+    const rect = container.getBoundingClientRect();
+    const relY = e.clientY - rect.top - (dragItem?.grabOffsetPx || 0);
+    const totalMin = relY / CAL_HOUR_PX * 60;
+    const withinHourMin = totalMin - Math.floor(totalMin / 60) * 60;
+    const quarter = Math.min(3, Math.max(0, Math.floor(withinHourMin / 15)));
+    let hour = CAL_HOUR_START + Math.floor(totalMin / 60);
+    hour = Math.max(CAL_HOUR_START, Math.min(CAL_HOUR_END, hour));
+    return { hour, minute: quarter * 15 };
+  }
+  const colTemplate = `${CAL_LABEL_W}px repeat(7,1fr)`;
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#fff",
+      border: "1px solid #E8E5E3",
+      borderRadius: 12,
+      overflow: "hidden",
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      alignItems: "center",
+      gap: "6px 8px",
+      padding: "12px 14px",
+      borderBottom: "1px solid #E8E5E3",
+      background: "#FAFAF9"
+    }
+  }, cats.map(cat => {
+    const selected = selectedPillar === cat.id;
+    return /*#__PURE__*/React.createElement("button", {
+      key: cat.id,
+      onClick: () => togglePillarFilter(cat.id),
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+        fontSize: 11,
+        fontWeight: 600,
+        fontFamily: "inherit",
+        cursor: "pointer",
+        border: `1px solid ${selected ? "#D6D3D1" : "#E8E5E3"}`,
+        background: selected ? (cat.bg || PLAN_BG) : "#fff",
+        color: selected ? "#1C1917" : PLAN_TEXT,
+        borderRadius: 20,
+        padding: "4px 10px 4px 8px",
+        transition: "all 0.12s ease"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        width: 7,
+        height: 7,
+        borderRadius: "50%",
+        background: cat.color,
+        display: "inline-block",
+        flexShrink: 0
+      }
+    }), cat.label);
+  }), onAddPillar && /*#__PURE__*/React.createElement("button", {
+    key: "add-pillar",
+    onClick: () => onAddPillar(),
+    title: "Add pillar",
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      width: 22,
+      height: 22,
+      fontSize: 14,
+      fontWeight: 700,
+      fontFamily: "inherit",
+      cursor: "pointer",
+      border: "1.5px dashed #D6D3D1",
+      background: "none",
+      color: PLAN_TEXT,
+      borderRadius: "50%",
+      padding: 0,
+      transition: "all 0.12s ease"
+    }
+  }, "+")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: colTemplate,
+      borderBottom: "1px solid #C4BFBC"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#FAFAF9"
+    }
+  }), dates.map((d, i) => {
+    const ds = ymd(d),
+      isToday = ds === todayStr;
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        textAlign: "center",
+        padding: "10px 4px 8px",
+        borderLeft: "1px solid #E8E5E3"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        letterSpacing: "0.1em",
+        textTransform: "uppercase",
+        color: "#78716C",
+        fontWeight: 600,
+        marginBottom: 4
+      }
+    }, DAY_ABB[i]), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 16,
+        fontWeight: isToday ? 700 : 500,
+        color: isToday ? "#fff" : "#1C1917",
+        width: 28,
+        height: 28,
+        borderRadius: "50%",
+        background: isToday ? "#EA580C" : "transparent",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        margin: "0 auto"
+      }
+    }, d.getDate()));
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: colTemplate,
+      borderBottom: "1px solid #E8E5E3",
+      background: "#FBFAF9"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "6px 6px",
+      fontSize: 8,
+      color: "#A8A29E",
+      letterSpacing: "0.05em",
+      textTransform: "uppercase",
+      lineHeight: 1.3
+    }
+  }, ""), dates.map((d, i) => {
+    const ds = ymd(d);
+    const items = itemsForDay(ds).filter(it => !it.sched);
+    const isOver = dragOverSlot?.ds === ds && dragOverSlot?.unscheduled;
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      onDragOver: isOwnView ? e => {
+        e.preventDefault();
+        setDragOverSlot({ ds, unscheduled: true });
+      } : undefined,
+      onDragLeave: isOwnView ? () => setDragOverSlot(null) : undefined,
+      onDrop: isOwnView ? e => {
+        e.preventDefault();
+        handleDropUnscheduled(ds, e);
+      } : undefined,
+      onClick: isOwnView && onCreateItem ? e => {
+        if (e.target === e.currentTarget) openCreate(ds, null, null);
+      } : undefined,
+      style: {
+        borderLeft: "1px solid #E8E5E3",
+        padding: "6px 6px",
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 4,
+        minHeight: 30,
+        cursor: isOwnView && onCreateItem ? "pointer" : "default",
+        background: isOver ? "#FEF3C7" : "transparent",
+        transition: "background 0.1s ease"
+      }
+    }, items.map(it => {
+      const isPastOrToday = ds <= todayStr;
+      const itemKey = `${ds}::${it.cat.id}::${it.lineIdx}`;
+      const isHoveredThis = hoveredKey === itemKey;
+      const isNudgeThis = isPastOrToday && nudgeItem && nudgeItem.ds === ds && nudgeItem.catId === it.cat.id && nudgeItem.lineIdx === it.lineIdx;
+      const nameColor = it.isDone ? "#1C1917" : PLAN_TEXT;
+      return /*#__PURE__*/React.createElement("div", {
+        key: itemKey,
+        draggable: isOwnView,
+        onDragStart: isOwnView ? e => {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", it.text);
+          setDragItem({ ds, catId: it.cat.id, lineIdx: it.lineIdx, duration: it.sched?.duration });
+        } : undefined,
+        onDragEnd: () => setDragItem(null),
+        onMouseEnter: () => setHoveredKey(itemKey),
+        onMouseLeave: () => setHoveredKey(prev => prev === itemKey ? null : prev),
+        onClick: isOwnView && onEditItem ? e => {
+          e.stopPropagation();
+          openEdit(ds, it.cat.id, it.lineIdx, it.text, it.sched);
+        } : undefined,
+        title: plainOf(it.text),
+        style: {
+          position: "relative",
+          fontSize: 12,
+          padding: "3px 6px",
+          borderRadius: 5,
+          background: it.isDone ? (it.cat.bg || PLAN_BG) : "#fff",
+          color: nameColor,
+          borderTop: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
+          borderRight: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
+          borderBottom: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
+          borderLeft: it.cat.id === UNTAGGED_CAT.id
+            ? `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`
+            : `3px solid ${it.isDone ? it.cat.color : it.cat.color + FADE}`,
+          cursor: isOwnView ? "grab" : "default",
+          maxWidth: 110,
+          overflow: isHoveredThis || isNudgeThis ? "visible" : "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          fontWeight: it.isDone ? 500 : 400,
+          opacity: isDimmed(it.cat.id) ? 0.25 : 1,
+          transition: "opacity 0.15s ease",
+          display: "flex",
+          alignItems: "center",
+          gap: 4
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          flex: 1,
+          minWidth: 0
+        }
+      }, plainOf(it.text)), isPastOrToday && onToggleDone && isOwnView && /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          onToggleDone(ds, it.cat.id, it.lineIdx);
+        },
+        title: it.isDone ? "Mark as not done" : "Mark as done",
+        style: {
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          padding: 0,
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center"
+        }
+      }, /*#__PURE__*/React.createElement("svg", {
+        width: "10",
+        height: "10",
+        viewBox: "0 0 12 12"
+      }, it.isDone ? /*#__PURE__*/React.createElement("path", {
+        d: "M2 6.4L4.7 9L10 3.4",
+        fill: "none",
+        stroke: PLAN_RING,
+        strokeWidth: "1.5",
+        strokeLinecap: "round",
+        strokeLinejoin: "round"
+      }) : /*#__PURE__*/React.createElement("circle", {
+        cx: "6",
+        cy: "6",
+        r: "4.5",
+        fill: "none",
+        stroke: PLAN_RING,
+        strokeWidth: "1.5"
+      }))), isOwnView && isHoveredThis && /*#__PURE__*/React.createElement("div", {
+        onClick: e => e.stopPropagation(),
+        onMouseDown: e => e.stopPropagation(),
+        style: {
+          position: "absolute",
+          top: -24,
+          right: 0,
+          display: "flex",
+          alignItems: "center",
+          gap: 3,
+          zIndex: 20,
+          background: "#fff",
+          borderRadius: 8,
+          padding: "3px 4px",
+          boxShadow: "0 1px 5px rgba(0,0,0,0.18)"
+        }
+      }, onReflect && !it.isReflected && /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          onReflect(plainOf(it.text), it.cat.label, it.cat.color, ds, it.isDone);
+        },
+        title: "Reflect on this",
+        style: {
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          padding: 0,
+          display: "flex",
+          alignItems: "center"
+        }
+      }, reflectBubbleSvg("#C4BFBC", false)), it.isReflected && onOpenReflections && /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          onOpenReflections(plainOf(it.text), ds);
+        },
+        title: "View / edit reflection",
+        style: {
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          padding: 0,
+          display: "flex",
+          alignItems: "center"
+        }
+      }, reflectBubbleSvg(it.cat.color, true)), onSetLink && /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          const m = it.text.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+          const url = window.prompt("Link URL", m ? m[2] : "");
+          if (url !== null) onSetLink(ds, it.cat.id, it.lineIdx, url.trim());
+        },
+        title: it.text.match(/^\[([^\]]+)\]\(([^)]+)\)$/) ? "Edit link" : "Add link",
+        style: {
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          padding: 0,
+          color: "#C4BFBC",
+          display: "flex",
+          alignItems: "center"
+        }
+      }, chainIconSvg), onDeleteItem && /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          onDeleteItem(ds, it.cat.id, it.lineIdx);
+        },
+        title: "Delete",
+        style: {
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          fontSize: 13,
+          lineHeight: 1,
+          color: "#C4BFBC",
+          padding: 0
+        }
+      }, "\u00d7")), isNudgeThis && onNudgeClick && /*#__PURE__*/React.createElement("div", {
+        onClick: e => {
+          e.stopPropagation();
+          onNudgeClick();
+        },
+        style: {
+          position: "absolute",
+          top: "calc(100% + 3px)",
+          left: 0,
+          zIndex: 30,
+          cursor: "pointer",
+          maxWidth: 160,
+          overflow: "hidden",
+          background: "#EDE9FE",
+          border: "1px solid #C4B5FD",
+          borderRadius: 8,
+          padding: "1px 5px",
+          boxShadow: "0 1px 3px rgba(109,40,217,0.2)"
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 8,
+          fontWeight: 700,
+          color: "#6D28D9",
+          letterSpacing: "0.01em",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          display: "block"
+        }
+      }, "How did it go?")));
+    }));
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: colTemplate,
+      position: "relative"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative"
+    }
+  }, hours.map(hh => /*#__PURE__*/React.createElement("div", {
+    key: hh,
+    style: {
+      height: CAL_HOUR_PX,
+      borderTop: "1px solid #F0EFED",
+      fontSize: 10,
+      color: "#A8A29E",
+      textAlign: "right",
+      paddingRight: 8,
+      boxSizing: "border-box",
+      paddingTop: 2
+    }
+  }, fmtHour(hh)))), dates.map((d, i) => {
+    const ds = ymd(d);
+    const items = layoutOverlaps(itemsForDay(ds).filter(it => it.sched).map(it => {
+      const [hh, mm] = it.sched.start.split(":").map(Number);
+      const isResizingThis = resizing && resizing.ds === ds && resizing.catId === it.cat.id && resizing.lineIdx === it.lineIdx;
+      const duration = isResizingThis && resizePreview != null ? resizePreview : it.sched.duration;
+      const startMin = hh * 60 + mm;
+      return { ...it, hh, mm, duration, isResizingThis, startMin, endMin: startMin + duration };
+    }));
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        position: "relative",
+        borderLeft: "1px solid #E8E5E3"
+      }
+    }, hours.map(hh => /*#__PURE__*/React.createElement("div", {
+      key: hh,
+      onDragOver: isOwnView ? e => {
+        e.preventDefault();
+        const { hour, minute } = computeDropTime(e);
+        setDragOverSlot({ ds, hour, minute });
+      } : undefined,
+      onDragLeave: isOwnView ? () => setDragOverSlot(null) : undefined,
+      onDrop: isOwnView ? e => {
+        e.preventDefault();
+        const { hour, minute } = computeDropTime(e);
+        handleDropOnHour(ds, hour, minute, e);
+      } : undefined,
+      onClick: isOwnView && onCreateItem ? e => {
+        const { hour, minute } = computeDropTime(e);
+        openCreate(ds, hour, minute);
+      } : undefined,
+      style: {
+        height: CAL_HOUR_PX,
+        borderTop: "1px solid #F0EFED",
+        boxSizing: "border-box",
+        background: dragOverSlot?.ds === ds && dragOverSlot?.hour === hh ? "#FFF7ED" : "transparent",
+        position: "relative",
+        cursor: isOwnView && onCreateItem ? "pointer" : "default",
+        transition: "background 0.1s ease"
+      }
+    }, dragOverSlot?.ds === ds && dragOverSlot?.hour === hh && /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute",
+        left: 0,
+        right: 0,
+        top: dragOverSlot.minute / 60 * CAL_HOUR_PX,
+        height: 2,
+        background: "#EA580C",
+        pointerEvents: "none"
+      }
+    }))), items.map(it => {
+      const top = (it.hh - CAL_HOUR_START) * CAL_HOUR_PX + it.mm / 60 * CAL_HOUR_PX;
+      const height = Math.max(16, it.duration / 60 * CAL_HOUR_PX - 4);
+      const endH = Math.floor(it.endMin / 60) % 24,
+        endM = it.endMin % 60;
+      const timeLabel = `${fmtTime(it.hh, it.mm)} \u2013 ${fmtTime(endH, endM)}`;
+      const colWidthPct = 100 / it.numCols;
+      const leftCalc = `calc(${it.col * colWidthPct}% + ${it.col === 0 ? 3 : 2}px)`;
+      const widthCalc = `calc(${colWidthPct}% - ${it.col === 0 || it.col === it.numCols - 1 ? 5 : 4}px)`;
+      const isPastOrToday = ds <= todayStr;
+      const itemKey = `${ds}::${it.cat.id}::${it.lineIdx}`;
+      const isHoveredThis = hoveredKey === itemKey;
+      const isNudgeThis = isPastOrToday && nudgeItem && nudgeItem.ds === ds && nudgeItem.catId === it.cat.id && nudgeItem.lineIdx === it.lineIdx;
+      const nameColor = it.isDone ? "#1C1917" : PLAN_TEXT;
+      const showTime = it.numCols === 1 && plainOf(it.text).length <= 22;
+      return /*#__PURE__*/React.createElement("div", {
+        key: itemKey,
+        draggable: isOwnView && !it.isResizingThis,
+        onDragStart: isOwnView ? e => {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", it.text);
+          const rect = e.currentTarget.getBoundingClientRect();
+          const grabOffsetPx = e.clientY - rect.top;
+          setDragItem({ ds, catId: it.cat.id, lineIdx: it.lineIdx, duration: it.sched.duration, grabOffsetPx });
+        } : undefined,
+        onDragEnd: () => {
+          setDragItem(null);
+          setDragOverSlot(null);
+        },
+        onDragOver: isOwnView ? e => {
+          e.preventDefault();
+          e.stopPropagation();
+          const { hour, minute } = computeDropTime(e);
+          setDragOverSlot({ ds, hour, minute });
+        } : undefined,
+        onDrop: isOwnView ? e => {
+          e.preventDefault();
+          e.stopPropagation();
+          const { hour, minute } = computeDropTime(e);
+          handleDropOnHour(ds, hour, minute, e);
+        } : undefined,
+        onMouseEnter: () => setHoveredKey(itemKey),
+        onMouseLeave: () => setHoveredKey(prev => prev === itemKey ? null : prev),
+        onClick: isOwnView && onEditItem ? e => {
+          e.stopPropagation();
+          openEdit(ds, it.cat.id, it.lineIdx, it.text, it.sched);
+        } : undefined,
+        title: `${plainOf(it.text)} (${timeLabel})`,
+        style: {
+          position: "absolute",
+          left: leftCalc,
+          width: widthCalc,
+          top,
+          height,
+          background: it.isDone ? (it.cat.bg || PLAN_BG) : "#fff",
+          borderTop: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
+          borderRight: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
+          borderBottom: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
+          borderLeft: it.cat.id === UNTAGGED_CAT.id
+            ? `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`
+            : `3px solid ${it.isDone ? it.cat.color : it.cat.color + FADE}`,
+          borderRadius: 4,
+          padding: "0 6px",
+          fontSize: 12,
+          fontWeight: it.isDone ? 500 : 400,
+          color: nameColor,
+          overflow: isHoveredThis || isNudgeThis ? "visible" : "hidden",
+          cursor: isOwnView ? "grab" : "default",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+          zIndex: it.isResizingThis ? 6 : isHoveredThis || isNudgeThis ? 8 : 2,
+          display: "flex",
+          flexDirection: "column",
+          userSelect: "none",
+          opacity: isDimmed(it.cat.id) ? 0.25 : 1,
+          transition: "opacity 0.15s ease"
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 5,
+          minWidth: 0
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          flex: 1,
+          minWidth: 0,
+          color: nameColor
+        }
+      }, renderWithLinks(it.text, nameColor)), showTime && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 10,
+          fontWeight: 500,
+          color: PLAN_MUTED,
+          flexShrink: 0,
+          whiteSpace: "nowrap"
+        }
+      }, timeLabel), isPastOrToday && onToggleDone && isOwnView && /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          onToggleDone(ds, it.cat.id, it.lineIdx);
+        },
+        title: it.isDone ? "Mark as not done" : "Mark as done",
+        style: {
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          padding: 0,
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 12,
+          height: 12
+        }
+      }, /*#__PURE__*/React.createElement("svg", {
+        width: "11",
+        height: "11",
+        viewBox: "0 0 12 12"
+      }, it.isDone ? /*#__PURE__*/React.createElement("path", {
+        d: "M2 6.4L4.7 9L10 3.4",
+        fill: "none",
+        stroke: PLAN_RING,
+        strokeWidth: "1.5",
+        strokeLinecap: "round",
+        strokeLinejoin: "round"
+      }) : /*#__PURE__*/React.createElement("circle", {
+        cx: "6",
+        cy: "6",
+        r: "4.5",
+        fill: "none",
+        stroke: PLAN_RING,
+        strokeWidth: "1.5"
+      })))), isOwnView && /*#__PURE__*/React.createElement("div", {
+        draggable: false,
+        onMouseDown: e => {
+          e.stopPropagation();
+          e.preventDefault();
+          setResizing({ ds, catId: it.cat.id, lineIdx: it.lineIdx, startY: e.clientY, startDuration: it.sched.duration });
+        },
+        onClick: e => e.stopPropagation(),
+        title: "Drag to change duration",
+        style: {
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          height: 7,
+          cursor: "ns-resize"
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          position: "absolute",
+          left: "50%",
+          bottom: 2,
+          transform: "translateX(-50%)",
+          width: 20,
+          height: 3,
+          borderRadius: 2,
+          background: PLAN_RING
+        }
+      })), isOwnView && isHoveredThis && /*#__PURE__*/React.createElement("div", {
+        onClick: e => e.stopPropagation(),
+        onMouseDown: e => e.stopPropagation(),
+        style: {
+          position: "absolute",
+          top: -19,
+          right: 0,
+          display: "flex",
+          alignItems: "center",
+          gap: 3,
+          zIndex: 20,
+          background: "#fff",
+          borderRadius: 8,
+          padding: "3px 4px",
+          boxShadow: "0 1px 5px rgba(0,0,0,0.18)"
+        }
+      }, onReflect && !it.isReflected && /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          onReflect(plainOf(it.text), it.cat.label, it.cat.color, ds, it.isDone);
+        },
+        title: "Reflect on this",
+        style: {
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          padding: 0,
+          display: "flex",
+          alignItems: "center"
+        }
+      }, reflectBubbleSvg("#C4BFBC", false)), it.isReflected && onOpenReflections && /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          onOpenReflections(plainOf(it.text), ds);
+        },
+        title: "View / edit reflection",
+        style: {
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          padding: 0,
+          display: "flex",
+          alignItems: "center"
+        }
+      }, reflectBubbleSvg(it.cat.color, true)), onSetLink && /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          const m = it.text.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+          const url = window.prompt("Link URL", m ? m[2] : "");
+          if (url !== null) onSetLink(ds, it.cat.id, it.lineIdx, url.trim());
+        },
+        title: it.text.match(/^\[([^\]]+)\]\(([^)]+)\)$/) ? "Edit link" : "Add link",
+        style: {
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          padding: 0,
+          color: "#C4BFBC",
+          display: "flex",
+          alignItems: "center"
+        }
+      }, chainIconSvg), onDeleteItem && /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          onDeleteItem(ds, it.cat.id, it.lineIdx);
+        },
+        title: "Delete",
+        style: {
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          fontSize: 13,
+          lineHeight: 1,
+          color: "#C4BFBC",
+          padding: 0
+        }
+      }, "\u00d7")), isNudgeThis && onNudgeClick && /*#__PURE__*/React.createElement("div", {
+        onClick: e => {
+          e.stopPropagation();
+          onNudgeClick();
+        },
+        style: {
+          position: "relative",
+          marginTop: 2,
+          alignSelf: "flex-start",
+          zIndex: 30,
+          cursor: "pointer",
+          maxWidth: 160,
+          overflow: "hidden",
+          background: "#EDE9FE",
+          border: "1px solid #C4B5FD",
+          borderRadius: 6,
+          padding: "1px 5px",
+          boxShadow: "0 1px 3px rgba(109,40,217,0.2)"
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 8,
+          fontWeight: 700,
+          color: "#6D28D9",
+          letterSpacing: "0.01em",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          display: "block"
+        }
+      }, "How did it go?")));
+    }));
+  }))), editingItem && /*#__PURE__*/React.createElement("div", {
+    onClick: () => setEditingItem(null),
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(28,25,23,0.4)",
+      zIndex: 1000,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      background: "#fff",
+      borderRadius: 14,
+      padding: 22,
+      width: 340,
+      maxWidth: "90vw",
+      boxShadow: "0 12px 40px rgba(0,0,0,0.22)",
+      display: "flex",
+      flexDirection: "column",
+      gap: 14,
+      fontFamily: "'DM Sans',sans-serif"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: "#1C1917"
+    }
+  }, editingItem?.isNew ? "New event" : "Edit event"), /*#__PURE__*/React.createElement("input", {
+    value: editName,
+    onChange: e => setEditName(e.target.value),
+    onKeyDown: e => {
+      if (e.key === "Enter") saveEdit();
+      if (e.key === "Escape") setEditingItem(null);
+    },
+    autoFocus: true,
+    placeholder: "Event name",
+    style: {
+      border: "1px solid #E8E5E3",
+      borderRadius: 8,
+      padding: "9px 11px",
+      fontSize: 13,
+      fontFamily: "inherit",
+      outline: "none",
+      color: "#1C1917"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      color: "#A8A29E",
+      fontWeight: 600
+    }
+  }, "Pillar"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6
+    }
+  }, cats.map(cat => {
+    const sel = editCatId === cat.id;
+    return /*#__PURE__*/React.createElement("button", {
+      key: cat.id,
+      onClick: () => setEditCatId(prev => prev === cat.id ? null : cat.id),
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+        fontSize: 11,
+        fontWeight: 600,
+        fontFamily: "inherit",
+        cursor: "pointer",
+        border: `1px solid ${sel ? "#D6D3D1" : "#E8E5E3"}`,
+        background: sel ? (cat.bg || PLAN_BG) : "#fff",
+        color: sel ? "#1C1917" : PLAN_TEXT,
+        borderRadius: 20,
+        padding: "4px 10px 4px 8px"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        width: 7,
+        height: 7,
+        borderRadius: "50%",
+        background: cat.color,
+        display: "inline-block",
+        flexShrink: 0
+      }
+    }), cat.label);
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      color: "#A8A29E",
+      fontWeight: 600
+    }
+  }, "Day and time"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    role: "switch",
+    "aria-checked": !editUnscheduled,
+    onClick: () => setEditUnscheduled(prev => !prev),
+    style: {
+      position: "relative",
+      width: 36,
+      height: 20,
+      borderRadius: 10,
+      border: "none",
+      cursor: "pointer",
+      background: editUnscheduled ? "#D6D3D1" : "#EA580C",
+      transition: "background 0.15s ease",
+      padding: 0,
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      position: "absolute",
+      top: 2,
+      left: editUnscheduled ? 2 : 18,
+      width: 16,
+      height: 16,
+      borderRadius: "50%",
+      background: "#fff",
+      boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+      transition: "left 0.15s ease"
+    }
+  }))), !editUnscheduled && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+      padding: "2px 2px 0"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      fontSize: 10,
+      color: "#A8A29E",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.06em"
+    }
+  }, "Day", /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: editDate || "",
+    onChange: e => setEditDate(e.target.value),
+    style: {
+      border: "1px solid #E8E5E3",
+      borderRadius: 8,
+      padding: "7px 8px",
+      fontSize: 13,
+      fontFamily: "inherit",
+      outline: "none",
+      color: "#1C1917"
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      fontSize: 10,
+      color: "#A8A29E",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.06em",
+      flex: 1
+    }
+  }, "Start", /*#__PURE__*/React.createElement("input", {
+    type: "time",
+    value: editStart,
+    onChange: e => setEditStart(e.target.value),
+    style: {
+      border: "1px solid #E8E5E3",
+      borderRadius: 8,
+      padding: "7px 8px",
+      fontSize: 13,
+      fontFamily: "inherit",
+      outline: "none",
+      color: "#1C1917"
+    }
+  })), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      fontSize: 10,
+      color: "#A8A29E",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.06em",
+      flex: 1
+    }
+  }, "End", /*#__PURE__*/React.createElement("input", {
+    type: "time",
+    value: editEnd,
+    onChange: e => setEditEnd(e.target.value),
+    style: {
+      border: "1px solid #E8E5E3",
+      borderRadius: 8,
+      padding: "7px 8px",
+      fontSize: 13,
+      fontFamily: "inherit",
+      outline: "none",
+      color: "#1C1917"
+    }
+  })))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end",
+      gap: 8,
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setEditingItem(null),
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12,
+      color: "#78716C",
+      fontFamily: "inherit",
+      padding: "7px 10px"
+    }
+  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+    onClick: saveEdit,
+    style: {
+      background: "#EA580C",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "#fff",
+      fontFamily: "inherit",
+      padding: "7px 16px",
+      borderRadius: 8
+    }
+  }, "Save"))))));
+}
 function Planner() {
   const [offset, setOffset] = useState(0);
   const [data, setData] = useState({});
@@ -2524,8 +3801,11 @@ function Planner() {
   const [pendingExportName, setPendingExportName] = useState("");
   const [exportIncludeReflections, setExportIncludeReflections] = useState(false);
   const [showScience, setShowScience] = useState(false);
+  const [viewMode, setViewMode] = useState("calendar");
+  const [times, setTimes] = useState({});
   const dates = weekDates(offset);
   const key = weekKey(dates);
+  const timesKey = "times:" + key;
   const todayStr = ymd(new Date());
   const isFutureWeek = ymd(dates[0]) > todayStr;
   useEffect(() => {
@@ -2534,6 +3814,12 @@ function Planner() {
       setData(r ? JSON.parse(r.value) : {});
     } catch {
       setData({});
+    }
+    try {
+      const r = store.get(timesKey);
+      setTimes(r ? JSON.parse(r.value) : {});
+    } catch {
+      setTimes({});
     }
   }, [key]);
   useEffect(() => {
@@ -2590,6 +3876,7 @@ function Planner() {
   const displayIdeas = activeView ? activeView.ideas : ideas;
   const displayGoals = activeView ? activeView.goals : goals;
   const displayDone = activeView ? activeView.done || {} : done;
+  const displayTimes = activeView ? {} : times;
   const displayRatings = activeView ? activeView.ratings || {} : ratings;
   function getGoal(catId) {
     return displayGoals[catId] ?? null;
@@ -3158,6 +4445,7 @@ function Planner() {
     });
     setDraggingIdea(true);
     e.dataTransfer.setData("text/plain", idea.text);
+    e.dataTransfer.setData("application/x-idea-cat", catId);
     e.dataTransfer.effectAllowed = "copyMove";
   }
   function handleIdeaDragOver(e, catId, ideaId) {
@@ -3268,6 +4556,227 @@ function Planner() {
     store.set(key, JSON.stringify(next));
     setDraggingLine(null);
   }
+  function updateItemTime(ds, catId, lineIdx, timeStr) {
+    setTimes(prev => {
+      const next = { ...prev };
+      const dayTimes = { ...(next[ds] || {}) };
+      const catTimes = { ...(dayTimes[catId] || {}) };
+      if (timeStr) catTimes[lineIdx] = timeStr;else delete catTimes[lineIdx];
+      dayTimes[catId] = catTimes;
+      next[ds] = dayTimes;
+      store.set(timesKey, JSON.stringify(next));
+      return next;
+    });
+  }
+  function scheduleItem(srcDs, catId, srcLineIdx, targetDs, timeStr) {
+    if (!isOwnView) return;
+    if (srcDs === targetDs) {
+      updateItemTime(srcDs, catId, srcLineIdx, timeStr);
+      return;
+    }
+    const nextData = { ...data };
+    const srcLines = (nextData[srcDs]?.[catId] || "").split("\n").filter(l => l.trim());
+    const lineText = srcLines[srcLineIdx];
+    if (lineText === undefined) return;
+    srcLines.splice(srcLineIdx, 1);
+    if (srcLines.length === 0) {
+      if (nextData[srcDs]) {
+        const d2 = { ...nextData[srcDs] };
+        delete d2[catId];
+        if (Object.keys(d2).length === 0) delete nextData[srcDs];else nextData[srcDs] = d2;
+      }
+    } else {
+      nextData[srcDs] = { ...(nextData[srcDs] || {}), [catId]: srcLines.join("\n") };
+    }
+    const targetLines = (nextData[targetDs]?.[catId] || "").split("\n").filter(l => l.trim());
+    const newLineIdx = targetLines.length;
+    targetLines.push(lineText);
+    nextData[targetDs] = { ...(nextData[targetDs] || {}), [catId]: targetLines.join("\n") };
+    setData(nextData);
+    store.set(key, JSON.stringify(nextData));
+    setTimes(prevTimes => {
+      const next = { ...prevTimes };
+      const srcCatTimes = { ...(next[srcDs]?.[catId] || {}) };
+      delete srcCatTimes[srcLineIdx];
+      const shiftedSrcCatTimes = {};
+      Object.entries(srcCatTimes).forEach(([idx, t]) => {
+        const iN = parseInt(idx, 10);
+        shiftedSrcCatTimes[iN > srcLineIdx ? iN - 1 : iN] = t;
+      });
+      next[srcDs] = { ...(next[srcDs] || {}), [catId]: shiftedSrcCatTimes };
+      const targetCatTimes = { ...(next[targetDs]?.[catId] || {}) };
+      if (timeStr) targetCatTimes[newLineIdx] = timeStr;else delete targetCatTimes[newLineIdx];
+      next[targetDs] = { ...(next[targetDs] || {}), [catId]: targetCatTimes };
+      store.set(timesKey, JSON.stringify(next));
+      return next;
+    });
+  }
+  function resizeItem(ds, catId, lineIdx, newDuration) {
+    if (!isOwnView) return;
+    setTimes(prev => {
+      const next = { ...prev };
+      const dayTimes = { ...(next[ds] || {}) };
+      const catTimes = { ...(dayTimes[catId] || {}) };
+      const existing = catTimes[lineIdx];
+      const start = existing ? (typeof existing === "string" ? existing : existing.start) : "09:00";
+      catTimes[lineIdx] = { start, duration: newDuration };
+      dayTimes[catId] = catTimes;
+      next[ds] = dayTimes;
+      store.set(timesKey, JSON.stringify(next));
+      return next;
+    });
+  }
+  function setItemLink(ds, catId, lineIdx, url) {
+    if (!isOwnView) return;
+    const lines = (data[ds]?.[catId] || "").split("\n").filter(l => l.trim());
+    if (lines[lineIdx] === undefined) return;
+    const plain = lines[lineIdx].replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+    lines[lineIdx] = url ? `[${plain}](${url})` : plain;
+    const nextData = { ...data, [ds]: { ...(data[ds] || {}), [catId]: lines.join("\n") } };
+    setData(nextData);
+    store.set(key, JSON.stringify(nextData));
+  }
+  function deleteCalendarItem(ds, catId, lineIdx) {
+    if (!isOwnView) return;
+    const lines = (data[ds]?.[catId] || "").split("\n").filter(l => l.trim());
+    if (lines[lineIdx] === undefined) return;
+    lines.splice(lineIdx, 1);
+    const nextData = { ...data };
+    if (lines.length === 0) {
+      if (nextData[ds]) {
+        const d2 = { ...nextData[ds] };
+        delete d2[catId];
+        if (Object.keys(d2).length === 0) delete nextData[ds];else nextData[ds] = d2;
+      }
+    } else {
+      nextData[ds] = { ...(nextData[ds] || {}), [catId]: lines.join("\n") };
+    }
+    setData(nextData);
+    store.set(key, JSON.stringify(nextData));
+    function shiftIndices(obj) {
+      const next = {};
+      Object.entries(obj || {}).forEach(([idx, v]) => {
+        const iN = parseInt(idx, 10);
+        if (iN === lineIdx) return;
+        next[iN > lineIdx ? iN - 1 : iN] = v;
+      });
+      return next;
+    }
+    setTimes(prev => {
+      const next = { ...prev };
+      next[ds] = { ...(next[ds] || {}), [catId]: shiftIndices(next[ds]?.[catId]) };
+      store.set(timesKey, JSON.stringify(next));
+      return next;
+    });
+    setDone(prev => {
+      const dayDone = prev[ds] || {};
+      const catSet = new Set(dayDone[catId] || []);
+      catSet.delete(lineIdx);
+      const shifted = [...catSet].map(i => i > lineIdx ? i - 1 : i);
+      const next = { ...prev, [ds]: { ...dayDone, [catId]: shifted } };
+      store.set("planner:done", JSON.stringify(next));
+      return next;
+    });
+  }
+  function editCalendarItem(ds, catId, lineIdx, newText, newCatId, linkUrl, newSched, newDs) {
+    if (!isOwnView) return;
+    const finalText = linkUrl ? `[${newText}](${linkUrl})` : newText;
+    if (!finalText.trim()) return;
+    const targetDs = newDs || ds;
+    const targetCatId = newCatId || catId;
+    if (targetDs === ds && targetCatId === catId) {
+      const lines = (data[ds]?.[catId] || "").split("\n").filter(l => l.trim());
+      if (lines[lineIdx] === undefined) return;
+      lines[lineIdx] = finalText;
+      const nextData = { ...data, [ds]: { ...(data[ds] || {}), [catId]: lines.join("\n") } };
+      setData(nextData);
+      store.set(key, JSON.stringify(nextData));
+      setTimes(prev => {
+        const next = { ...prev };
+        const dayTimes = { ...(next[ds] || {}) };
+        const catTimes = { ...(dayTimes[catId] || {}) };
+        if (newSched) catTimes[lineIdx] = newSched;else delete catTimes[lineIdx];
+        dayTimes[catId] = catTimes;
+        next[ds] = dayTimes;
+        store.set(timesKey, JSON.stringify(next));
+        return next;
+      });
+      return;
+    }
+    const nextData = { ...data };
+    const srcLines = (nextData[ds]?.[catId] || "").split("\n").filter(l => l.trim());
+    if (srcLines[lineIdx] === undefined) return;
+    srcLines.splice(lineIdx, 1);
+    if (srcLines.length === 0) {
+      if (nextData[ds]) {
+        const d2 = { ...nextData[ds] };
+        delete d2[catId];
+        if (Object.keys(d2).length === 0) delete nextData[ds];else nextData[ds] = d2;
+      }
+    } else {
+      nextData[ds] = { ...(nextData[ds] || {}), [catId]: srcLines.join("\n") };
+    }
+    const targetLines = (nextData[targetDs]?.[targetCatId] || "").split("\n").filter(l => l.trim());
+    const newLineIdx = targetLines.length;
+    targetLines.push(finalText);
+    nextData[targetDs] = { ...(nextData[targetDs] || {}), [targetCatId]: targetLines.join("\n") };
+    setData(nextData);
+    store.set(key, JSON.stringify(nextData));
+    setTimes(prev => {
+      const next = { ...prev };
+      const srcCatTimes = { ...(next[ds]?.[catId] || {}) };
+      delete srcCatTimes[lineIdx];
+      const shifted = {};
+      Object.entries(srcCatTimes).forEach(([idx, t]) => {
+        const iN = parseInt(idx, 10);
+        shifted[iN > lineIdx ? iN - 1 : iN] = t;
+      });
+      next[ds] = { ...(next[ds] || {}), [catId]: shifted };
+      const targetCatTimes = { ...(next[targetDs]?.[targetCatId] || {}) };
+      if (newSched) targetCatTimes[newLineIdx] = newSched;else delete targetCatTimes[newLineIdx];
+      next[targetDs] = { ...(next[targetDs] || {}), [targetCatId]: targetCatTimes };
+      store.set(timesKey, JSON.stringify(next));
+      return next;
+    });
+    setDone(prev => {
+      const dayDone = prev[ds] || {};
+      const targetDayDone = prev[targetDs] || {};
+      const srcSet = new Set(dayDone[catId] || []);
+      const wasDone = srcSet.has(lineIdx);
+      srcSet.delete(lineIdx);
+      const shiftedSrc = [...srcSet].map(i => i > lineIdx ? i - 1 : i);
+      const next = { ...prev };
+      next[ds] = { ...dayDone, [catId]: shiftedSrc };
+      const targetSet = new Set((next[targetDs] || targetDayDone)[targetCatId] || []);
+      if (wasDone) targetSet.add(newLineIdx);
+      next[targetDs] = { ...(next[targetDs] || targetDayDone), [targetCatId]: [...targetSet] };
+      store.set("planner:done", JSON.stringify(next));
+      return next;
+    });
+  }
+  function createCalendarItem(ds, catId, name, linkUrl, sched) {
+    if (!isOwnView) return;
+    const finalText = linkUrl ? `[${name}](${linkUrl})` : name;
+    if (!finalText.trim()) return;
+    const lines = (data[ds]?.[catId] || "").split("\n").filter(l => l.trim());
+    const newLineIdx = lines.length;
+    lines.push(finalText);
+    const nextData = { ...data, [ds]: { ...(data[ds] || {}), [catId]: lines.join("\n") } };
+    setData(nextData);
+    store.set(key, JSON.stringify(nextData));
+    if (sched) {
+      setTimes(prev => {
+        const next = { ...prev };
+        const dayTimes = { ...(next[ds] || {}) };
+        const catTimes = { ...(dayTimes[catId] || {}) };
+        catTimes[newLineIdx] = sched;
+        dayTimes[catId] = catTimes;
+        next[ds] = dayTimes;
+        store.set(timesKey, JSON.stringify(next));
+        return next;
+      });
+    }
+  }
   const totalFilled = displayCats.reduce((s, cat) => s + dates.filter(d => hasEntry(displayData[ymd(d)]?.[cat.id])).length, 0);
   const colTemplate = `${LABEL_W}px repeat(7,1fr)`;
   const weekStart = ymd(dates[0]);
@@ -3363,6 +4872,44 @@ function Planner() {
       fontWeight: 600
     }
   }, "Today"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      background: "#F0EFED",
+      borderRadius: 8,
+      padding: 2,
+      marginLeft: 4
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setViewMode("pillar"),
+    style: {
+      background: viewMode === "pillar" ? "#fff" : "none",
+      border: "none",
+      borderRadius: 6,
+      padding: "5px 12px",
+      cursor: "pointer",
+      fontSize: 12,
+      fontWeight: 600,
+      fontFamily: "inherit",
+      color: viewMode === "pillar" ? "#1C1917" : "#A8A29E",
+      boxShadow: viewMode === "pillar" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+      transition: "all 0.15s ease"
+    }
+  }, "Pillars"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setViewMode("calendar"),
+    style: {
+      background: viewMode === "calendar" ? "#fff" : "none",
+      border: "none",
+      borderRadius: 6,
+      padding: "5px 12px",
+      cursor: "pointer",
+      fontSize: 12,
+      fontWeight: 600,
+      fontFamily: "inherit",
+      color: viewMode === "calendar" ? "#1C1917" : "#A8A29E",
+      boxShadow: viewMode === "calendar" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+      transition: "all 0.15s ease"
+    }
+  }, "Calendar")), /*#__PURE__*/React.createElement("div", {
     ref: viewDropdownRef,
     style: {
       position: "absolute",
@@ -3629,7 +5176,29 @@ function Planner() {
     y1: "11",
     x2: "14",
     y2: "17"
-  })), "Start Fresh"))))), /*#__PURE__*/React.createElement("div", {
+  })), "Start Fresh"))))), (viewMode === "calendar" ? /*#__PURE__*/React.createElement(CalendarView, {
+    dates: dates,
+    todayStr: todayStr,
+    cats: displayCats,
+    data: displayData,
+    isOwnView: isOwnView,
+    times: displayTimes,
+    onScheduleItem: scheduleItem,
+    onResizeItem: resizeItem,
+    done: displayDone,
+    onToggleDone: isOwnView ? (ds, catId, lineIdx) => toggleDone(ds, catId, lineIdx) : null,
+    nudgeItem: isOwnView ? nudgeItem : null,
+    onNudgeClick: isOwnView ? () => openReflectionSidebar(true) : null,
+    reflectedItemTexts: isOwnView ? reflectedItemTexts : null,
+    onOpenReflections: isOwnView ? openReflectionsOnly : null,
+    onReflect: isOwnView ? (text, catLabel, catColor, ds, wasCompleted) => openReflectWithItem(text, catLabel, catColor, ds, wasCompleted) : null,
+    onSetLink: isOwnView ? (ds, catId, lineIdx, url) => setItemLink(ds, catId, lineIdx, url) : null,
+    onDeleteItem: isOwnView ? (ds, catId, lineIdx) => deleteCalendarItem(ds, catId, lineIdx) : null,
+    onEditItem: isOwnView ? (ds, catId, lineIdx, newText, newCatId, linkUrl, newSched, newDs) => editCalendarItem(ds, catId, lineIdx, newText, newCatId, linkUrl, newSched, newDs) : null,
+    onCreateItem: isOwnView ? (ds, catId, name, linkUrl, sched) => createCalendarItem(ds, catId, name, linkUrl, sched) : null,
+    onOpenPillarSidebar: isOwnView ? (catId) => openIdeasSidebar(catId) : null,
+    onAddPillar: isOwnView ? addCat : null
+  }) : /*#__PURE__*/React.createElement("div", {
     style: {
       background: "#fff",
       overflow: "hidden",
@@ -4011,7 +5580,7 @@ function Planner() {
       padding: "2px 0",
       fontWeight: 500
     }
-  }, "+ Add pillar"))), /*#__PURE__*/React.createElement("div", {
+  }, "+ Add pillar")))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -4148,7 +5717,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v7.23.1")), (() => {
+  }, "v7.28.8")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -4323,9 +5892,12 @@ function Planner() {
           gap: 8,
           padding: "10px 12px",
           marginBottom: 6,
-          background: pc.bg,
-          border: `1px solid ${pc.color}25`,
-          borderRadius: 10,
+          background: "#fff",
+          borderTop: "1px solid #EDEBE7",
+          borderRight: "1px solid #EDEBE7",
+          borderBottom: "1px solid #EDEBE7",
+          borderLeft: `3px solid ${pc.color}`,
+          borderRadius: 6,
           opacity: isDraggingThis ? 0.3 : 1,
           cursor: isEditing ? "text" : isOwnView ? "grab" : "default"
         }
@@ -5099,7 +6671,13 @@ function Planner() {
     }), /*#__PURE__*/React.createElement("path", {
       d: "M12 13c1.3-1.8 5.5-1.8 5.5 0.8c0 1.8-1.8 3.5-5.5 1.7"
     }))))));
-  })(), catSuggestionsOpen && /*#__PURE__*/React.createElement("div", {
+  })(), catSuggestionsOpen && (() => {
+    const suggLabels = new Set(CAT_SUGGESTIONS.map(s => s.label.toLowerCase()));
+    const newSuggestions = [
+      ...CAT_SUGGESTIONS,
+      ...DEFAULT_CATS.filter(dc => !suggLabels.has(dc.label.toLowerCase())).map(dc => ({ label: dc.label, desc: null }))
+    ].filter(s => !cats.some(c => c.label.toLowerCase() === s.label.toLowerCase()));
+    return /*#__PURE__*/React.createElement("div", {
     style: {
       position: "fixed",
       top: 0,
@@ -5125,10 +6703,10 @@ function Planner() {
   }, /*#__PURE__*/React.createElement("div", {
     style: { display: "flex", alignItems: "center", gap: 10 }
   }, /*#__PURE__*/React.createElement("div", {
-    style: { width: 10, height: 10, borderRadius: "50%", background: SUGG_COLOR, flexShrink: 0, marginTop: 1 }
+    style: { width: 10, height: 10, borderRadius: "50%", background: "#D6D3D1", flexShrink: 0, marginTop: 1 }
   }), /*#__PURE__*/React.createElement("div", null,
     /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: SUGG_COLOR, marginBottom: 2 }
+      style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: PLAN_MUTED, marginBottom: 2 }
     }, "Ideas"),
     /*#__PURE__*/React.createElement("div", {
       style: { fontSize: 13, fontWeight: 700, color: "#1C1917", textTransform: "uppercase", letterSpacing: "0.08em" }
@@ -5143,71 +6721,49 @@ function Planner() {
   /*#__PURE__*/React.createElement("div", {
     style: { flex: 1, overflowY: "auto", padding: "12px 14px" }
   },
-    CAT_SUGGESTIONS.map(s => {
-      const existingCat = cats.find(c => c.label.toLowerCase() === s.label.toLowerCase());
-      if (existingCat) {
-        return /*#__PURE__*/React.createElement("div", {
-          key: s.label,
-          style: {
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "10px 12px",
-            marginBottom: 6,
-            background: "#F7F6F4",
-            border: "1px solid #E8E5E3",
-            borderRadius: 10,
-            opacity: 0.38,
-            cursor: "default"
-          }
-        }, /*#__PURE__*/React.createElement("div", {
-          style: { width: 6, height: 6, borderRadius: "50%", background: existingCat.color, flexShrink: 0 }
-        }), /*#__PURE__*/React.createElement("div", {
-          style: { fontSize: 13, color: "#78716C", fontWeight: 500 }
-        }, s.label));
+    newSuggestions.map(s => /*#__PURE__*/React.createElement(CatSuggestionItem, {
+      key: s.label,
+      label: s.label,
+      desc: s.desc,
+      disabled: false,
+      onClick: () => addCatFromSuggestion(s.label)
+    })),
+    cats.length > 0 && /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: "#A8A29E", margin: "14px 2px 6px" }
+    }, "Active Pillars"),
+    cats.map(cat => /*#__PURE__*/React.createElement("div", {
+      key: cat.id,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "10px 12px",
+        marginBottom: 6,
+        background: cat.bg || PLAN_BG,
+        borderTop: "1px solid transparent",
+        borderRight: "1px solid transparent",
+        borderBottom: "1px solid transparent",
+        borderLeft: `3px solid ${cat.color}`,
+        borderRadius: 6,
+        cursor: "default"
       }
-      return /*#__PURE__*/React.createElement(CatSuggestionItem, {
-        key: s.label,
-        label: s.label,
-        desc: s.desc,
-        disabled: false,
-        onClick: () => addCatFromSuggestion(s.label)
-      });
-    }),
-    /*#__PURE__*/React.createElement("div", {
-      style: { borderTop: "1px dashed #E8E5E3", margin: "10px 2px 8px" }
-    }),
-    DEFAULT_CATS.map(dc => {
-      const inCats = cats.some(c => c.label.toLowerCase() === dc.label.toLowerCase());
-      if (!inCats) {
-        return /*#__PURE__*/React.createElement(CatSuggestionItem, {
-          key: dc.id,
-          label: dc.label,
-          desc: null,
-          disabled: false,
-          onClick: () => addCatFromSuggestion(dc.label)
-        });
+    }, /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 13, color: "#1C1917", fontWeight: 500, flex: 1 }
+    }, cat.label), /*#__PURE__*/React.createElement("button", {
+      onClick: () => deleteCat(cat.id),
+      title: "Delete pillar",
+      style: {
+        background: "none",
+        border: "none",
+        cursor: "pointer",
+        fontSize: 16,
+        lineHeight: 1,
+        color: "#A8A29E",
+        padding: 2,
+        flexShrink: 0
       }
-      return /*#__PURE__*/React.createElement("div", {
-        key: dc.id,
-        style: {
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          padding: "10px 12px",
-          marginBottom: 6,
-          background: "#F7F6F4",
-          border: "1px solid #E8E5E3",
-          borderRadius: 10,
-          opacity: 0.38,
-          cursor: "default"
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: { width: 6, height: 6, borderRadius: "50%", background: dc.color, flexShrink: 0 }
-      }), /*#__PURE__*/React.createElement("div", {
-        style: { fontSize: 13, color: "#78716C", fontWeight: 500 }
-      }, dc.label));
-    })
+    }, "×"))
+    )
   ),
   /*#__PURE__*/React.createElement("div", {
     style: { padding: "12px 14px", borderTop: "1px solid #E8E5E3", flexShrink: 0 }
@@ -5228,8 +6784,8 @@ function Planner() {
     style: {
       width: "100%",
       padding: "11px",
-      borderRadius: 9,
-      border: "1.5px solid " + SUGG_COLOR + "60",
+      borderRadius: 6,
+      border: "1.5px solid #D6D3D1",
       background: "none",
       outline: "none",
       fontSize: 13,
@@ -5243,17 +6799,18 @@ function Planner() {
     style: {
       width: "100%",
       padding: "11px",
-      borderRadius: 9,
-      border: "1.5px dashed " + SUGG_COLOR + "60",
+      borderRadius: 6,
+      border: "1.5px dashed #D6D3D1",
       background: "none",
       cursor: "pointer",
       fontSize: 13,
-      color: SUGG_COLOR,
+      color: PLAN_TEXT,
       fontWeight: 600,
       fontFamily: "inherit",
       letterSpacing: "0.02em"
     }
-  }, "+ Add pillar"))), showStartFreshConfirm && /*#__PURE__*/React.createElement("div", {
+  }, "Create Your Own")));
+  })(), showStartFreshConfirm && /*#__PURE__*/React.createElement("div", {
     onClick: () => setShowStartFreshConfirm(false),
     style: {
       position: "fixed",
