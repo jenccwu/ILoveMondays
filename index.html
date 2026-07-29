@@ -382,6 +382,28 @@ const UNTAGGED_CAT = {
   color: "#A8A29E",
   bg: "#F0EFED"
 };
+// Builds the left-edge accent for an item: a solid color for a single
+// pillar (unchanged from before), or stacked hard-stop color bands when
+// tagged to more than one. Also decides the done-state fill: a single
+// pillar keeps its own tinted fill, but a multi-pillar item uses a neutral
+// fill instead of picking one tag's color over the others.
+// Module-level so both CalendarView and the pillar-view grid (Cell) can share it.
+function pillarAccent(allCats, isDone) {
+  const real = (allCats || []).filter(c => c.id !== UNTAGGED_CAT.id);
+  if (real.length === 0) {
+    return { border: null, fill: isDone ? PLAN_BG : "#fff" };
+  }
+  if (real.length === 1) {
+    const c = real[0];
+    return { border: isDone ? c.color : c.color + FADE, fill: isDone ? c.bg || PLAN_BG : "#fff" };
+  }
+  const seg = 100 / real.length;
+  const stops = real.map((c, i) => {
+    const col = isDone ? c.color : c.color + FADE;
+    return `${col} ${i * seg}%, ${col} ${(i + 1) * seg}%`;
+  }).join(", ");
+  return { border: `linear-gradient(to bottom, ${stops})`, fill: isDone ? "#F0EFED" : "#fff" };
+}
 const DEFAULT_CATS = [{
   id: "move",
   label: "Move",
@@ -758,7 +780,8 @@ function Cell({
   date,
   requestEdit,
   onEditConsumed,
-  onTabNext
+  onTabNext,
+  getLineAccent
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
@@ -921,6 +944,8 @@ function Cell({
   }
   const lines = filled ? value.split("\n").filter(l => l.trim()) : [];
   const isMultiLine = lines.length > 1 || (externalDragging && lines.length === 1);
+  const singleLineDone = isPastOrToday && !!doneLines?.has(0);
+  const singleLineAccent = filled && !isMultiLine && getLineAccent ? getLineAccent(0, singleLineDone) : null;
   const bg = filled && !isFuture ? "#ffffff" : "#F0EFED";
   const textColor = isFuture ? "#A8A29E" : cat.color;
   const textOpacity = 1;
@@ -1197,7 +1222,8 @@ function Cell({
   }, lines.map((line, i) => {
     const isOver = dragOverIdx === i && ((dragLineIdx !== null && dragLineIdx !== i) || (dragLineIdx === null && externalDragging));
     const lineDone = isPastOrToday && doneLines?.has(i);
-    const lineColor = lineDone ? cat.color : "#A8A29E";
+    const nameColor = lineDone ? "#1C1917" : PLAN_TEXT;
+    const accent = getLineAccent ? getLineAccent(i, lineDone) : null;
     return /*#__PURE__*/React.createElement("div", {
       key: i,
       onDragOver: readOnly ? undefined : e => handleLineDragOver(e, i),
@@ -1209,14 +1235,31 @@ function Cell({
       style: {
         display: "flex",
         alignItems: "center",
-        padding: "1px 0",
+        padding: "3px 7px",
+        paddingLeft: accent?.border ? 9 : 7,
+        marginBottom: 3,
+        borderRadius: 6,
+        background: accent?.fill || "#fff",
+        borderTop: `1px solid ${lineDone ? "transparent" : "#EDEBE7"}`,
+        borderRight: `1px solid ${lineDone ? "transparent" : "#EDEBE7"}`,
+        borderBottom: `1px solid ${lineDone ? "transparent" : "#EDEBE7"}`,
+        borderLeft: `1px solid ${lineDone ? "transparent" : "#EDEBE7"}`,
         opacity: dragLineIdx === i ? 0.3 : 1,
-        background: "transparent",
         boxShadow: isOver && dragOverPos === "before" ? `0 -2px 0 ${cat.color}` : isOver && dragOverPos === "after" ? `0 2px 0 ${cat.color}` : "none",
         transition: "opacity 0.1s ease, box-shadow 0.05s ease",
         position: "relative"
       }
-    }, !readOnly && (hovered || dragLineIdx === i) && /*#__PURE__*/React.createElement("div", {
+    }, accent?.border && /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "absolute",
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: 3,
+        borderRadius: "6px 0 0 6px",
+        ...(accent.border.startsWith("linear-gradient") ? { backgroundImage: accent.border } : { background: accent.border })
+      }
+    }), !readOnly && (hovered || dragLineIdx === i) && /*#__PURE__*/React.createElement("div", {
       draggable: true,
       onDragStart: e => handleLineDragStart(e, i),
       onDragEnd: () => {
@@ -1252,33 +1295,35 @@ function Cell({
       onMouseEnter: e => e.currentTarget.style.transform = "scale(1.2)",
       onMouseLeave: e => e.currentTarget.style.transform = "scale(1)"
     }, /*#__PURE__*/React.createElement("svg", {
-      width: "10",
-      height: "10",
-      viewBox: "0 0 10 10"
-    }, lineDone ? /*#__PURE__*/React.createElement("circle", {
-      cx: "5",
-      cy: "5",
-      r: "4.5",
-      fill: cat.color
-    }) : /*#__PURE__*/React.createElement("circle", {
-      cx: "5",
-      cy: "5",
-      r: "4",
+      width: "11",
+      height: "11",
+      viewBox: "0 0 12 12"
+    }, lineDone ? /*#__PURE__*/React.createElement("path", {
+      d: "M2 6.4L4.7 9L10 3.4",
       fill: "none",
-      stroke: "#C4BFBC",
+      stroke: PLAN_RING,
+      strokeWidth: "1.5",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }) : /*#__PURE__*/React.createElement("circle", {
+      cx: "6",
+      cy: "6",
+      r: "4.5",
+      fill: "none",
+      stroke: PLAN_RING,
       strokeWidth: "1.5"
     }))), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 12,
-        color: lineColor,
-        fontWeight: 600,
+        color: nameColor,
+        fontWeight: lineDone ? 500 : 600,
         lineHeight: 1.4,
         flex: 1,
         textAlign: isPastOrToday ? "left" : "center",
         userSelect: "text",
         transition: "color 0.2s ease"
       }
-    }, renderWithLinks(line, lineColor)), !readOnly && hoveredLine === i && dragLineIdx === null && linkingIdx !== i && /*#__PURE__*/React.createElement("div", {
+    }, renderWithLinks(line, nameColor)), !readOnly && hoveredLine === i && dragLineIdx === null && linkingIdx !== i && /*#__PURE__*/React.createElement("div", {
       style: {
         position: "absolute",
         right: 2,
@@ -1360,9 +1405,28 @@ function Cell({
       alignItems: "center",
       gap: 6,
       width: "100%",
-      paddingBottom: !readOnly && linkingIdx === -1 ? 20 : 0
+      borderRadius: 6,
+      background: singleLineAccent?.fill || "transparent",
+      borderTop: `1px solid ${singleLineDone ? "transparent" : "#EDEBE7"}`,
+      borderRight: `1px solid ${singleLineDone ? "transparent" : "#EDEBE7"}`,
+      borderBottom: `1px solid ${singleLineDone ? "transparent" : "#EDEBE7"}`,
+      borderLeft: `1px solid ${singleLineDone ? "transparent" : "#EDEBE7"}`,
+      padding: "3px 7px",
+      paddingLeft: singleLineAccent?.border ? 9 : 7,
+      paddingBottom: !readOnly && linkingIdx === -1 ? 20 : 3,
+      position: "relative"
     }
-  }, !readOnly && onToggleDone && /*#__PURE__*/React.createElement("button", {
+  }, singleLineAccent?.border && /*#__PURE__*/React.createElement("span", {
+    style: {
+      position: "absolute",
+      left: 0,
+      top: 0,
+      bottom: 0,
+      width: 3,
+      borderRadius: "6px 0 0 6px",
+      ...(singleLineAccent.border.startsWith("linear-gradient") ? { backgroundImage: singleLineAccent.border } : { background: singleLineAccent.border })
+    }
+  }), !readOnly && onToggleDone && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       onToggleDone(0);
@@ -1383,34 +1447,36 @@ function Cell({
     onMouseEnter: e => e.currentTarget.style.transform = "scale(1.2)",
     onMouseLeave: e => e.currentTarget.style.transform = "scale(1)"
   }, /*#__PURE__*/React.createElement("svg", {
-    width: "10",
-    height: "10",
-    viewBox: "0 0 10 10"
-  }, doneLines?.has(0) ? /*#__PURE__*/React.createElement("circle", {
-    cx: "5",
-    cy: "5",
-    r: "4.5",
-    fill: cat.color
-  }) : /*#__PURE__*/React.createElement("circle", {
-    cx: "5",
-    cy: "5",
-    r: "4",
+    width: "11",
+    height: "11",
+    viewBox: "0 0 12 12"
+  }, singleLineDone ? /*#__PURE__*/React.createElement("path", {
+    d: "M2 6.4L4.7 9L10 3.4",
     fill: "none",
-    stroke: "#C4BFBC",
+    stroke: PLAN_RING,
+    strokeWidth: "1.5",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }) : /*#__PURE__*/React.createElement("circle", {
+    cx: "6",
+    cy: "6",
+    r: "4.5",
+    fill: "none",
+    stroke: PLAN_RING,
     strokeWidth: "1.5"
   }))), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 13,
-      color: doneLines?.has(0) ? cat.color : "#A8A29E",
+      color: singleLineDone ? "#1C1917" : PLAN_TEXT,
       lineHeight: 1.5,
       whiteSpace: "pre-wrap",
       wordBreak: "break-word",
       flex: 1,
-      fontWeight: 600,
+      fontWeight: singleLineDone ? 500 : 600,
       userSelect: "text",
       transition: "color 0.2s ease"
     }
-  }, renderWithLinks(value, doneLines?.has(0) ? cat.color : "#A8A29E"))) : /*#__PURE__*/React.createElement("span", {
+  }, renderWithLinks(value, singleLineDone ? "#1C1917" : PLAN_TEXT))) : /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 13,
       color: "#A8A29E",
@@ -1423,9 +1489,25 @@ function Cell({
       fontWeight: 600,
       opacity: textOpacity,
       userSelect: "text",
-      paddingBottom: !readOnly && linkingIdx === -1 ? 20 : 0
+      borderRadius: 6,
+      background: singleLineAccent?.fill || "transparent",
+      border: "1px solid #EDEBE7",
+      padding: "3px 7px",
+      paddingLeft: singleLineAccent?.border ? 9 : 7,
+      paddingBottom: !readOnly && linkingIdx === -1 ? 20 : 3,
+      position: "relative"
     }
-  }, renderWithLinks(value, "#A8A29E")) : !readOnly && /*#__PURE__*/React.createElement("span", {
+  }, singleLineAccent?.border && /*#__PURE__*/React.createElement("span", {
+    style: {
+      position: "absolute",
+      left: 0,
+      top: 0,
+      bottom: 0,
+      width: 3,
+      borderRadius: "6px 0 0 6px",
+      ...(singleLineAccent.border.startsWith("linear-gradient") ? { backgroundImage: singleLineAccent.border } : { background: singleLineAccent.border })
+    }
+  }), renderWithLinks(value, "#A8A29E")) : !readOnly && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 18,
       color: placeholderColor,
@@ -2664,11 +2746,13 @@ function CalendarView({
   onEditItem,
   onCreateItem,
   onOpenPillarSidebar,
-  onAddPillar
+  onAddPillar,
+  onReflectDay
 }) {
   const [dragItem, setDragItem] = useState(null);
   const [selectedPillar, setSelectedPillar] = useState(null);
   const [hoveredKey, setHoveredKey] = useState(null);
+  const [hoveredDayHeader, setHoveredDayHeader] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [editName, setEditName] = useState("");
   const [editPillarIds, setEditPillarIds] = useState([]);
@@ -2880,27 +2964,7 @@ function CalendarView({
     });
     return result;
   }
-  // Builds the left-edge accent for an item: a solid color for a single
-  // pillar (unchanged from before), or stacked hard-stop color bands when
-  // tagged to more than one. Also decides the done-state fill: a single
-  // pillar keeps its own tinted fill, but a multi-pillar item uses a neutral
-  // fill instead of picking one tag's color over the others.
-  function pillarAccent(allCats, isDone) {
-    const real = (allCats || []).filter(c => c.id !== UNTAGGED_CAT.id);
-    if (real.length === 0) {
-      return { border: null, fill: isDone ? PLAN_BG : "#fff" };
-    }
-    if (real.length === 1) {
-      const c = real[0];
-      return { border: isDone ? c.color : c.color + FADE, fill: isDone ? c.bg || PLAN_BG : "#fff" };
-    }
-    const seg = 100 / real.length;
-    const stops = real.map((c, i) => {
-      const col = isDone ? c.color : c.color + FADE;
-      return `${col} ${i * seg}%, ${col} ${(i + 1) * seg}%`;
-    }).join(", ");
-    return { border: `linear-gradient(to bottom, ${stops})`, fill: isDone ? "#F0EFED" : "#fff" };
-  }
+  // pillarAccent is now defined at module scope (shared with the pillar-view grid).
   function itemsForDay(ds) {
     const list = [];
     const seenIds = new Set();
@@ -3063,15 +3127,59 @@ function CalendarView({
     }
   }), dates.map((d, i) => {
     const ds = ymd(d),
-      isToday = ds === todayStr;
+      isToday = ds === todayStr,
+      isDayHovered = isOwnView && hoveredDayHeader === ds;
     return /*#__PURE__*/React.createElement("div", {
       key: i,
+      onMouseEnter: isOwnView ? () => setHoveredDayHeader(ds) : undefined,
+      onMouseLeave: isOwnView ? () => setHoveredDayHeader(null) : undefined,
       style: {
+        position: "relative",
         textAlign: "center",
         padding: "10px 4px 8px",
         borderLeft: "1px solid #E8E5E3"
       }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, isDayHovered && onReflectDay && /*#__PURE__*/React.createElement("button", {
+      onClick: e => {
+        e.stopPropagation();
+        onReflectDay(ds, d.toLocaleDateString("en-US", { weekday: "long" }));
+      },
+      title: "Reflect on this day",
+      style: {
+        position: "absolute",
+        top: 3,
+        right: 3,
+        background: "rgba(255,255,255,0.94)",
+        border: "none",
+        borderRadius: 8,
+        cursor: "pointer",
+        padding: "3px 4px",
+        display: "flex",
+        alignItems: "center",
+        color: "#7C3AED",
+        boxShadow: "0 1px 5px rgba(0,0,0,0.16)",
+        zIndex: 6
+      }
+    }, /*#__PURE__*/React.createElement("svg", {
+      width: "11",
+      height: "11",
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: "1.7",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }, /*#__PURE__*/React.createElement("path", {
+      d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "6.5",
+      cy: "21",
+      r: "2.2"
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "3.5",
+      cy: "24",
+      r: "1.4"
+    }))), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         letterSpacing: "0.1em",
@@ -3133,8 +3241,9 @@ function CalendarView({
         borderLeft: "1px solid #E8E5E3",
         padding: "6px 6px",
         display: "flex",
-        flexWrap: "wrap",
+        flexDirection: "column",
         gap: 4,
+        minWidth: 0,
         minHeight: 30,
         cursor: isOwnView && onCreateItem ? "pointer" : "default",
         background: isOver ? "#FEF3C7" : "transparent",
@@ -3175,7 +3284,9 @@ function CalendarView({
           borderBottom: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
           borderLeft: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
           cursor: isOwnView ? "grab" : "default",
-          maxWidth: 110,
+          width: "100%",
+          minWidth: 0,
+          boxSizing: "border-box",
           overflow: isHoveredThis || isNudgeThis ? "visible" : "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -3238,8 +3349,12 @@ function CalendarView({
         stroke: PLAN_RING,
         strokeWidth: "1.5"
       }))), isOwnView && isHoveredThis && /*#__PURE__*/React.createElement("div", {
+        draggable: false,
         onClick: e => e.stopPropagation(),
-        onMouseDown: e => e.stopPropagation(),
+        onMouseDown: e => {
+          e.stopPropagation();
+          e.preventDefault();
+        },
         style: {
           position: "absolute",
           top: -24,
@@ -3597,8 +3712,12 @@ function CalendarView({
           background: PLAN_RING
         }
       })), isOwnView && isHoveredThis && /*#__PURE__*/React.createElement("div", {
+        draggable: false,
         onClick: e => e.stopPropagation(),
-        onMouseDown: e => e.stopPropagation(),
+        onMouseDown: e => {
+          e.stopPropagation();
+          e.preventDefault();
+        },
         style: {
           position: "absolute",
           top: -19,
@@ -4139,6 +4258,16 @@ function Planner() {
   const displayEntryPillars = activeView ? activeView.entryPillars || {} : entryPillars;
   const displayEntryIds = activeView ? activeView.entryIds || {} : entryIds;
   const displayRatings = activeView ? activeView.ratings || {} : ratings;
+  const displayCatById = {};
+  [...displayCats, UNTAGGED_CAT].forEach(c => { displayCatById[c.id] = c; });
+  // Same stacked-border treatment used in the calendar view, applied to a
+  // single line in the pillar-view grid: looks up every pillar a line is
+  // tagged to (not just the column it's showing in) and bands their colors.
+  function getLineAccent(ds, catId, lineIdx, isDone) {
+    const allPillarIds = displayEntryPillars?.[ds]?.[catId]?.[lineIdx] || [catId];
+    const allCats = allPillarIds.map(pid => displayCatById[pid]).filter(Boolean);
+    return pillarAccent(allCats, isDone);
+  }
   function getGoal(catId) {
     return displayGoals[catId] ?? null;
   }
@@ -5350,7 +5479,8 @@ function Planner() {
     onEditItem: isOwnView ? (ds, catId, lineIdx, newText, newPillars, linkUrl, newSched, newDs) => editCalendarItem(ds, catId, lineIdx, newText, newPillars, linkUrl, newSched, newDs) : null,
     onCreateItem: isOwnView ? (ds, pillars, name, linkUrl, sched) => createCalendarItem(ds, pillars, name, linkUrl, sched) : null,
     onOpenPillarSidebar: isOwnView ? (catId) => openIdeasSidebar(catId) : null,
-    onAddPillar: isOwnView ? addCat : null
+    onAddPillar: isOwnView ? addCat : null,
+    onReflectDay: isOwnView ? (ds, weekday) => openReflectWithItem("", weekday, "#7C3AED", ds) : null
   }) : /*#__PURE__*/React.createElement("div", {
     style: {
       background: "#fff",
@@ -5712,7 +5842,8 @@ function Planner() {
         date: ds,
         requestEdit: isOwnView && pendingEditCell?.ds === ds && pendingEditCell?.catId === cat.id,
         onEditConsumed: () => setPendingEditCell(null),
-        onTabNext: isOwnView && dateIdx < dates.length - 1 ? () => setPendingEditCell({ ds: ymd(dates[dateIdx + 1]), catId: cat.id }) : null
+        onTabNext: isOwnView && dateIdx < dates.length - 1 ? () => setPendingEditCell({ ds: ymd(dates[dateIdx + 1]), catId: cat.id }) : null,
+        getLineAccent: (lineIdx, isDone) => getLineAccent(ds, cat.id, lineIdx, isDone)
       }));
     })), isTarget && dragPos === "below" && dropLine);
   }), isOwnView && /*#__PURE__*/React.createElement("div", {
@@ -5870,7 +6001,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v7.28.11")), (() => {
+  }, "v7.29.6")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
