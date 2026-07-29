@@ -2747,7 +2747,9 @@ function CalendarView({
   onCreateItem,
   onOpenPillarSidebar,
   onAddPillar,
-  onReflectDay
+  onReflectDay,
+  onOpenDayReflection,
+  dayReflectionDates
 }) {
   const [dragItem, setDragItem] = useState(null);
   const [selectedPillar, setSelectedPillar] = useState(null);
@@ -3128,7 +3130,8 @@ function CalendarView({
   }), dates.map((d, i) => {
     const ds = ymd(d),
       isToday = ds === todayStr,
-      isDayHovered = isOwnView && hoveredDayHeader === ds;
+      isDayHovered = isOwnView && hoveredDayHeader === ds,
+      hasDayReflection = !!dayReflectionDates?.has(ds);
     return /*#__PURE__*/React.createElement("div", {
       key: i,
       onMouseEnter: isOwnView ? () => setHoveredDayHeader(ds) : undefined,
@@ -3142,9 +3145,13 @@ function CalendarView({
     }, isDayHovered && onReflectDay && /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
-        onReflectDay(ds, d.toLocaleDateString("en-US", { weekday: "long" }));
+        if (hasDayReflection && onOpenDayReflection) {
+          onOpenDayReflection(ds);
+        } else {
+          onReflectDay(ds, d.toLocaleDateString("en-US", { weekday: "long" }));
+        }
       },
-      title: "Reflect on this day",
+      title: hasDayReflection ? "View / edit reflection" : "Reflect on this day",
       style: {
         position: "absolute",
         top: 3,
@@ -3164,7 +3171,7 @@ function CalendarView({
       width: "11",
       height: "11",
       viewBox: "0 0 24 24",
-      fill: "none",
+      fill: hasDayReflection ? "#7C3AED" : "none",
       stroke: "currentColor",
       strokeWidth: "1.7",
       strokeLinecap: "round",
@@ -3174,11 +3181,13 @@ function CalendarView({
     }), /*#__PURE__*/React.createElement("circle", {
       cx: "6.5",
       cy: "21",
-      r: "2.2"
+      r: "2.2",
+      fill: hasDayReflection ? "#7C3AED" : "none"
     }), /*#__PURE__*/React.createElement("circle", {
       cx: "3.5",
       cy: "24",
-      r: "1.4"
+      r: "1.4",
+      fill: hasDayReflection ? "#7C3AED" : "none"
     }))), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
@@ -4490,6 +4499,32 @@ function Planner() {
       }
     }
   }
+  // Like openReflectionsOnly, but for the day-level reflection (empty
+  // linkedItem.itemText) created from the "reflect on this day" button,
+  // so re-clicking it surfaces the existing entry instead of making a new one.
+  function openDayReflection(ds) {
+    if (!sidebarOpen) {
+      const catId = lastIdeaCatId || displayCats[0]?.id;
+      if (catId) setIdeaPanelCatId(catId);
+    }
+    setSidebarTab('reflections');
+    setSidebarOpen(true);
+    const entries = journal[weekStart] || [];
+    const idx = entries.findIndex(e => !e.linkedItem?.itemText && e.text?.trim() && (e.linkedItem?.eventDate || '') === ds);
+    if (idx > 0) {
+      const reordered = [...entries];
+      const [found] = reordered.splice(idx, 1);
+      reordered.unshift(found);
+      const next = { ...journal, [weekStart]: reordered };
+      setJournal(next);
+      store.set("planner:journal", JSON.stringify(next));
+      setNewEntryId(found.id);
+      setTimeout(() => setNewEntryId(null), 600);
+    } else if (idx === 0) {
+      setNewEntryId(entries[0].id);
+      setTimeout(() => setNewEntryId(null), 600);
+    }
+  }
   function closeSidebar() {
     setSidebarOpen(false);
     setEditingIdeaId(null);
@@ -5071,6 +5106,18 @@ function Planner() {
     });
     return set;
   }, [journal, weekStart]);
+  // Day-level reflections (from the "reflect on this day" button) are stored
+  // with an empty linkedItem.itemText, so they're tracked separately here.
+  const dayReflectionDates = React.useMemo(() => {
+    const entries = journal[weekStart] || [];
+    const set = new Set();
+    entries.forEach(e => {
+      if (e.text && e.text.trim() && e.linkedItem && !e.linkedItem.itemText && e.linkedItem.eventDate) {
+        set.add(e.linkedItem.eventDate);
+      }
+    });
+    return set;
+  }, [journal, weekStart]);
   if (showScience) return /*#__PURE__*/React.createElement(SciencePage, {
     onBack: () => setShowScience(false)
   });
@@ -5480,7 +5527,9 @@ function Planner() {
     onCreateItem: isOwnView ? (ds, pillars, name, linkUrl, sched) => createCalendarItem(ds, pillars, name, linkUrl, sched) : null,
     onOpenPillarSidebar: isOwnView ? (catId) => openIdeasSidebar(catId) : null,
     onAddPillar: isOwnView ? addCat : null,
-    onReflectDay: isOwnView ? (ds, weekday) => openReflectWithItem("", weekday, "#7C3AED", ds) : null
+    onReflectDay: isOwnView ? (ds, weekday) => openReflectWithItem("", weekday, "#7C3AED", ds) : null,
+    onOpenDayReflection: isOwnView ? ds => openDayReflection(ds) : null,
+    dayReflectionDates: isOwnView ? dayReflectionDates : null
   }) : /*#__PURE__*/React.createElement("div", {
     style: {
       background: "#fff",
@@ -5516,7 +5565,8 @@ function Planner() {
     const ds = ymd(d),
       isToday = ds === todayStr,
       isFuture = ds > todayStr,
-      isDayHovered = isOwnView && hoveredDayHeader === ds;
+      isDayHovered = isOwnView && hoveredDayHeader === ds,
+      hasDayReflection = dayReflectionDates.has(ds);
     return /*#__PURE__*/React.createElement("div", {
       key: i,
       onMouseEnter: isOwnView ? () => setHoveredDayHeader(ds) : undefined,
@@ -5531,9 +5581,13 @@ function Planner() {
     }, isDayHovered && /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
-        openReflectWithItem("", d.toLocaleDateString("en-US", { weekday: "long" }), "#7C3AED", ds);
+        if (hasDayReflection) {
+          openDayReflection(ds);
+        } else {
+          openReflectWithItem("", d.toLocaleDateString("en-US", { weekday: "long" }), "#7C3AED", ds);
+        }
       },
-      title: "Reflect on this day",
+      title: hasDayReflection ? "View / edit reflection" : "Reflect on this day",
       style: {
         position: "absolute",
         top: 3,
@@ -5553,7 +5607,7 @@ function Planner() {
       width: "11",
       height: "11",
       viewBox: "0 0 24 24",
-      fill: "none",
+      fill: hasDayReflection ? "#7C3AED" : "none",
       stroke: "currentColor",
       strokeWidth: "1.7",
       strokeLinecap: "round",
@@ -5563,11 +5617,13 @@ function Planner() {
     }), /*#__PURE__*/React.createElement("circle", {
       cx: "6.5",
       cy: "21",
-      r: "2.2"
+      r: "2.2",
+      fill: hasDayReflection ? "#7C3AED" : "none"
     }), /*#__PURE__*/React.createElement("circle", {
       cx: "3.5",
       cy: "24",
-      r: "1.4"
+      r: "1.4",
+      fill: hasDayReflection ? "#7C3AED" : "none"
     }))), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
@@ -6001,7 +6057,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v7.29.6")), (() => {
+  }, "v7.29.7")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
