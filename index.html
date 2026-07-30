@@ -1280,7 +1280,7 @@ function Cell({
       style: {
         fontSize: 12,
         color: nameColor,
-        fontWeight: lineDone ? 400 : 500,
+        fontWeight: 400,
         lineHeight: 1.4,
         flex: 1,
         textAlign: isPastOrToday ? "left" : "center",
@@ -1436,7 +1436,7 @@ function Cell({
       whiteSpace: "pre-wrap",
       wordBreak: "break-word",
       flex: 1,
-      fontWeight: singleLineDone ? 400 : 500,
+      fontWeight: 400,
       userSelect: "text",
       transition: "color 0.2s ease"
     }
@@ -1488,7 +1488,7 @@ function Cell({
       wordBreak: "break-word",
       display: "block",
       width: "100%",
-      fontWeight: 500,
+      fontWeight: 400,
       opacity: textOpacity,
       userSelect: "text",
       borderRadius: 6,
@@ -1734,8 +1734,8 @@ function JournalEntry({
     })))), entry.linkedItem.itemText && /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 11,
-        color: "#78716C",
-        fontWeight: 500,
+        color: "#1C1917",
+        fontWeight: 400,
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
@@ -1794,7 +1794,7 @@ function JournalEntry({
       background: "transparent",
       fontSize: 13,
       fontFamily: "'DM Sans',sans-serif",
-      color: "#57534E",
+      color: "#1C1917",
       padding: 0,
       lineHeight: 1.6,
       boxSizing: "border-box",
@@ -1808,7 +1808,7 @@ function JournalEntry({
     style: {
       margin: "0 0 4px",
       fontSize: 13,
-      color: text ? "#57534E" : "#C4BFBC",
+      color: text ? "#1C1917" : "#C4BFBC",
       fontStyle: text ? "normal" : "italic",
       lineHeight: 1.6,
       whiteSpace: "pre-wrap",
@@ -3333,7 +3333,7 @@ function CalendarView({
           overflow: isHoveredThis || isNudgeThis ? "visible" : "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
-          fontWeight: it.isDone ? 400 : 500,
+          fontWeight: 400,
           opacity: isDimmed(it.allCats) ? 0.25 : 1,
           transition: "opacity 0.15s ease",
           display: "flex",
@@ -3644,7 +3644,7 @@ function CalendarView({
           borderRadius: 4,
           padding: "0 6px",
           fontSize: 12,
-          fontWeight: it.isDone ? 400 : 500,
+          fontWeight: 400,
           color: nameColor,
           overflow: isHoveredThis || isNudgeThis ? "visible" : "hidden",
           cursor: isOwnView ? "grab" : "default",
@@ -6107,7 +6107,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v7.29.14")), (() => {
+  }, "v7.29.18")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -6294,8 +6294,8 @@ function Planner() {
       }, isOwnView && /*#__PURE__*/React.createElement("div", {
         style: {
           flexShrink: 0,
-          opacity: 0.35,
-          color: pc.color
+          opacity: 0.4,
+          color: "#57534E"
         }
       }, /*#__PURE__*/React.createElement(GripIcon, null)), isEditing ? /*#__PURE__*/React.createElement("input", {
         ref: ideaInputRef,
@@ -6321,9 +6321,9 @@ function Planner() {
           background: "transparent",
           fontSize: 13,
           fontFamily: "'DM Sans',sans-serif",
-          color: pc.color,
+          color: "#1C1917",
           padding: "1px 0",
-          fontWeight: 500
+          fontWeight: 400
         }
       }) : /*#__PURE__*/React.createElement("span", {
         onClick: isOwnView ? () => {
@@ -6335,13 +6335,13 @@ function Planner() {
         style: {
           flex: 1,
           fontSize: 13,
-          color: pc.color,
-          fontWeight: 500,
+          color: "#1C1917",
+          fontWeight: 400,
           lineHeight: 1.4,
           wordBreak: "break-word",
           cursor: isOwnView ? "text" : "default"
         }
-      }, renderWithLinks(idea.text, pc.color)), isOwnView && /*#__PURE__*/React.createElement("div", {
+      }, renderWithLinks(idea.text, "#1C1917")), isOwnView && /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           gap: 4,
@@ -6359,7 +6359,7 @@ function Planner() {
           cursor: "pointer",
           padding: 0,
           lineHeight: 1,
-          color: `${pc.color}70`,
+          color: "#C4BFBC",
           display: "flex",
           alignItems: "center"
         }
@@ -6383,7 +6383,7 @@ function Planner() {
           border: "none",
           cursor: "pointer",
           fontSize: 16,
-          color: `${pc.color}50`,
+          color: "#C4BFBC",
           padding: 0,
           lineHeight: 1
         }
@@ -6401,7 +6401,7 @@ function Planner() {
         height: "10",
         viewBox: "0 0 24 24",
         fill: "none",
-        stroke: pc.color,
+        stroke: "#C4BFBC",
         strokeWidth: "2.5",
         strokeLinecap: "round",
         strokeLinejoin: "round",
@@ -7199,7 +7199,7 @@ function Planner() {
       fontFamily: "inherit",
       letterSpacing: "0.02em"
     }
-  }, "Create Your Own")));
+  }, "+ Add pillar")));
   })(), showStartFreshConfirm && /*#__PURE__*/React.createElement("div", {
     onClick: () => setShowStartFreshConfirm(false),
     style: {
