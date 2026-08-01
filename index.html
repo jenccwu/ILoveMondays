@@ -638,6 +638,29 @@ function deriveLegacyView(weekEntries) {
   });
   return { data, done, times, entryPillars, entryIds };
 }
+// Computes an `order` value that places an entry at a specific spot within
+// one pillar's list for a target day bucket, instead of always appending at
+// the end. `insertInfo` is { catId, anchorId, pos } where anchorId is the id
+// of the entry being hovered and pos is "before" or "after" it. Falls back
+// to simple day-wide append (existing behavior) when there's no valid
+// anchor to insert relative to. Uses a fractional order value between the
+// two neighboring entries so no other entry's order needs to change.
+function computeOrderForInsert(bucket, catId, insertInfo) {
+  const dayMax = Object.values(bucket).reduce((m, e) => Math.max(m, e.order ?? 0), -1);
+  if (!insertInfo || insertInfo.catId !== catId || !insertInfo.anchorId) return dayMax + 1;
+  const list = Object.values(bucket)
+    .filter(e => pillarsOrDefault(e.pillars).includes(catId))
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const idx = list.findIndex(e => e.id === insertInfo.anchorId);
+  if (idx === -1) return dayMax + 1;
+  const insertIdx = insertInfo.pos === "after" ? idx + 1 : idx;
+  const prevOrder = insertIdx > 0 ? list[insertIdx - 1].order ?? 0 : null;
+  const nextOrder = insertIdx < list.length ? list[insertIdx].order ?? 0 : null;
+  if (prevOrder == null && nextOrder == null) return 0;
+  if (prevOrder == null) return nextOrder - 1;
+  if (nextOrder == null) return prevOrder + 1;
+  return (prevOrder + nextOrder) / 2;
+}
 // Resolves the (ds, catId, lineIdx) address that Cell/CalendarView operate on
 // back to the actual underlying entry object.
 function entryAt(weekEntries, ds, catId, lineIdx) {
@@ -765,7 +788,10 @@ function Cell({
   onCellDragEnd,
   onLineDragStart,
   onLineDragEnd,
+  onReorderLine,
   onEditStart,
+  onOpenItem,
+  onOpenNewItem,
   onReflect,
   doneLines,
   onToggleDone,
@@ -819,7 +845,7 @@ function Cell({
   }, [linkingIdx]);
   useEffect(() => {
     if (requestEdit && onSave) {
-      setEditing(true);
+      onOpenNewItem?.();
       onEditConsumed?.();
     }
   }, [requestEdit]);
@@ -886,12 +912,16 @@ function Cell({
       resetLineDrag();
       return;
     }
-    const ls = [...lines];
-    const [moved] = ls.splice(dragLineIdx, 1);
-    const adj = dragLineIdx < i ? i - 1 : i;
-    const insertAt = dragOverPos === "after" ? adj + 1 : adj;
-    ls.splice(Math.max(0, Math.min(ls.length, insertAt)), 0, moved);
-    onSave(ls.join("\n"));
+    if (onReorderLine) {
+      onReorderLine(dragLineIdx, i, dragOverPos || "after");
+    } else {
+      const ls = [...lines];
+      const [moved] = ls.splice(dragLineIdx, 1);
+      const adj = dragLineIdx < i ? i - 1 : i;
+      const insertAt = dragOverPos === "after" ? adj + 1 : adj;
+      ls.splice(Math.max(0, Math.min(ls.length, insertAt)), 0, moved);
+      onSave(ls.join("\n"));
+    }
     resetLineDrag();
   }
   function applyLink(urlOverride) {
@@ -963,20 +993,54 @@ function Cell({
   }), /*#__PURE__*/React.createElement("path", {
     d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
   }));
+  // The Cell's outer root can be stretched taller than its own content by
+  // its grid row (matching a taller sibling cell on the same row), and
+  // content is top-aligned within it. Rendered as a sibling of that root,
+  // an absolutely-positioned, vertically-centered grip would center on the
+  // full stretched height rather than the visible card, landing well below
+  // it. Rendering the grip as a child of the visible (unstretched) card div
+  // instead keeps it correctly centered on the card no matter how tall the
+  // row grows.
+  // Rendered as a normal flex child (first, before the text) rather than an
+  // absolutely-positioned overlay, and always mounted rather than shown only
+  // on hover — so it never overlaps the text, never shifts the text when it
+  // appears (there's nothing to "appear"; the space is always reserved),
+  // and is always there to grab rather than needing to mount first.
+  const wholeCellGrip = !readOnly && filled && !editing && !isMultiLine && linkingIdx === null ? /*#__PURE__*/React.createElement("div", {
+    key: "whole-cell-grip",
+    draggable: true,
+    onDragStart: e => {
+      e.stopPropagation();
+      setIsCellDragging(true);
+      e.dataTransfer.setData("text/plain", value);
+      e.dataTransfer.effectAllowed = "move";
+      onCellDragStart?.(e);
+    },
+    onDragEnd: () => {
+      setIsCellDragging(false);
+      onCellDragEnd?.();
+    },
+    onClick: e => e.stopPropagation(),
+    title: "Drag to another day",
+    style: {
+      cursor: "grab",
+      flexShrink: 0,
+      display: "flex",
+      alignItems: "center",
+      padding: "4px 3px",
+      margin: "-4px 0 -4px -3px",
+      opacity: 0.45,
+      color: "#57534E"
+    }
+  }, /*#__PURE__*/React.createElement(GripIcon, null)) : null;
   return /*#__PURE__*/React.createElement("div", {
     onClick: readOnly ? undefined : () => {
       if (linkingIdx !== null) return;
-      if (!editing) {
-        const m = filled && !isMultiLine ? value.match(/^\[([^\]]+)\]\(([^)]+)\)$/) : null;
-        if (m) {
-          setDraft(m[1]);
-          setLinkedUrl(m[2]);
-        } else {
-          setDraft(value || "");
-          setLinkedUrl(null);
-        }
-        setEditing(true);
-        onEditStart?.();
+      onEditStart?.();
+      if (filled && !isMultiLine) {
+        onOpenItem?.(0);
+      } else {
+        onOpenNewItem?.();
       }
     },
     onMouseEnter: () => setHovered(true),
@@ -991,7 +1055,7 @@ function Cell({
     style: {
       padding: isPastOrToday && filled && !editing ? "8px 10px" : "8px 6px",
       paddingBottom: isPastOrToday && nudgeLineIdx !== null && filled && !editing ? 26 : !readOnly && filled && !editing ? 22 : undefined,
-      cursor: readOnly ? "default" : "text",
+      cursor: readOnly ? "default" : "pointer",
       background: isDragHovered ? `${cat.color}18` : bg,
       transition: "background 0.15s ease",
       display: "flex",
@@ -1080,33 +1144,7 @@ function Cell({
       color: "#C4BFBC",
       padding: 0
     }
-  }, "×")), !readOnly && (hovered || isCellDragging) && filled && !editing && !isMultiLine && linkingIdx === null && /*#__PURE__*/React.createElement("div", {
-    draggable: true,
-    onDragStart: e => {
-      e.stopPropagation();
-      setIsCellDragging(true);
-      e.dataTransfer.setData("text/plain", value);
-      e.dataTransfer.effectAllowed = "move";
-      onCellDragStart?.(e);
-    },
-    onDragEnd: () => {
-      setIsCellDragging(false);
-      onCellDragEnd?.();
-    },
-    onClick: e => e.stopPropagation(),
-    title: "Drag to another day",
-    style: {
-      position: "absolute",
-      left: 2,
-      top: "50%",
-      transform: "translateY(-50%)",
-      cursor: "grab",
-      zIndex: 5,
-      padding: 2,
-      opacity: 0.45,
-      color: "#57534E"
-    }
-  }, /*#__PURE__*/React.createElement(GripIcon, null)), !readOnly && linkingIdx !== null && /*#__PURE__*/React.createElement("div", {
+  }, "×")), !readOnly && linkingIdx !== null && /*#__PURE__*/React.createElement("div", {
     onClick: e => e.stopPropagation(),
     style: {
       position: "absolute",
@@ -1233,6 +1271,11 @@ function Cell({
         e.stopPropagation();
         setHoveredLine(i);
       },
+      onClick: readOnly ? undefined : e => {
+        e.stopPropagation();
+        onEditStart?.();
+        onOpenItem?.(i);
+      },
       style: {
         display: "flex",
         alignItems: "center",
@@ -1240,6 +1283,7 @@ function Cell({
         paddingLeft: accent?.border ? 9 : 7,
         marginBottom: 3,
         borderRadius: 6,
+        cursor: readOnly ? "default" : "pointer",
         background: accent?.fill || "#fff",
         borderTop: `1px solid ${lineDone ? "transparent" : "#EDEBE7"}`,
         borderRight: `1px solid ${lineDone ? "transparent" : "#EDEBE7"}`,
@@ -1261,7 +1305,7 @@ function Cell({
         borderRadius: "6px 0 0 6px",
         ...(accent.border.startsWith("linear-gradient") ? { backgroundImage: accent.border } : { background: accent.border })
       }
-    }), !readOnly && (hovered || dragLineIdx === i) && /*#__PURE__*/React.createElement("div", {
+    }), !readOnly && /*#__PURE__*/React.createElement("div", {
       draggable: true,
       onDragStart: e => handleLineDragStart(e, i),
       onDragEnd: () => {
@@ -1283,7 +1327,7 @@ function Cell({
         fontWeight: 400,
         lineHeight: 1.4,
         flex: 1,
-        textAlign: isPastOrToday ? "left" : "center",
+        textAlign: "left",
         userSelect: "text",
         transition: "color 0.2s ease"
       }
@@ -1428,7 +1472,7 @@ function Cell({
       borderRadius: "6px 0 0 6px",
       ...(singleLineAccent.border.startsWith("linear-gradient") ? { backgroundImage: singleLineAccent.border } : { background: singleLineAccent.border })
     }
-  }), /*#__PURE__*/React.createElement("span", {
+  }), wholeCellGrip, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 13,
       color: "#1C1917",
@@ -1478,19 +1522,16 @@ function Cell({
     fill: "none",
     stroke: PLAN_RING,
     strokeWidth: "1.5"
-  })))) : /*#__PURE__*/React.createElement("span", {
+  }))))  : /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 13,
       color: "#1C1917",
-      textAlign: "center",
       lineHeight: 1.5,
-      whiteSpace: "pre-wrap",
-      wordBreak: "break-word",
-      display: "block",
+      display: "flex",
+      alignItems: "center",
       width: "100%",
       fontWeight: 400,
       opacity: textOpacity,
-      userSelect: "text",
       borderRadius: 6,
       background: singleLineAccent?.fill || "transparent",
       border: "1px solid #EDEBE7",
@@ -1509,7 +1550,15 @@ function Cell({
       borderRadius: "6px 0 0 6px",
       ...(singleLineAccent.border.startsWith("linear-gradient") ? { backgroundImage: singleLineAccent.border } : { background: singleLineAccent.border })
     }
-  }), renderWithLinks(value, "#1C1917")) : !readOnly && /*#__PURE__*/React.createElement("span", {
+  }), wholeCellGrip, /*#__PURE__*/React.createElement("span", {
+    style: {
+      flex: 1,
+      minWidth: 0,
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+      userSelect: "text"
+    }
+  }, renderWithLinks(value, "#1C1917"))) : !readOnly && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 18,
       color: placeholderColor,
@@ -1520,9 +1569,8 @@ function Cell({
   }, "+"), !readOnly && filled && !editing && linkingIdx === null && nudgeLineIdx === null && /*#__PURE__*/React.createElement("div", {
     onClick: e => {
       e.stopPropagation();
-      setDraft(value + "\n");
-      setLinkedUrl(null);
-      setEditing(true);
+      onEditStart?.();
+      onOpenNewItem?.();
     },
     style: {
       position: "absolute",
@@ -2762,6 +2810,7 @@ function CalendarView({
   entryPillars,
   entryIds,
   onScheduleItem,
+  onReorderItem,
   onResizeItem,
   done,
   onToggleDone,
@@ -2778,87 +2827,15 @@ function CalendarView({
   onAddPillar,
   onReflectDay,
   onOpenDayReflection,
-  dayReflectionDates
+  dayReflectionDates,
+  openEdit,
+  openCreate
 }) {
   const [dragItem, setDragItem] = useState(null);
   const [selectedPillar, setSelectedPillar] = useState(null);
   const [hoveredKey, setHoveredKey] = useState(null);
   const [hoveredDayHeader, setHoveredDayHeader] = useState(null);
-  const [editingItem, setEditingItem] = useState(null);
-  const [editName, setEditName] = useState("");
-  const [editPillarIds, setEditPillarIds] = useState([]);
-  const [editLinkUrl, setEditLinkUrl] = useState(null);
-  const [editUnscheduled, setEditUnscheduled] = useState(false);
-  const [editDate, setEditDate] = useState(null);
-  const [editStart, setEditStart] = useState("09:00");
-  const [editEnd, setEditEnd] = useState("10:00");
-  function timeToMin(str) {
-    const [h, m] = str.split(":").map(Number);
-    return h * 60 + m;
-  }
-  function minToTime(min) {
-    min = (min % 1440 + 1440) % 1440;
-    return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
-  }
-  function openEdit(ds, catId, lineIdx, text, sched, allPillars) {
-    const m = text.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-    setEditName(m ? m[1] : text);
-    setEditLinkUrl(m ? m[2] : null);
-    setEditPillarIds(allPillars && allPillars.length ? allPillars : [catId]);
-    setEditDate(ds);
-    if (sched) {
-      setEditUnscheduled(false);
-      setEditStart(sched.start);
-      setEditEnd(minToTime(timeToMin(sched.start) + sched.duration));
-    } else {
-      setEditUnscheduled(true);
-      setEditStart("09:00");
-      setEditEnd("10:00");
-    }
-    setEditingItem({ ds, catId, lineIdx });
-  }
-  function openCreate(ds, hour, minute) {
-    setEditName("");
-    setEditLinkUrl(null);
-    setEditPillarIds([]);
-    setEditDate(ds);
-    if (hour != null) {
-      setEditUnscheduled(false);
-      const start = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-      setEditStart(start);
-      setEditEnd(minToTime(timeToMin(start) + CAL_DEFAULT_DURATION));
-    } else {
-      setEditUnscheduled(true);
-      setEditStart("09:00");
-      setEditEnd("10:00");
-    }
-    setEditingItem({ ds, isNew: true });
-  }
-  function togglePillarForEdit(catId) {
-    setEditPillarIds(prev => prev.includes(catId) ? prev.filter(id => id !== catId) : [...prev, catId]);
-  }
-  function saveEdit() {
-    if (!editName.trim()) {
-      setEditingItem(null);
-      return;
-    }
-    const finalPillars = editPillarIds.length ? editPillarIds : [UNTAGGED_CAT.id];
-    const targetDs = editDate || editingItem?.ds;
-    let sched = null;
-    if (!editUnscheduled) {
-      const startMin = timeToMin(editStart);
-      let endMin = timeToMin(editEnd);
-      if (endMin <= startMin) endMin += 1440;
-      const duration = Math.max(CAL_MIN_DURATION, endMin - startMin);
-      sched = { start: editStart, duration };
-    }
-    if (editingItem?.isNew) {
-      if (onCreateItem) onCreateItem(targetDs, finalPillars, editName.trim(), editLinkUrl, sched);
-    } else if (editingItem && onEditItem) {
-      onEditItem(editingItem.ds, editingItem.catId, editingItem.lineIdx, editName.trim(), finalPillars, editLinkUrl, sched, targetDs);
-    }
-    setEditingItem(null);
-  }
+  
   function togglePillarFilter(catId) {
     setSelectedPillar(prev => {
       const next = prev === catId ? null : catId;
@@ -3025,6 +3002,7 @@ function CalendarView({
         const allPillars = entryPillars?.[ds]?.[cat.id]?.[lineIdx] || [cat.id];
         const allCats = allPillars.map(pid => catById[pid] || cat).filter(Boolean);
         list.push({
+          id,
           cat,
           lineIdx,
           text: line,
@@ -3055,9 +3033,9 @@ function CalendarView({
     }
     setDragOverSlot(null);
   }
-  function handleDropUnscheduled(ds, e = null) {
+  function handleDropUnscheduled(ds, e = null, insertInfo = null) {
     if (dragItem) {
-      onScheduleItem(dragItem.ds, dragItem.catId, dragItem.lineIdx, ds, null);
+      onScheduleItem(dragItem.ds, dragItem.catId, dragItem.lineIdx, ds, null, insertInfo && insertInfo.catId === dragItem.catId ? insertInfo : null);
       setDragItem(null);
       setDragOverSlot(null);
       return;
@@ -3065,7 +3043,7 @@ function CalendarView({
     const ideaCatId = e?.dataTransfer?.getData("application/x-idea-cat");
     const ideaText = e?.dataTransfer?.getData("text/plain");
     if (ideaCatId && ideaText && ideaText.trim() && onCreateItem) {
-      onCreateItem(ds, [ideaCatId], ideaText.trim(), null, null);
+      onCreateItem(ds, [ideaCatId], ideaText.trim(), null, null, insertInfo && insertInfo.catId === ideaCatId ? insertInfo : null);
     }
     setDragOverSlot(null);
   }
@@ -3264,17 +3242,57 @@ function CalendarView({
   }, ""), dates.map((d, i) => {
     const ds = ymd(d);
     const items = itemsForDay(ds).filter(it => !it.sched);
-    const isOver = dragOverSlot?.ds === ds && dragOverSlot?.unscheduled;
+    const isOver = dragOverSlot?.ds === ds && dragOverSlot?.unscheduled && !dragOverSlot?.reorderAnchorId;
+    // Per-item onDragOver/onDrop (below) handle on-target drags precisely
+    // and stop propagation, so this only runs when a drag/drop misses every
+    // item — e.g. lands in the few px of gap between two rows. Snapping to
+    // the nearest item by distance here means a near-miss still resolves
+    // sensibly instead of silently doing nothing.
+    function nearestItem(e) {
+      const itemEls = e.currentTarget.querySelectorAll("[data-unsched-item='1']");
+      if (!itemEls.length) return null;
+      let closestEl = null;
+      let closestRect = null;
+      let closestDist = Infinity;
+      for (const el of itemEls) {
+        const rect = el.getBoundingClientRect();
+        const dist = Math.abs(e.clientY - (rect.top + rect.height / 2));
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestEl = el;
+          closestRect = rect;
+        }
+      }
+      if (!closestEl || closestDist > 20) return null;
+      const pos = e.clientY < closestRect.top + closestRect.height / 2 ? "before" : "after";
+      return { catId: closestEl.dataset.catId, anchorId: closestEl.dataset.entryId, lineIdx: Number(closestEl.dataset.lineIdx), pos };
+    }
     return /*#__PURE__*/React.createElement("div", {
       key: i,
       onDragOver: isOwnView ? e => {
         e.preventDefault();
-        setDragOverSlot({ ds, unscheduled: true });
+        const near = nearestItem(e);
+        const isSelf = near && dragItem && dragItem.ds === ds && dragItem.catId === near.catId && dragItem.lineIdx === near.lineIdx;
+        const catWillMatch = near && (!dragItem || dragItem.catId === near.catId);
+        if (near && !isSelf && catWillMatch) {
+          setDragOverSlot({ ds, unscheduled: true, reorderCatId: near.catId, reorderAnchorId: near.anchorId, reorderLineIdx: near.lineIdx, reorderPos: near.pos });
+        } else {
+          setDragOverSlot({ ds, unscheduled: true });
+        }
       } : undefined,
-      onDragLeave: isOwnView ? () => setDragOverSlot(null) : undefined,
+      onDragLeave: isOwnView ? e => {
+        if (!e.currentTarget.contains(e.relatedTarget)) setDragOverSlot(null);
+      } : undefined,
       onDrop: isOwnView ? e => {
         e.preventDefault();
-        handleDropUnscheduled(ds, e);
+        const near = nearestItem(e);
+        if (near && dragItem && dragItem.ds === ds && dragItem.catId === near.catId && dragItem.lineIdx !== near.lineIdx) {
+          onReorderItem?.(ds, near.catId, dragItem.lineIdx, near.lineIdx, near.pos);
+          setDragItem(null);
+          setDragOverSlot(null);
+          return;
+        }
+        handleDropUnscheduled(ds, e, near ? { catId: near.catId, anchorId: near.anchorId, pos: near.pos } : null);
       } : undefined,
       onClick: isOwnView && onCreateItem ? e => {
         if (e.target === e.currentTarget) openCreate(ds, null, null);
@@ -3298,15 +3316,40 @@ function CalendarView({
       const isNudgeThis = isPastOrToday && nudgeItem && nudgeItem.ds === ds && nudgeItem.catId === it.cat.id && nudgeItem.lineIdx === it.lineIdx;
       const nameColor = "#1C1917";
       const accent = pillarAccent(it.allCats, it.isDone);
+      const isBeingDragged = isOwnView && dragItem && dragItem.ds === ds && dragItem.catId === it.cat.id && dragItem.lineIdx === it.lineIdx;
+      const isReorderOver = isOwnView && dragOverSlot?.ds === ds && dragOverSlot?.unscheduled && dragOverSlot?.reorderCatId === it.cat.id && dragOverSlot?.reorderLineIdx === it.lineIdx;
       return /*#__PURE__*/React.createElement("div", {
         key: itemKey,
-        draggable: isOwnView,
-        onDragStart: isOwnView ? e => {
-          e.dataTransfer.effectAllowed = "move";
-          e.dataTransfer.setData("text/plain", it.text);
-          setDragItem({ ds, catId: it.cat.id, lineIdx: it.lineIdx, duration: it.sched?.duration });
+        "data-unsched-item": "1",
+        "data-cat-id": it.cat.id,
+        "data-entry-id": it.id || "",
+        "data-line-idx": it.lineIdx,
+        onDragOver: isOwnView ? e => {
+          e.preventDefault();
+          e.stopPropagation();
+          const rect = e.currentTarget.getBoundingClientRect();
+          const pos = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+          const isSelf = dragItem && dragItem.ds === ds && dragItem.catId === it.cat.id && dragItem.lineIdx === it.lineIdx;
+          const catWillMatch = !dragItem || dragItem.catId === it.cat.id;
+          if (!isSelf && catWillMatch) {
+            setDragOverSlot({ ds, unscheduled: true, reorderCatId: it.cat.id, reorderAnchorId: it.id, reorderLineIdx: it.lineIdx, reorderPos: pos });
+          } else {
+            setDragOverSlot({ ds, unscheduled: true });
+          }
         } : undefined,
-        onDragEnd: () => setDragItem(null),
+        onDrop: isOwnView ? e => {
+          e.preventDefault();
+          e.stopPropagation();
+          const rect = e.currentTarget.getBoundingClientRect();
+          const pos = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+          if (dragItem && dragItem.ds === ds && dragItem.catId === it.cat.id && dragItem.lineIdx !== it.lineIdx) {
+            onReorderItem?.(ds, it.cat.id, dragItem.lineIdx, it.lineIdx, pos);
+            setDragItem(null);
+            setDragOverSlot(null);
+            return;
+          }
+          handleDropUnscheduled(ds, e, { catId: it.cat.id, anchorId: it.id, pos });
+        } : undefined,
         onMouseEnter: () => setHoveredKey(itemKey),
         onMouseLeave: () => setHoveredKey(prev => prev === itemKey ? null : prev),
         onClick: isOwnView && onEditItem ? e => {
@@ -3326,7 +3369,7 @@ function CalendarView({
           borderRight: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
           borderBottom: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
           borderLeft: `1px solid ${it.isDone ? "transparent" : "#EDEBE7"}`,
-          cursor: isOwnView ? "grab" : "default",
+          cursor: isOwnView ? "pointer" : "default",
           width: "100%",
           minWidth: 0,
           boxSizing: "border-box",
@@ -3334,8 +3377,9 @@ function CalendarView({
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
           fontWeight: 400,
-          opacity: isDimmed(it.allCats) ? 0.25 : 1,
-          transition: "opacity 0.15s ease",
+          opacity: isBeingDragged ? 0.3 : isDimmed(it.allCats) ? 0.25 : 1,
+          boxShadow: isReorderOver && dragOverSlot.reorderPos === "before" ? `0 -2px 0 ${it.cat.color}` : isReorderOver && dragOverSlot.reorderPos === "after" ? `0 2px 0 ${it.cat.color}` : "none",
+          transition: "opacity 0.15s ease, box-shadow 0.05s ease",
           display: "flex",
           alignItems: "center",
           gap: 4
@@ -3350,7 +3394,31 @@ function CalendarView({
           borderRadius: "5px 0 0 5px",
           ...(accent.border.startsWith("linear-gradient") ? { backgroundImage: accent.border } : { background: accent.border })
         }
-      }), /*#__PURE__*/React.createElement("span", {
+      }), isOwnView && /*#__PURE__*/React.createElement("div", {
+        draggable: true,
+        onDragStart: e => {
+          e.stopPropagation();
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", it.text);
+          setDragItem({ ds, catId: it.cat.id, lineIdx: it.lineIdx, duration: it.sched?.duration });
+        },
+        onDragEnd: () => {
+          setDragItem(null);
+          setDragOverSlot(null);
+        },
+        onClick: e => e.stopPropagation(),
+        title: "Drag to reorder or move to another day",
+        style: {
+          cursor: "grab",
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          padding: "4px 3px",
+          margin: "-4px -3px -4px 0",
+          opacity: 0.45,
+          color: "#57534E"
+        }
+      }, /*#__PURE__*/React.createElement(GripIcon, null)), /*#__PURE__*/React.createElement("span", {
         style: {
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -3594,23 +3662,13 @@ function CalendarView({
       const itemKey = `${ds}::${it.cat.id}::${it.lineIdx}`;
       const isHoveredThis = hoveredKey === itemKey;
       const isNudgeThis = isPastOrToday && nudgeItem && nudgeItem.ds === ds && nudgeItem.catId === it.cat.id && nudgeItem.lineIdx === it.lineIdx;
+      const isBeingDraggedSched = isOwnView && dragItem && dragItem.ds === ds && dragItem.catId === it.cat.id && dragItem.lineIdx === it.lineIdx;
       const nameColor = "#1C1917";
       const showTime = it.numCols === 1 && plainOf(it.text).length <= 22;
       const accent = pillarAccent(it.allCats, it.isDone);
       return /*#__PURE__*/React.createElement("div", {
         key: itemKey,
-        draggable: isOwnView && !it.isResizingThis,
-        onDragStart: isOwnView ? e => {
-          e.dataTransfer.effectAllowed = "move";
-          e.dataTransfer.setData("text/plain", it.text);
-          const rect = e.currentTarget.getBoundingClientRect();
-          const grabOffsetPx = e.clientY - rect.top;
-          setDragItem({ ds, catId: it.cat.id, lineIdx: it.lineIdx, duration: it.sched.duration, grabOffsetPx });
-        } : undefined,
-        onDragEnd: () => {
-          setDragItem(null);
-          setDragOverSlot(null);
-        },
+        "data-sched-item": "1",
         onDragOver: isOwnView ? e => {
           e.preventDefault();
           e.stopPropagation();
@@ -3647,13 +3705,13 @@ function CalendarView({
           fontWeight: 400,
           color: nameColor,
           overflow: isHoveredThis || isNudgeThis ? "visible" : "hidden",
-          cursor: isOwnView ? "grab" : "default",
+          cursor: isOwnView ? "pointer" : "default",
           boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
           zIndex: it.isResizingThis ? 6 : isHoveredThis || isNudgeThis ? 8 : 2,
           display: "flex",
           flexDirection: "column",
           userSelect: "none",
-          opacity: isDimmed(it.allCats) ? 0.25 : 1,
+          opacity: isBeingDraggedSched ? 0.3 : isDimmed(it.allCats) ? 0.25 : 1,
           transition: "opacity 0.15s ease"
         }
       }, accent.border && /*#__PURE__*/React.createElement("span", {
@@ -3674,7 +3732,34 @@ function CalendarView({
           gap: 5,
           minWidth: 0
         }
-      }, /*#__PURE__*/React.createElement("span", {
+      }, isOwnView && !it.isResizingThis && /*#__PURE__*/React.createElement("div", {
+        draggable: true,
+        onDragStart: e => {
+          e.stopPropagation();
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", it.text);
+          const itemEl = e.currentTarget.closest('[data-sched-item="1"]');
+          const rect = itemEl.getBoundingClientRect();
+          const grabOffsetPx = e.clientY - rect.top;
+          setDragItem({ ds, catId: it.cat.id, lineIdx: it.lineIdx, duration: it.sched.duration, grabOffsetPx });
+        },
+        onDragEnd: () => {
+          setDragItem(null);
+          setDragOverSlot(null);
+        },
+        onClick: e => e.stopPropagation(),
+        title: "Drag to move to another time or day",
+        style: {
+          cursor: "grab",
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          padding: "3px",
+          margin: "-3px 0 -3px -4px",
+          opacity: 0.45,
+          color: "#57534E"
+        }
+      }, /*#__PURE__*/React.createElement(GripIcon, null)), /*#__PURE__*/React.createElement("span", {
         style: {
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -3868,270 +3953,7 @@ function CalendarView({
         }
       }, "How did it go?")));
     }));
-  }))), editingItem && /*#__PURE__*/React.createElement("div", {
-    onClick: () => setEditingItem(null),
-    style: {
-      position: "fixed",
-      inset: 0,
-      background: "rgba(28,25,23,0.4)",
-      zIndex: 1000,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    onClick: e => e.stopPropagation(),
-    style: {
-      background: "#fff",
-      borderRadius: 14,
-      padding: 22,
-      width: 340,
-      maxWidth: "90vw",
-      boxShadow: "0 12px 40px rgba(0,0,0,0.22)",
-      display: "flex",
-      flexDirection: "column",
-      gap: 14,
-      fontFamily: "'DM Sans',sans-serif"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 15,
-      fontWeight: 700,
-      color: "#1C1917"
-    }
-  }, editingItem?.isNew ? "New event" : "Edit event"), /*#__PURE__*/React.createElement("input", {
-    value: editName,
-    onChange: e => setEditName(e.target.value),
-    onKeyDown: e => {
-      if (e.key === "Enter") saveEdit();
-      if (e.key === "Escape") setEditingItem(null);
-    },
-    autoFocus: true,
-    placeholder: "Event name",
-    style: {
-      border: "1px solid #E8E5E3",
-      borderRadius: 8,
-      padding: "9px 11px",
-      fontSize: 13,
-      fontFamily: "inherit",
-      outline: "none",
-      color: "#1C1917"
-    }
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      color: "#A8A29E",
-      fontWeight: 600
-    }
-  }, "Pillars"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexWrap: "wrap",
-      gap: 6
-    }
-  }, cats.map(cat => {
-    const sel = editPillarIds.includes(cat.id);
-    return /*#__PURE__*/React.createElement("button", {
-      key: cat.id,
-      onClick: () => togglePillarForEdit(cat.id),
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 5,
-        fontSize: 11,
-        fontWeight: 600,
-        fontFamily: "inherit",
-        cursor: "pointer",
-        border: `1px solid ${sel ? "#D6D3D1" : "#E8E5E3"}`,
-        background: sel ? (cat.bg || PLAN_BG) : "#fff",
-        color: sel ? "#1C1917" : PLAN_TEXT,
-        borderRadius: 20,
-        padding: "4px 10px 4px 8px"
-      }
-    }, sel ? /*#__PURE__*/React.createElement("svg", {
-      width: "9",
-      height: "9",
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: cat.color,
-      strokeWidth: "3",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("polyline", {
-      points: "20 6 9 17 4 12"
-    })) : /*#__PURE__*/React.createElement("span", {
-      style: {
-        width: 7,
-        height: 7,
-        borderRadius: "50%",
-        background: cat.color,
-        display: "inline-block",
-        flexShrink: 0
-      }
-    }), cat.label);
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between"
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 10,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      color: "#A8A29E",
-      fontWeight: 600
-    }
-  }, "Day and time"), /*#__PURE__*/React.createElement("button", {
-    type: "button",
-    role: "switch",
-    "aria-checked": !editUnscheduled,
-    onClick: () => setEditUnscheduled(prev => !prev),
-    style: {
-      position: "relative",
-      width: 36,
-      height: 20,
-      borderRadius: 10,
-      border: "none",
-      cursor: "pointer",
-      background: editUnscheduled ? "#D6D3D1" : "#EA580C",
-      transition: "background 0.15s ease",
-      padding: 0,
-      flexShrink: 0
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      position: "absolute",
-      top: 2,
-      left: editUnscheduled ? 2 : 18,
-      width: 16,
-      height: 16,
-      borderRadius: "50%",
-      background: "#fff",
-      boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
-      transition: "left 0.15s ease"
-    }
-  }))), !editUnscheduled && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 8,
-      padding: "2px 2px 0"
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 4,
-      fontSize: 10,
-      color: "#A8A29E",
-      fontWeight: 600,
-      textTransform: "uppercase",
-      letterSpacing: "0.06em"
-    }
-  }, "Day", /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: editDate || "",
-    onChange: e => setEditDate(e.target.value),
-    style: {
-      border: "1px solid #E8E5E3",
-      borderRadius: 8,
-      padding: "7px 8px",
-      fontSize: 13,
-      fontFamily: "inherit",
-      outline: "none",
-      color: "#1C1917"
-    }
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 10
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 4,
-      fontSize: 10,
-      color: "#A8A29E",
-      fontWeight: 600,
-      textTransform: "uppercase",
-      letterSpacing: "0.06em",
-      flex: 1
-    }
-  }, "Start", /*#__PURE__*/React.createElement("input", {
-    type: "time",
-    value: editStart,
-    onChange: e => setEditStart(e.target.value),
-    style: {
-      border: "1px solid #E8E5E3",
-      borderRadius: 8,
-      padding: "7px 8px",
-      fontSize: 13,
-      fontFamily: "inherit",
-      outline: "none",
-      color: "#1C1917"
-    }
-  })), /*#__PURE__*/React.createElement("label", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 4,
-      fontSize: 10,
-      color: "#A8A29E",
-      fontWeight: 600,
-      textTransform: "uppercase",
-      letterSpacing: "0.06em",
-      flex: 1
-    }
-  }, "End", /*#__PURE__*/React.createElement("input", {
-    type: "time",
-    value: editEnd,
-    onChange: e => setEditEnd(e.target.value),
-    style: {
-      border: "1px solid #E8E5E3",
-      borderRadius: 8,
-      padding: "7px 8px",
-      fontSize: 13,
-      fontFamily: "inherit",
-      outline: "none",
-      color: "#1C1917"
-    }
-  })))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "flex-end",
-      gap: 8,
-      marginTop: 4
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setEditingItem(null),
-    style: {
-      background: "none",
-      border: "none",
-      cursor: "pointer",
-      fontSize: 12,
-      color: "#78716C",
-      fontFamily: "inherit",
-      padding: "7px 10px"
-    }
-  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
-    onClick: saveEdit,
-    style: {
-      background: "#EA580C",
-      border: "none",
-      cursor: "pointer",
-      fontSize: 12,
-      fontWeight: 600,
-      color: "#fff",
-      fontFamily: "inherit",
-      padding: "7px 16px",
-      borderRadius: 8
-    }
-  }, "Save"))))));
+  })))));
 }
 function Planner() {
   const [offset, setOffset] = useState(0);
@@ -4158,6 +3980,7 @@ function Planner() {
   const [linkingIdeaId, setLinkingIdeaId] = useState(null);
   const ideaLinkInputRef = useRef(null);
   const [draggingLine, setDraggingLine] = useState(null);
+  const [crossCellHover, setCrossCellHover] = useState(null);
   const [draggedId, setDraggedId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
   const [dragPos, setDragPos] = useState(null);
@@ -4359,9 +4182,15 @@ function Planner() {
     const dc = cellData || draggingCell;
     if (!dc || dc.ds === targetDs && dc.catId === targetCatId) {
       setDraggingCell(null);
+      setCrossCellHover(null);
       return;
     }
     const { ds: srcDs, catId: srcCatId } = dc;
+    let insertInfo = null;
+    if (crossCellHover) {
+      const anchorEntry = entryAt(entries, targetDs, targetCatId, crossCellHover.lineIdx);
+      if (anchorEntry) insertInfo = { catId: targetCatId, anchorId: anchorEntry.id, pos: crossCellHover.pos };
+    }
     updateEntries(prev => {
       const srcList = Object.values(prev[srcDs] || {})
         .filter(e => pillarsOrDefault(e.pillars).includes(srcCatId))
@@ -4372,15 +4201,29 @@ function Planner() {
       srcList.forEach(e => delete srcBucket[e.id]);
       if (Object.keys(srcBucket).length === 0) delete next[srcDs];else next[srcDs] = srcBucket;
       const targetBucket = { ...(next[targetDs] || {}) };
-      let order = Object.values(targetBucket).reduce((m, e) => Math.max(m, e.order ?? 0), -1) + 1;
-      srcList.forEach(e => {
+      const baseOrder = computeOrderForInsert(targetBucket, targetCatId, insertInfo);
+      // Find the order value just after the insertion point (if any) so the
+      // whole moved batch can be evenly spaced between the two neighbors,
+      // keeping the moved items' own relative order intact.
+      let afterOrder = null;
+      if (insertInfo) {
+        const list = Object.values(targetBucket)
+          .filter(e => pillarsOrDefault(e.pillars).includes(targetCatId))
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        const idx = list.findIndex(e => e.id === insertInfo.anchorId);
+        const insertIdx = insertInfo.pos === "after" ? idx + 1 : idx;
+        if (insertIdx > -1 && insertIdx < list.length) afterOrder = list[insertIdx].order ?? 0;
+      }
+      const gap = afterOrder != null ? (afterOrder - baseOrder) / (srcList.length + 1) : 1;
+      srcList.forEach((e, i) => {
         const pillars = targetCatId === srcCatId ? pillarsOrDefault(e.pillars) : Array.from(new Set([...pillarsOrDefault(e.pillars), targetCatId]));
-        targetBucket[e.id] = { ...e, pillars, order: order++ };
+        targetBucket[e.id] = { ...e, pillars, order: baseOrder + gap * i };
       });
       next[targetDs] = targetBucket;
       return next;
     });
     setDraggingCell(null);
+    setCrossCellHover(null);
   }
   function saveEntry(ds, cid, text) {
     if (!isOwnView) return;
@@ -4419,6 +4262,37 @@ function Planner() {
       if (Object.keys(nextDs).length === 0) delete next[ds];else next[ds] = nextDs;
       return next;
     });
+  }
+  // Reorders a single entry within one day+pillar's list, for both the
+  // calendar view's unscheduled list and the planner grid's per-cell line
+  // drag. Moves the dragged entry's own `order` value to sit next to the
+  // anchor entry (by id), rather than rebuilding the cell's text and
+  // reconciling by position. Reconciling by position (as saveEntry does,
+  // correctly, for direct text edits) would leave done/sched/pillar tags
+  // pinned to a slot instead of following the moved entry, which is a
+  // subtle but real bug for drag-reordering: two same-count lines swapping
+  // positions look reordered but silently swap each other's done-state,
+  // schedule, and tags. Moving by id sidesteps that entirely.
+  function reorderEntry(ds, catId, dragLineIdx, targetLineIdx, pos) {
+    if (!isOwnView) return;
+    if (dragLineIdx === targetLineIdx) return;
+    const draggedEntry = entryAt(entries, ds, catId, dragLineIdx);
+    const anchorEntry = entryAt(entries, ds, catId, targetLineIdx);
+    if (!draggedEntry || !anchorEntry || draggedEntry.id === anchorEntry.id) return;
+    updateEntries(prev => {
+      const bucket = { ...(prev[ds] || {}) };
+      if (!bucket[draggedEntry.id]) return prev;
+      const bucketWithoutDragged = { ...bucket };
+      delete bucketWithoutDragged[draggedEntry.id];
+      const order = computeOrderForInsert(bucketWithoutDragged, catId, { catId, anchorId: anchorEntry.id, pos });
+      bucket[draggedEntry.id] = { ...bucket[draggedEntry.id], order };
+      return { ...prev, [ds]: bucket };
+    });
+  }
+  // Back-compat alias: the calendar view's unscheduled-list reorder uses
+  // the same identity-preserving mechanism as the planner grid's line drag.
+  function reorderCalendarItem(ds, catId, dragLineIdx, targetLineIdx, pos) {
+    reorderEntry(ds, catId, dragLineIdx, targetLineIdx, pos);
   }
   function toggleDone(ds, catId, lineIdx) {
     if (!isOwnView) return;
@@ -5028,14 +4902,20 @@ function Planner() {
     setIdeaListDrag(null);
     setIdeaListOver(null);
     setDraggingIdea(false);
+    setCrossCellHover(null);
   }
   function handleCellIdeaDrop(e, ds, catId) {
     e.preventDefault();
     e.stopPropagation();
     const text = e.dataTransfer.getData("text/plain");
     if (!text.trim()) return;
-    const cur = data[ds]?.[catId] || "";
-    saveEntry(ds, catId, hasEntry(cur) ? cur + "\n" + text.trim() : text.trim());
+    let insertInfo = null;
+    if (crossCellHover) {
+      const anchorEntry = entryAt(entries, ds, catId, crossCellHover.lineIdx);
+      if (anchorEntry) insertInfo = { catId, anchorId: anchorEntry.id, pos: crossCellHover.pos };
+    }
+    createCalendarItem(ds, [catId], text.trim(), null, null, insertInfo);
+    setCrossCellHover(null);
   }
   function handleLineCellMove(e, targetDs, targetCatId) {
     if (!draggingLine) return;
@@ -5043,6 +4923,11 @@ function Planner() {
     if (srcDs === targetDs && srcCatId === targetCatId) return;
     const entry = entryAt(entries, srcDs, srcCatId, lineIdx);
     if (!entry) return;
+    let insertInfo = null;
+    if (crossCellHover) {
+      const anchorEntry = entryAt(entries, targetDs, targetCatId, crossCellHover.lineIdx);
+      if (anchorEntry && anchorEntry.id !== entry.id) insertInfo = { catId: targetCatId, anchorId: anchorEntry.id, pos: crossCellHover.pos };
+    }
     updateEntries(prev => {
       const next = { ...prev };
       const srcBucket = { ...(next[srcDs] || {}) };
@@ -5050,12 +4935,13 @@ function Planner() {
       if (Object.keys(srcBucket).length === 0) delete next[srcDs];else next[srcDs] = srcBucket;
       const targetBucket = { ...(next[targetDs] || {}) };
       const pillars = targetCatId === srcCatId ? pillarsOrDefault(entry.pillars) : Array.from(new Set([...pillarsOrDefault(entry.pillars), targetCatId]));
-      const order = Object.values(targetBucket).reduce((m, x) => Math.max(m, x.order ?? 0), -1) + 1;
+      const order = computeOrderForInsert(targetBucket, targetCatId, insertInfo);
       targetBucket[entry.id] = { ...entry, pillars, order };
       next[targetDs] = targetBucket;
       return next;
     });
     setDraggingLine(null);
+    setCrossCellHover(null);
   }
   function updateItemTime(ds, catId, lineIdx, timeStr) {
     const e = entryAt(entries, ds, catId, lineIdx);
@@ -5069,7 +4955,7 @@ function Planner() {
       }
     }));
   }
-  function scheduleItem(srcDs, catId, srcLineIdx, targetDs, timeStr) {
+  function scheduleItem(srcDs, catId, srcLineIdx, targetDs, timeStr, insertInfo) {
     if (!isOwnView) return;
     if (srcDs === targetDs) {
       updateItemTime(srcDs, catId, srcLineIdx, timeStr);
@@ -5084,7 +4970,7 @@ function Planner() {
       delete srcBucket[e.id];
       if (Object.keys(srcBucket).length === 0) delete next[srcDs];else next[srcDs] = srcBucket;
       const targetBucket = { ...(next[targetDs] || {}) };
-      const order = Object.values(targetBucket).reduce((m, x) => Math.max(m, x.order ?? 0), -1) + 1;
+      const order = computeOrderForInsert(targetBucket, catId, insertInfo);
       targetBucket[e.id] = { ...e, sched, order };
       next[targetDs] = targetBucket;
       return next;
@@ -5147,14 +5033,14 @@ function Planner() {
       return next;
     });
   }
-  function createCalendarItem(ds, pillars, name, linkUrl, sched) {
+  function createCalendarItem(ds, pillars, name, linkUrl, sched, insertInfo) {
     if (!isOwnView) return;
     const finalText = linkUrl ? `[${name}](${linkUrl})` : name;
     if (!finalText.trim()) return;
     const finalPillars = pillarsOrDefault(pillars);
     updateEntries(prev => {
       const bucket = { ...(prev[ds] || {}) };
-      const order = Object.values(bucket).reduce((m, x) => Math.max(m, x.order ?? 0), -1) + 1;
+      const order = computeOrderForInsert(bucket, finalPillars[0], insertInfo);
       const id = genEntryId();
       bucket[id] = { id, text: finalText, pillars: finalPillars, done: false, sched: sanitizeSched(sched), order };
       return { ...prev, [ds]: bucket };
@@ -5189,7 +5075,89 @@ function Planner() {
   if (showScience) return /*#__PURE__*/React.createElement(SciencePage, {
     onBack: () => setShowScience(false)
   });
-  return /*#__PURE__*/React.createElement("div", {
+  
+  // --- Item edit/create dialog (shared by calendar view and planner grid) ---
+  const [editingItem, setEditingItem] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editPillarIds, setEditPillarIds] = useState([]);
+  const [editLinkUrl, setEditLinkUrl] = useState(null);
+  const [editUnscheduled, setEditUnscheduled] = useState(false);
+  const [editDate, setEditDate] = useState(null);
+  const [editStart, setEditStart] = useState("09:00");
+  const [editEnd, setEditEnd] = useState("10:00");
+  function timeToMin(str) {
+    const [h, m] = str.split(":").map(Number);
+    return h * 60 + m;
+  }
+  function minToTime(min) {
+    min = (min % 1440 + 1440) % 1440;
+    return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+  }
+  // `forceUnscheduled`, when true, starts the "Day and time" toggle off
+  // regardless of whether the entry actually has a schedule. Used when
+  // opening the dialog from the planner grid, where items are organized
+  // by theme rather than time and scheduling is the exception, not the
+  // default the way it is in the calendar view.
+  function openEdit(ds, catId, lineIdx, text, sched, allPillars, forceUnscheduled) {
+    const m = text.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    setEditName(m ? m[1] : text);
+    setEditLinkUrl(m ? m[2] : null);
+    setEditPillarIds(allPillars && allPillars.length ? allPillars : [catId]);
+    setEditDate(ds);
+    if (sched && !forceUnscheduled) {
+      setEditUnscheduled(false);
+      setEditStart(sched.start);
+      setEditEnd(minToTime(timeToMin(sched.start) + sched.duration));
+    } else {
+      setEditUnscheduled(true);
+      setEditStart("09:00");
+      setEditEnd("10:00");
+    }
+    setEditingItem({ ds, catId, lineIdx });
+  }
+  function openCreate(ds, hour, minute, presetPillars) {
+    setEditName("");
+    setEditLinkUrl(null);
+    setEditPillarIds(presetPillars || []);
+    setEditDate(ds);
+    if (hour != null) {
+      setEditUnscheduled(false);
+      const start = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+      setEditStart(start);
+      setEditEnd(minToTime(timeToMin(start) + CAL_DEFAULT_DURATION));
+    } else {
+      setEditUnscheduled(true);
+      setEditStart("09:00");
+      setEditEnd("10:00");
+    }
+    setEditingItem({ ds, isNew: true });
+  }
+  function togglePillarForEdit(catId) {
+    setEditPillarIds(prev => prev.includes(catId) ? prev.filter(id => id !== catId) : [...prev, catId]);
+  }
+  function saveEdit() {
+    if (!editName.trim()) {
+      setEditingItem(null);
+      return;
+    }
+    const finalPillars = editPillarIds.length ? editPillarIds : [UNTAGGED_CAT.id];
+    const targetDs = editDate || editingItem?.ds;
+    let sched = null;
+    if (!editUnscheduled) {
+      const startMin = timeToMin(editStart);
+      let endMin = timeToMin(editEnd);
+      if (endMin <= startMin) endMin += 1440;
+      const duration = Math.max(CAL_MIN_DURATION, endMin - startMin);
+      sched = { start: editStart, duration };
+    }
+    if (editingItem?.isNew) {
+      createCalendarItem(targetDs, finalPillars, editName.trim(), editLinkUrl, sched);
+    } else if (editingItem) {
+      editCalendarItem(editingItem.ds, editingItem.catId, editingItem.lineIdx, editName.trim(), finalPillars, editLinkUrl, sched, targetDs);
+    }
+    setEditingItem(null);
+  }
+return /*#__PURE__*/React.createElement("div", {
     style: {
       fontFamily: "'DM Sans',sans-serif",
       background: "#FBF9F7",
@@ -5581,6 +5549,7 @@ function Planner() {
     entryPillars: displayEntryPillars,
     entryIds: displayEntryIds,
     onScheduleItem: scheduleItem,
+    onReorderItem: isOwnView ? (ds, catId, dragLineIdx, targetLineIdx, pos) => reorderCalendarItem(ds, catId, dragLineIdx, targetLineIdx, pos) : null,
     onResizeItem: resizeItem,
     done: displayDone,
     onToggleDone: isOwnView ? (ds, catId, lineIdx) => toggleDone(ds, catId, lineIdx) : null,
@@ -5592,12 +5561,14 @@ function Planner() {
     onSetLink: isOwnView ? (ds, catId, lineIdx, url) => setItemLink(ds, catId, lineIdx, url) : null,
     onDeleteItem: isOwnView ? (ds, catId, lineIdx) => deleteCalendarItem(ds, catId, lineIdx) : null,
     onEditItem: isOwnView ? (ds, catId, lineIdx, newText, newPillars, linkUrl, newSched, newDs) => editCalendarItem(ds, catId, lineIdx, newText, newPillars, linkUrl, newSched, newDs) : null,
-    onCreateItem: isOwnView ? (ds, pillars, name, linkUrl, sched) => createCalendarItem(ds, pillars, name, linkUrl, sched) : null,
+    onCreateItem: isOwnView ? (ds, pillars, name, linkUrl, sched, insertInfo) => createCalendarItem(ds, pillars, name, linkUrl, sched, insertInfo) : null,
     onOpenPillarSidebar: isOwnView ? (catId) => openIdeasSidebar(catId) : null,
     onAddPillar: isOwnView ? addCat : null,
     onReflectDay: isOwnView ? (ds, weekday) => openReflectWithItem("", weekday, "#7C3AED", ds) : null,
     onOpenDayReflection: isOwnView ? ds => openDayReflection(ds) : null,
-    dayReflectionDates: isOwnView ? dayReflectionDates : null
+    dayReflectionDates: isOwnView ? dayReflectionDates : null,
+    openEdit: isOwnView ? openEdit : null,
+    openCreate: isOwnView ? openCreate : null
   }) : /*#__PURE__*/React.createElement("div", {
     style: {
       background: "#fff",
@@ -5895,7 +5866,7 @@ function Planner() {
         isFuture = ds > todayStr,
         val = displayData[ds]?.[cat.id] || "";
       const isSourceCell = isOwnView && draggingCell?.ds === ds && draggingCell?.catId === cat.id;
-      const isDropTarget = isOwnView && !isSourceCell && (!!draggingCell || draggingLine && !(draggingLine.ds === ds && draggingLine.catId === cat.id));
+      const isDropTarget = isOwnView && !isSourceCell && (!!draggingCell || !!draggingIdea || draggingLine && !(draggingLine.ds === ds && draggingLine.catId === cat.id));
       const catIdeaTexts = null;
       return /*#__PURE__*/React.createElement("div", {
         key: ds,
@@ -5952,10 +5923,17 @@ function Planner() {
           lineIdx
         }) : null,
         onLineDragEnd: isOwnView ? () => setDraggingLine(null) : null,
+        onReorderLine: isOwnView ? (dragLineIdx, targetLineIdx, pos) => reorderEntry(ds, cat.id, dragLineIdx, targetLineIdx, pos) : null,
         externalDragging: isDropTarget,
         onExternalLineDragOver: isOwnView ? (lineIdx, pos) => setCrossCellHover({ lineIdx, pos }) : null,
         onExternalDragLeave: isOwnView ? () => setCrossCellHover(null) : null,
         onEditStart: isOwnView ? () => openIdeasSidebar(cat.id) : null,
+        onOpenItem: isOwnView ? lineIdx => {
+          const entry = entryAt(entries, ds, cat.id, lineIdx);
+          if (!entry) return;
+          openEdit(ds, cat.id, lineIdx, entry.text, entry.sched, entry.pillars);
+        } : null,
+        onOpenNewItem: isOwnView ? () => openCreate(ds, null, null, [cat.id]) : null,
         onReflect: isOwnView ? (text, wasCompleted, lineIdx) => openReflectWithItem(text, cat.label, cat.color, ds, wasCompleted, getLineAllCats(ds, cat.id, lineIdx)) : null,
         doneLines: new Set(displayDone[ds]?.[cat.id] || []),
         onToggleDone: isOwnView ? lineIdx => toggleDone(ds, cat.id, lineIdx) : null,
@@ -6125,7 +6103,7 @@ function Planner() {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v7.29.22")), (() => {
+  }, "v7.31.3")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -6289,9 +6267,6 @@ function Planner() {
       return /*#__PURE__*/React.createElement(React.Fragment, {
         key: idea.id
       }, isOverThis && ideaListOver?.pos === "before" && dropLine, /*#__PURE__*/React.createElement("div", {
-        draggable: isOwnView && !isEditing,
-        onDragStart: isOwnView ? e => handleIdeaDragStart(e, pc.id, idea) : undefined,
-        onDragEnd: isOwnView ? handleIdeaDragEnd : undefined,
         onDragOver: isOwnView ? e => handleIdeaDragOver(e, pc.id, idea.id) : undefined,
         onDrop: isOwnView ? e => handleIdeaListDrop(e, pc.id, idea.id) : undefined,
         style: {
@@ -6307,11 +6282,19 @@ function Planner() {
           borderLeft: `3px solid ${pc.color}`,
           borderRadius: 6,
           opacity: isDraggingThis ? 0.3 : 1,
-          cursor: isEditing ? "text" : isOwnView ? "grab" : "default"
+          cursor: isEditing ? "text" : "default"
         }
       }, isOwnView && /*#__PURE__*/React.createElement("div", {
+        draggable: true,
+        onDragStart: e => handleIdeaDragStart(e, pc.id, idea),
+        onDragEnd: handleIdeaDragEnd,
+        onClick: e => e.stopPropagation(),
+        title: "Drag to reorder or move onto the planner/calendar",
         style: {
+          cursor: "grab",
           flexShrink: 0,
+          padding: "4px 3px",
+          margin: "-4px 0 -4px -3px",
           opacity: 0.4,
           color: "#57534E"
         }
@@ -7676,7 +7659,270 @@ function Planner() {
       marginLeft: 4,
       flexShrink: 0
     }
-  }, "×")));
+  }, "×")), editingItem && /*#__PURE__*/React.createElement("div", {
+    onClick: () => setEditingItem(null),
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(28,25,23,0.4)",
+      zIndex: 1000,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      background: "#fff",
+      borderRadius: 14,
+      padding: 22,
+      width: 340,
+      maxWidth: "90vw",
+      boxShadow: "0 12px 40px rgba(0,0,0,0.22)",
+      display: "flex",
+      flexDirection: "column",
+      gap: 14,
+      fontFamily: "'DM Sans',sans-serif"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: "#1C1917"
+    }
+  }, editingItem?.isNew ? "New event" : "Edit event"), /*#__PURE__*/React.createElement("input", {
+    value: editName,
+    onChange: e => setEditName(e.target.value),
+    onKeyDown: e => {
+      if (e.key === "Enter") saveEdit();
+      if (e.key === "Escape") setEditingItem(null);
+    },
+    autoFocus: true,
+    placeholder: "Event name",
+    style: {
+      border: "1px solid #E8E5E3",
+      borderRadius: 8,
+      padding: "9px 11px",
+      fontSize: 13,
+      fontFamily: "inherit",
+      outline: "none",
+      color: "#1C1917"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      color: "#A8A29E",
+      fontWeight: 600
+    }
+  }, "Pillars"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6
+    }
+  }, cats.map(cat => {
+    const sel = editPillarIds.includes(cat.id);
+    return /*#__PURE__*/React.createElement("button", {
+      key: cat.id,
+      onClick: () => togglePillarForEdit(cat.id),
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+        fontSize: 11,
+        fontWeight: 600,
+        fontFamily: "inherit",
+        cursor: "pointer",
+        border: `1px solid ${sel ? "#D6D3D1" : "#E8E5E3"}`,
+        background: sel ? (cat.bg || PLAN_BG) : "#fff",
+        color: sel ? "#1C1917" : PLAN_TEXT,
+        borderRadius: 20,
+        padding: "4px 10px 4px 8px"
+      }
+    }, sel ? /*#__PURE__*/React.createElement("svg", {
+      width: "9",
+      height: "9",
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: cat.color,
+      strokeWidth: "3",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }, /*#__PURE__*/React.createElement("polyline", {
+      points: "20 6 9 17 4 12"
+    })) : /*#__PURE__*/React.createElement("span", {
+      style: {
+        width: 7,
+        height: 7,
+        borderRadius: "50%",
+        background: cat.color,
+        display: "inline-block",
+        flexShrink: 0
+      }
+    }), cat.label);
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      color: "#A8A29E",
+      fontWeight: 600
+    }
+  }, "Day and time"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    role: "switch",
+    "aria-checked": !editUnscheduled,
+    onClick: () => setEditUnscheduled(prev => !prev),
+    style: {
+      position: "relative",
+      width: 36,
+      height: 20,
+      borderRadius: 10,
+      border: "none",
+      cursor: "pointer",
+      background: editUnscheduled ? "#D6D3D1" : "#EA580C",
+      transition: "background 0.15s ease",
+      padding: 0,
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      position: "absolute",
+      top: 2,
+      left: editUnscheduled ? 2 : 18,
+      width: 16,
+      height: 16,
+      borderRadius: "50%",
+      background: "#fff",
+      boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+      transition: "left 0.15s ease"
+    }
+  }))), !editUnscheduled && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+      padding: "2px 2px 0"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      fontSize: 10,
+      color: "#A8A29E",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.06em"
+    }
+  }, "Day", /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: editDate || "",
+    onChange: e => setEditDate(e.target.value),
+    style: {
+      border: "1px solid #E8E5E3",
+      borderRadius: 8,
+      padding: "7px 8px",
+      fontSize: 13,
+      fontFamily: "inherit",
+      outline: "none",
+      color: "#1C1917"
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      fontSize: 10,
+      color: "#A8A29E",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.06em",
+      flex: 1
+    }
+  }, "Start", /*#__PURE__*/React.createElement("input", {
+    type: "time",
+    value: editStart,
+    onChange: e => setEditStart(e.target.value),
+    style: {
+      border: "1px solid #E8E5E3",
+      borderRadius: 8,
+      padding: "7px 8px",
+      fontSize: 13,
+      fontFamily: "inherit",
+      outline: "none",
+      color: "#1C1917"
+    }
+  })), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      fontSize: 10,
+      color: "#A8A29E",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.06em",
+      flex: 1
+    }
+  }, "End", /*#__PURE__*/React.createElement("input", {
+    type: "time",
+    value: editEnd,
+    onChange: e => setEditEnd(e.target.value),
+    style: {
+      border: "1px solid #E8E5E3",
+      borderRadius: 8,
+      padding: "7px 8px",
+      fontSize: 13,
+      fontFamily: "inherit",
+      outline: "none",
+      color: "#1C1917"
+    }
+  })))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end",
+      gap: 8,
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setEditingItem(null),
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12,
+      color: "#78716C",
+      fontFamily: "inherit",
+      padding: "7px 10px"
+    }
+  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+    onClick: saveEdit,
+    style: {
+      background: "#EA580C",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "#fff",
+      fontFamily: "inherit",
+      padding: "7px 16px",
+      borderRadius: 8
+    }
+  }, "Save")))));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(Planner, null));
 </script>
