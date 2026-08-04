@@ -571,6 +571,17 @@ const CAL_HOUR_END = 21;
 const CAL_HOUR_PX = 38;
 const CAL_DEFAULT_DURATION = 60;
 const CAL_MIN_DURATION = 15;
+const TIME_STEP_MIN = 15;
+function tmToMin(str) {
+  if (!str) return null;
+  const [h, m] = str.split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
+function tmToStr(min) {
+  min = (min % 1440 + 1440) % 1440;
+  return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+}
 function getMonday(offset = 0) {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -2760,6 +2771,175 @@ function SciencePage({
     }
   }, "A meaningful life emerges from deliberate choices across a handful of domains — chosen with care, planned with intention, and reflected on honestly. Not every pillar every day. But enough of them, often enough, that your week reliably contains what matters."))));
 }
+// A segmented time field: the hour, the minutes and the meridiem are each
+// their own control. Clicking the hour opens a grid of hours anchored under
+// it, clicking the minutes opens the four quarters, and the meridiem toggles
+// in place. This replaces the native <input type="time">, which cannot do
+// this -- its segments aren't individually addressable, and Chromium's clock
+// popup ignores `step` and always lists all 60 minutes.
+function TimeField({ value, onChange, inputStyle }) {
+  const [menu, setMenu] = useState(null);
+  const wrapRef = useRef(null);
+  const hourListRef = useRef(null);
+  useEffect(() => {
+    if (!menu) return;
+    // Open the hour list already scrolled to the current hour, so the list
+    // starts where the user's attention is rather than at 12.
+    if (menu === "hour" && hourListRef.current) {
+      const sel = hourListRef.current.querySelector("[data-selected='1']");
+      if (sel) hourListRef.current.scrollTop = Math.max(0, sel.offsetTop - hourListRef.current.clientHeight / 2 + sel.offsetHeight / 2);
+    }
+    function onDocDown(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setMenu(null);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setMenu(null);
+      }
+    }
+    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [menu]);
+  const cur = tmToMin(value);
+  const safe = cur == null ? 9 * 60 : cur;
+  const h24 = Math.floor(safe / 60);
+  const mm = safe % 60;
+  const period = h24 < 12 ? "AM" : "PM";
+  let h12 = h24 % 12;
+  if (h12 === 0) h12 = 12;
+  const quarter = Math.min(45, Math.round(mm / TIME_STEP_MIN) * TIME_STEP_MIN);
+  function commit(nextH12, nextMin, nextPeriod) {
+    const hh = (nextH12 % 12) + (nextPeriod === "PM" ? 12 : 0);
+    onChange(tmToStr(hh * 60 + nextMin));
+  }
+  function nudge(segment, dir) {
+    if (segment === "hour") commit((h12 + dir + 11) % 12 + 1, mm, period);
+    else if (segment === "minute") commit(h12, (quarter + dir * TIME_STEP_MIN + 60) % 60, period);
+    else commit(h12, mm, period === "AM" ? "PM" : "AM");
+  }
+  function segKeyDown(segment) {
+    return e => {
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        nudge(segment, e.key === "ArrowUp" ? 1 : -1);
+      } else if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        if (segment === "period") nudge("period", 1);else setMenu(m => m === segment ? null : segment);
+      }
+    };
+  }
+  const HOURS = [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+  const QUARTERS = [0, 15, 30, 45];
+  function segStyle(active) {
+    return {
+      border: "none",
+      background: active ? "#FFF7ED" : "transparent",
+      color: active ? "#C2410C" : "#1C1917",
+      fontFamily: "inherit",
+      fontSize: 13,
+      fontWeight: 600,
+      lineHeight: 1.2,
+      padding: "2px 4px",
+      borderRadius: 5,
+      cursor: "pointer",
+      fontVariantNumeric: "tabular-nums",
+      outlineOffset: 1
+    };
+  }
+  function optStyle(selected) {
+    return {
+      border: "none",
+      background: selected ? "#EA580C" : "transparent",
+      color: selected ? "#fff" : "#57534E",
+      fontFamily: "inherit",
+      fontSize: 12,
+      fontWeight: selected ? 700 : 500,
+      padding: "5px 0",
+      borderRadius: 5,
+      cursor: "pointer",
+      fontVariantNumeric: "tabular-nums",
+      minWidth: 42
+    };
+  }
+  const popStyle = {
+    position: "absolute",
+    top: "calc(100% + 5px)",
+    left: 0,
+    zIndex: 1100,
+    background: "#fff",
+    border: "1px solid #E8E5E3",
+    borderRadius: 9,
+    boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
+    padding: 4
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    ref: wrapRef,
+    style: {
+      ...inputStyle,
+      display: "flex",
+      alignItems: "center",
+      gap: 1,
+      background: "#fff",
+      cursor: "default"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: { position: "relative" }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    "aria-label": "Hour",
+    "aria-expanded": menu === "hour",
+    onMouseDown: e => e.preventDefault(),
+    onClick: () => setMenu(m => m === "hour" ? null : "hour"),
+    onKeyDown: segKeyDown("hour"),
+    style: segStyle(menu === "hour")
+  }, h12), menu === "hour" && /*#__PURE__*/React.createElement("div", {
+    ref: hourListRef,
+    style: { ...popStyle, display: "flex", flexDirection: "column", gap: 2, maxHeight: 156, overflowY: "auto", scrollbarWidth: "thin" }
+  }, HOURS.map(h => /*#__PURE__*/React.createElement("button", {
+    key: h,
+    type: "button",
+    "data-selected": h === h12 ? "1" : "0",
+    onClick: () => {
+      commit(h, quarter, period);
+      setMenu(null);
+    },
+    style: optStyle(h === h12)
+  }, h)))), /*#__PURE__*/React.createElement("span", {
+    style: { color: "#A8A29E", fontSize: 13, fontWeight: 600 }
+  }, ":"), /*#__PURE__*/React.createElement("span", {
+    style: { position: "relative" }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    "aria-label": "Minutes",
+    "aria-expanded": menu === "minute",
+    onMouseDown: e => e.preventDefault(),
+    onClick: () => setMenu(m => m === "minute" ? null : "minute"),
+    onKeyDown: segKeyDown("minute"),
+    style: segStyle(menu === "minute")
+  }, String(mm).padStart(2, "0")), menu === "minute" && /*#__PURE__*/React.createElement("div", {
+    style: { ...popStyle, display: "flex", flexDirection: "column", gap: 2 }
+  }, QUARTERS.map(q => /*#__PURE__*/React.createElement("button", {
+    key: q,
+    type: "button",
+    onClick: () => {
+      commit(h12, q, period);
+      setMenu(null);
+    },
+    style: optStyle(q === mm)
+  }, String(q).padStart(2, "0"))))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    "aria-label": "AM or PM",
+    onMouseDown: e => e.preventDefault(),
+    onClick: () => commit(h12, mm, period === "AM" ? "PM" : "AM"),
+    onKeyDown: segKeyDown("period"),
+    style: { ...segStyle(false), marginLeft: 3, color: "#57534E" }
+  }, period));
+}
 function CalendarView({
   dates,
   todayStr,
@@ -2875,6 +3055,83 @@ function CalendarView({
       document.removeEventListener("mouseup", onUp);
     };
   }, [resizing]);
+
+  // --- Drag to create -------------------------------------------------
+  // Press anywhere on an empty part of a day column and drag to draw the
+  // block. The gesture that starts it is the same mousedown that a plain
+  // click starts with, so both are resolved here on mouseup: under the
+  // movement threshold it's a click (default duration), over it the drawn
+  // span becomes the start/end handed to the dialog.
+  const DRAG_CREATE_THRESHOLD_PX = 4;
+  const dragCreateRef = useRef(null);
+  const [dragCreatePreview, setDragCreatePreview] = useState(null);
+  const openCreateRef = useRef(openCreate);
+  openCreateRef.current = openCreate;
+  function calMinFromY(colTop, clientY, mode) {
+    const relY = clientY - colTop;
+    const raw = CAL_HOUR_START * 60 + relY / CAL_HOUR_PX * 60;
+    const q = mode === "floor" ? Math.floor(raw / 15) : Math.round(raw / 15);
+    return Math.max(CAL_HOUR_START * 60, Math.min((CAL_HOUR_END + 1) * 60, q * 15));
+  }
+  function dragCreateSpan(d, clientY) {
+    const cur = calMinFromY(d.colTop, clientY, "round");
+    const startMin = Math.min(d.anchor, cur);
+    let endMin = Math.max(d.anchor, cur);
+    if (endMin - startMin < CAL_MIN_DURATION) endMin = startMin + CAL_MIN_DURATION;
+    return { startMin, endMin };
+  }
+  function beginDragCreate(ds, e) {
+    if (e.button !== 0) return;
+    const col = e.currentTarget.parentElement;
+    const rect = col.getBoundingClientRect();
+    dragCreateRef.current = {
+      ds,
+      colTop: rect.top,
+      anchor: calMinFromY(rect.top, e.clientY, "floor"),
+      startClientY: e.clientY,
+      moved: false
+    };
+    e.preventDefault();
+  }
+  useEffect(() => {
+    function onMove(e) {
+      const d = dragCreateRef.current;
+      if (!d) return;
+      if (!d.moved && Math.abs(e.clientY - d.startClientY) < DRAG_CREATE_THRESHOLD_PX) return;
+      d.moved = true;
+      const span = dragCreateSpan(d, e.clientY);
+      setDragCreatePreview({ ds: d.ds, ...span });
+    }
+    function onUp(e) {
+      const d = dragCreateRef.current;
+      if (!d) return;
+      dragCreateRef.current = null;
+      setDragCreatePreview(null);
+      const open = openCreateRef.current;
+      if (!open) return;
+      if (!d.moved) {
+        open(d.ds, Math.floor(d.anchor / 60), d.anchor % 60);
+        return;
+      }
+      const { startMin, endMin } = dragCreateSpan(d, e.clientY);
+      open(d.ds, Math.floor(startMin / 60), startMin % 60, null, endMin);
+    }
+    function onKey(e) {
+      if (e.key === "Escape" && dragCreateRef.current) {
+        dragCreateRef.current = null;
+        setDragCreatePreview(null);
+      }
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
   const hours = [];
   for (let hh = CAL_HOUR_START; hh <= CAL_HOUR_END; hh++) hours.push(hh);
   function fmtHour(hh) {
@@ -3542,10 +3799,7 @@ function CalendarView({
         const { hour, minute } = computeDropTime(e);
         handleDropOnHour(ds, hour, minute, e);
       } : undefined,
-      onClick: isOwnView && onCreateItem ? e => {
-        const { hour, minute } = computeDropTime(e);
-        openCreate(ds, hour, minute);
-      } : undefined,
+      onMouseDown: isOwnView && onCreateItem ? e => beginDragCreate(ds, e) : undefined,
       style: {
         height: CAL_HOUR_PX,
         borderTop: "1px solid #F0EFED",
@@ -3553,6 +3807,7 @@ function CalendarView({
         background: dragOverSlot?.ds === ds && dragOverSlot?.hour === hh ? "#FFF7ED" : "transparent",
         position: "relative",
         cursor: isOwnView && onCreateItem ? "pointer" : "default",
+        userSelect: "none",
         transition: "background 0.1s ease"
       }
     }, dragOverSlot?.ds === ds && dragOverSlot?.hour === hh && /*#__PURE__*/React.createElement("div", {
@@ -3565,7 +3820,32 @@ function CalendarView({
         background: "#EA580C",
         pointerEvents: "none"
       }
-    }))), items.map(it => {
+    }))), dragCreatePreview && dragCreatePreview.ds === ds && /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute",
+        left: 3,
+        right: 3,
+        top: (dragCreatePreview.startMin - CAL_HOUR_START * 60) / 60 * CAL_HOUR_PX,
+        height: Math.max(14, (dragCreatePreview.endMin - dragCreatePreview.startMin) / 60 * CAL_HOUR_PX - 2),
+        background: "rgba(234,88,12,0.12)",
+        border: "1.5px solid #EA580C",
+        borderRadius: 6,
+        pointerEvents: "none",
+        zIndex: 6,
+        display: "flex",
+        alignItems: "flex-start",
+        overflow: "hidden",
+        padding: "1px 4px",
+        boxSizing: "border-box"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 8.5,
+        fontWeight: 700,
+        color: "#C2410C",
+        whiteSpace: "nowrap"
+      }
+    }, `${fmtTime(Math.floor(dragCreatePreview.startMin / 60) % 24, dragCreatePreview.startMin % 60)} \u2013 ${fmtTime(Math.floor(dragCreatePreview.endMin / 60) % 24, dragCreatePreview.endMin % 60)}`)), items.map(it => {
       const top = (it.hh - CAL_HOUR_START) * CAL_HOUR_PX + it.mm / 60 * CAL_HOUR_PX;
       const height = Math.max(16, it.duration / 60 * CAL_HOUR_PX - 4);
       const endH = Math.floor(it.endMin / 60) % 24,
@@ -6237,6 +6517,28 @@ function Planner() {
     min = (min % 1440 + 1440) % 1440;
     return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
   }
+  // The time fields keep the native time control, with `step` set so its
+  // arrows, scroll wheel and picker list all move in 15-minute jumps.
+  // Browsers still accept an arbitrary typed minute, so the value is snapped
+  // on blur rather than on change -- snapping mid-keystroke would eat the
+  // first digit of a minute like ":45" before the second one arrives.
+  function snapToQuarter(str) {
+    if (!str) return str;
+    const min = timeToMin(str);
+    if (Number.isNaN(min)) return str;
+    return minToTime(Math.round(min / 15) * 15);
+  }
+  const timeInputStyle = {
+    border: "1px solid #E8E5E3",
+    borderRadius: 8,
+    padding: "7px 8px",
+    fontSize: 13,
+    fontFamily: "inherit",
+    outline: "none",
+    color: "#1C1917",
+    width: "100%",
+    boxSizing: "border-box"
+  };
   // `forceUnscheduled`, when true, starts the "Day and time" toggle off
   // regardless of whether the entry actually has a schedule. Used when
   // opening the dialog from the planner grid, where items are organized
@@ -6261,7 +6563,10 @@ function Planner() {
     }
     setEditingItem({ ds, entryId });
   }
-  function openCreate(ds, hour, minute, presetPillars) {
+  // `endMinutes` (minutes from midnight) is supplied when the user drew the
+  // block by dragging on the calendar grid; without it the dialog falls back
+  // to the default duration, which is what a plain click gives.
+  function openCreate(ds, hour, minute, presetPillars, endMinutes) {
     setEditName("");
     setEditLinkUrl(null);
     setEditPillarIds(presetPillars || []);
@@ -6270,7 +6575,9 @@ function Planner() {
       setEditUnscheduled(false);
       const start = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
       setEditStart(start);
-      setEditEnd(minToTime(timeToMin(start) + CAL_DEFAULT_DURATION));
+      const startMin = timeToMin(start);
+      const endMin = endMinutes != null ? Math.max(startMin + CAL_MIN_DURATION, endMinutes) : startMin + CAL_DEFAULT_DURATION;
+      setEditEnd(minToTime(endMin));
     } else {
       setEditUnscheduled(true);
       setEditStart("09:00");
@@ -7241,7 +7548,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v8.2.15")), (() => {
+  }, "v8.4.5")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -8167,18 +8474,21 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.06em",
       flex: 1
     }
-  }, "Start", /*#__PURE__*/React.createElement("input", {
-    type: "time",
+  }, "Start", /*#__PURE__*/React.createElement(TimeField, {
     value: editStart,
-    onChange: e => setEditStart(e.target.value),
-    style: {
-      border: "1px solid #E8E5E3",
-      borderRadius: 8,
-      padding: "7px 8px",
-      fontSize: 13,
-      fontFamily: "inherit",
-      outline: "none",
-      color: "#1C1917"
+    inputStyle: timeInputStyle,
+    onChange: (raw, isTyping) => {
+      if (!raw) {
+        setEditStart(raw);
+        return;
+      }
+      const nextStart = isTyping ? raw : snapToQuarter(raw);
+      const prevStart = timeToMin(editStart);
+      let prevEnd = timeToMin(editEnd);
+      if (prevEnd <= prevStart) prevEnd += 1440;
+      const dur = Math.max(CAL_MIN_DURATION, prevEnd - prevStart);
+      setEditStart(nextStart);
+      setEditEnd(minToTime(timeToMin(nextStart) + dur));
     }
   })), /*#__PURE__*/React.createElement("label", {
     style: {
@@ -8192,18 +8502,15 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.06em",
       flex: 1
     }
-  }, "End", /*#__PURE__*/React.createElement("input", {
-    type: "time",
+  }, "End", /*#__PURE__*/React.createElement(TimeField, {
     value: editEnd,
-    onChange: e => setEditEnd(e.target.value),
-    style: {
-      border: "1px solid #E8E5E3",
-      borderRadius: 8,
-      padding: "7px 8px",
-      fontSize: 13,
-      fontFamily: "inherit",
-      outline: "none",
-      color: "#1C1917"
+    inputStyle: timeInputStyle,
+    onChange: (raw, isTyping) => {
+      if (!raw) {
+        setEditEnd(raw);
+        return;
+      }
+      setEditEnd(isTyping ? raw : snapToQuarter(raw));
     }
   })))), /*#__PURE__*/React.createElement("div", {
     style: {
