@@ -372,19 +372,19 @@ const COLOR_PALETTE = [
   { color: "#82B5A8", bg: "#E0F2ED", deep: "#589788", ink: "#3D635A" },
   // 7 — periwinkle: fills between teal and violet
   { color: "#92A1BE", bg: "#E8EEFB", deep: "#6F82A3", ink: "#45536C" },
-  // 8 — gold: fills between rose and sage, and keeps the eight from turning
-  //     cold. The one ochre in the core set; its done state is the warmest
-  //     thing on the page.
-  { color: "#C7A364", bg: "#F6ECE1", deep: "#AA823B", ink: "#715522" },
-  // --- past here the chroma drops. Nine or more pillars only. ---
-  // 9 — slate blue
-  { color: "#657C8E", bg: "#E3F0FA", deep: "#355970", ink: "#224154" },
-  // 10 — mauve
-  { color: "#8B7382", bg: "#F8EAF3", deep: "#6A4B60", ink: "#503647" },
-  // 11 — grey-green
-  { color: "#697F6F", bg: "#E4F1E7", deep: "#3E5B47", ink: "#2A4332" },
-  // 12 — brown
-  { color: "#8B7666", bg: "#F9EBE2", deep: "#694F3B", ink: "#4F3928" }
+  // 8 — gold: brightened by chroma rather than lightness. Going paler is what
+  //     costs legibility; going richer keeps the cream text on it. At 3.0:1 it
+  //     is the lowest-contrast done tile in the set, a hair under sage.
+  { color: "#D1AE61", bg: "#F8EFDC", deep: "#B68A2B", ink: "#6E5314" },
+  // --- past here the chroma drops, but not the lightness. Nine or more. ---
+  // 9 — burnt orange: the one vivid warm, sitting between rose and gold
+  { color: "#D69971", bg: "#FBE9DC", deep: "#B26634", ink: "#6B3B1B" },
+  // 10 — slate blue
+  { color: "#7593A8", bg: "#E3F0FA", deep: "#4C7996", ink: "#2A4A5E" },
+  // 11 — mauve
+  { color: "#9C8195", bg: "#F8EAF3", deep: "#8C6680", ink: "#57394E" },
+  // 12 — grey-green
+  { color: "#7B9683", bg: "#E4F1E7", deep: "#587E64", ink: "#36503F" }
 ];
 // Which slot a pillar belongs to, however old the stored colour is.
 function slotForColor(color) {
@@ -417,28 +417,36 @@ const LEGACY_COLOR_MAP = {
   // the v8.4.6 watercolour set, in case pillars were re-saved under it
   "#D4704A": 0, "#55A8A2": 1, "#E2B23A": 5, "#C77BA4": 4,
   "#7396BB": 6, "#93A96B": 2, "#9179C2": 3, "#A88463": 7,
-  "#5EA3C4": 6, "#DD9350": 9, "#5F9463": 8, "#A96BB0": 3,
+  "#5EA3C4": 6, "#DD9350": 10, "#5F9463": 9, "#A96BB0": 3,
   // the v8.4.7–v8.4.11 sets
   "#E28168": 0, "#3C929E": 1, "#DAB45B": 5, "#EA91B1": 4,
   "#7CA1CC": 6, "#99AE65": 2, "#9788C6": 3, "#A68268": 7,
-  "#CE6B77": 9, "#628B64": 8,
+  "#CE6B77": 10, "#628B64": 9,
   "#398F9E": 1, "#6AC3AE": 5, "#9BB164": 2, "#E1C160": 7,
   // Groovy Spring, retired in v8.5.5. A pillar carries its slot number, so
   // these only matter for anything old enough to be identified by hex alone —
   // but slotForColor no longer walks a live palette that contains them.
   "#E98B64": 0, "#31939F": 1, "#6CB48E": 5, "#DD7DA4": 4,
   "#8DA7D4": 6, "#9BAE5C": 2, "#A185BF": 3, "#CEAA43": 7,
-  "#9E698D": 9, "#3C80A8": 8, "#9C704E": 11, "#508561": 10,
+  "#9E698D": 10, "#3C80A8": 9, "#9C704E": 8, "#508561": 11,
   "#CF653A": 0, "#007080": 1, "#3D966B": 5, "#BF5081": 4,
   "#6A8ABD": 6, "#7A9231": 2, "#7F5FA3": 3, "#B08900": 7,
-  "#7C406A": 9, "#005C88": 8, "#774B23": 11, "#20603A": 10,
+  "#7C406A": 10, "#005C88": 9, "#774B23": 8, "#20603A": 11,
   // Hazy Sunrise, retired in v8.5.7.
   "#D5907B": 0, "#E9A692": 0, "#77A8B7": 1, "#97C2D0": 1,
   "#66AE99": 5, "#86C9B4": 5, "#C88DA5": 4, "#E1A9BF": 4,
   "#8EA0C2": 6, "#A9BADA": 6, "#92AB74": 2, "#AEC691": 2,
   "#A690BC": 3, "#C0ABD5": 3, "#C5A86A": 7, "#E1C387": 7,
-  "#9B8291": 9, "#B59BAB": 9, "#728CA0": 8, "#8BA6BA": 8,
-  "#9D8573": 11, "#B79E8C": 11, "#76917D": 10, "#8FAB96": 10,
+  "#9B8291": 10, "#B59BAB": 10, "#728CA0": 9, "#8BA6BA": 9,
+  "#9D8573": 8, "#B79E8C": 8, "#76917D": 11, "#8FAB96": 11,
+  // Dusty Haze values retired in v8.5.7 — the old gold, the four dark tail
+  // colours, and brown, which left the palette entirely. Brown maps to the
+  // burnt orange that replaced it: same corner of the wheel, more life in it.
+  "#C7A364": 7, "#AA823B": 7,
+  "#657C8E": 9, "#355970": 9,
+  "#8B7382": 10, "#6A4B60": 10,
+  "#697F6F": 11, "#3E5B47": 11,
+  "#8B7666": 8, "#694F3B": 8,
   "#A79C88": null
 };
 function paletteEntryFor(color) {
@@ -7772,7 +7780,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v8.5.7")), (() => {
+  }, "v8.5.8")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
