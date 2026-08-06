@@ -528,6 +528,15 @@ const PANEL_HEADER = {
   alignItems: "flex-start",
   justifyContent: "space-between"
 };
+// The small uppercase rule that divides a sidebar list into sections.
+const SIDEBAR_SECTION_LABEL = {
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: "0.1em",
+  textTransform: "uppercase",
+  color: PLAN_MUTED,
+  margin: "2px 2px 8px"
+};
 // Dimmed full-screen backdrop behind a modal.
 const MODAL_OVERLAY = {
   position: "fixed",
@@ -630,6 +639,11 @@ const DONE_BORDER_W = 1.5;
 // calendar events at 4, chips at 3. One value now, so a tile is the same
 // shape wherever it appears.
 const TILE_RADIUS = 4;
+// The planner varies band widths per item so a grid of tiles reads as a
+// composition. List surfaces don't want that: rows of like things scanned
+// top to bottom look arbitrary rather than composed when their bands ripple.
+// One width for every pillar row in the management sidebar.
+const PILLAR_ROW_BAND_W = 16;
 // Curated split ratios, in rising order of imbalance. Near-even splits read
 // as a repeated pattern, so the table starts at 2:3 and leans on the small
 // whole-number ratios Mondrian favoured.
@@ -748,7 +762,20 @@ function plainChip(active) {
     borderRadius: CHIP_RADIUS
   };
 }
-const DEFAULT_CATS = [{
+// The built-in pillars, and which of them a new planner starts with.
+//
+// These were one list until the default set was cut from eight to four. They
+// are different questions: the library is everything the app knows how to
+// offer, and DEFAULT_ACTIVE is the much smaller set worth handing someone on
+// day one. Anything in the library that isn't active shows up as a suggestion
+// instead, so shrinking the defaults doesn't hide a pillar — it demotes it.
+//
+// The five defaults span five separate mechanisms rather than five strong
+// findings: the body, other people, purpose, growth, and recovery. Learn, Make
+// and Explore are all well supported, but each is a slice of the axis Expand
+// names — a starting set that spends three slots there leaves a week lopsided,
+// so the axis gets one row and the slices stay on offer.
+const PILLAR_LIBRARY = [{
   id: "move",
   label: "Move",
   slot: 0,
@@ -767,20 +794,8 @@ const DEFAULT_CATS = [{
   ...COLOR_PALETTE[1]
 },
 {
-  id: "learn",
-  label: "Learn",
-  slot: 6,
-  ...COLOR_PALETTE[6]
-},
-{
-  id: "make",
-  label: "Make",
-  slot: 5,
-  ...COLOR_PALETTE[5]
-},
-{
-  id: "explore",
-  label: "Explore",
+  id: "expand",
+  label: "Expand",
   slot: 2,
   ...COLOR_PALETTE[2]
 },
@@ -790,12 +805,28 @@ const DEFAULT_CATS = [{
   slot: 3,
   ...COLOR_PALETTE[3]
 },
+// Offered, not started with. Slots here don't matter: a pillar added from a
+// suggestion takes the next free colour rather than the one recorded below.
 {
-  id: "gsd",
-  label: "GSD",
+  id: "make",
+  label: "Make",
+  slot: 5,
+  ...COLOR_PALETTE[5]
+},
+{
+  id: "play",
+  label: "Play",
+  slot: 6,
+  ...COLOR_PALETTE[6]
+},
+{
+  id: "outside",
+  label: "Get outside",
   slot: 7,
   ...COLOR_PALETTE[7]
 }];
+const DEFAULT_ACTIVE = ["move", "connect", "contribute", "expand", "rest"];
+const DEFAULT_CATS = PILLAR_LIBRARY.filter(p => DEFAULT_ACTIVE.includes(p.id));
 function makeIdea(text) {
   return {
     id: `idea_${Math.random().toString(36).slice(2)}`,
@@ -814,17 +845,19 @@ const DEFAULT_IDEAS = {
   move: ["Morning walk", "Yoga", "Swim", "Dance", "Hike"],
   connect: ["Call a friend", "Coffee date", "Snail mail greeting", "Host a dinner"],
   contribute: ["Volunteer", "Mentor", "Random kindness", "Donate items", "Cook for someone", "Write a card"],
-  learn: ["Journal", "Read", "Podcast", "Online course", "Gratitude list"],
-  make: ["Draw", "Sew", "Woodwork", "Cookies", "Mosaic"],
-  explore: ["Museum", "Day trip", "New restaurant", "New neighborhood"],
+  // Expand absorbed Learn and Explore, so it inherits both benches: getting
+  // better at something, and going somewhere that rearranges you.
+  expand: ["Take a class", "Read something hard", "Museum", "Day trip", "Learn an instrument", "New neighborhood"],
   rest: ["Nap", "Long bath", "Slow morning", "People watch", "Do nothing"],
+  make: ["Draw", "Sew", "Woodwork", "Bake something", "Cook a new recipe", "Mosaic"],
+  play: ["Board games", "Shoot hoops", "Karaoke", "Mini golf", "Frisbee in the park"],
+  outside: ["Walk", "Hike", "Garden", "Picnic", "Sit in the sun"],
+  // Kept for planners created before these pillars were folded away.
+  learn: ["Journal", "Read", "Podcast", "Online course", "Gratitude list"],
+  explore: ["Museum", "Day trip", "New restaurant", "New neighborhood"],
   gsd: ["Clear a drawer", "Auto bill pay", "Schedule appointments", "Backburner task"]
 };
-const CAT_SUGGESTIONS = [
-  { label: "Get outside", desc: null },
-  { label: "Play",        desc: null },
-  { label: "Cook",        desc: null },
-];
+const CAT_SUGGESTIONS = [];
 const SUGGESTION_IDEAS = {
   "Get outside": ["Walk", "Hike", "Garden", "Picnic", "Sit in the sun"],
   "Play":        ["Board games", "Shoot hoops", "Improv", "Mini golf", "Karaoke"],
@@ -2129,29 +2162,53 @@ function EditablePillarName({ value, onCommit, textStyle, accentColor, editTitle
   }, /*#__PURE__*/React.createElement("path", { d: "M12 20h9" }),
      /*#__PURE__*/React.createElement("path", { d: "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" }))));
 }
-function CatSuggestionItem({label, desc, onClick, disabled, onRename}) {
+// A suggestion in the Add Pillar panel, drawn in the same vocabulary as a
+// planner tile: a squared white field with a hairline edge and a full-height
+// band down the left, text indented past it. The band is empty while the
+// pillar is only a suggestion — nothing has claimed a colour yet. Hovering
+// floods it with the exact pigment the pillar *would* take on being added,
+// so the palette decision is previewed rather than discovered afterwards.
+function CatSuggestionItem({label, desc, onClick, disabled, onRename, color}) {
   const [hovered, setHovered] = React.useState(false);
+  const live = hovered && !disabled;
+  const edge = live && color ? color : NEUTRAL_OUTLINE;
+  const innerR = Math.max(TILE_RADIUS - 1.5, 0);
   return React.createElement("div", {
     onClick: disabled ? undefined : onClick,
     onMouseEnter: disabled ? undefined : () => setHovered(true),
     onMouseLeave: () => setHovered(false),
     style: {
+      position: "relative",
       display: "flex",
       alignItems: "flex-start",
       gap: 8,
       padding: "10px 12px",
+      paddingLeft: TILE_INDENT,
       marginBottom: 6,
-      background: "#fff",
-      borderTop: "1px solid #EAE1D0",
-      borderRight: "1px solid #EAE1D0",
-      borderBottom: "1px solid #EAE1D0",
-      borderLeft: `3px solid ${hovered && !disabled ? "#A79C88" : "#DCD2BF"}`,
-      borderRadius: 6,
+      background: TILE_PLAN_FILL,
+      border: `${PLAN_BORDER_W}px solid ${edge}`,
+      borderRadius: TILE_RADIUS,
       opacity: disabled ? 0.42 : 1,
       cursor: disabled ? "default" : "pointer",
-      transition: "border-color 0.1s ease, background 0.1s ease"
+      transition: "border-color 0.12s ease"
     }
-  }, React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+  }, React.createElement("span", {
+    "aria-hidden": "true",
+    style: {
+      position: "absolute",
+      left: 0,
+      top: 0,
+      bottom: 0,
+      width: PILLAR_ROW_BAND_W,
+      background: live && color ? color : "transparent",
+      borderRight: `${PLAN_BORDER_W}px solid ${edge}`,
+      borderTopLeftRadius: innerR,
+      borderBottomLeftRadius: innerR,
+      boxSizing: "border-box",
+      pointerEvents: "none",
+      transition: "background 0.12s ease, border-color 0.12s ease"
+    }
+  }), React.createElement("div", { style: { flex: 1, minWidth: 0 } },
     onRename ? React.createElement(EditablePillarName, {
       value: label,
       onCommit: onRename,
@@ -2184,12 +2241,19 @@ function SciencePage({
     move: "#C4622F",
     connect: "#DB2777",
     contribute: "#0891B2",
-    learn: "#2563EB",
+    play: "#2563EB",
+    outside: "#059669",
     make: "#D97706",
-    explore: "#7C3AED",
+    expand: "#7C3AED",
     rest: "#6D28D9",
-    gsd: "#059669"
+    make: "#D97706"
   };
+  // Ordered so the four a new planner starts with come first; the rest are
+  // the same research, waiting in the suggestions. Nothing is offered as a
+  // pillar that does not have a section here.
+  // Ordered so the five a new planner starts with come first. Nothing is
+  // offered as a pillar that does not have a section here, and nothing has a
+  // section here that is not offered.
   const liveit = [{
     id: "move",
     label: "Move",
@@ -2233,46 +2297,21 @@ function SciencePage({
       url: "https://en.wikipedia.org/wiki/Man%27s_Search_for_Meaning"
     }]
   }, {
-    id: "learn",
-    label: "Learn",
-    headline: "A curious, challenged mind is a healthier, more resilient one.",
-    body: "Dweck's research on growth mindset showed that people who believe they can develop through effort consistently outperform those who don't — not because they're smarter, but because they engage differently with difficulty. The deeper mechanism is cognitive reserve: the brain's capacity to buffer against decline, built through a lifetime of engagement. A 2022 Neurology study tracking 1,184 people from age 8 to 69 found that those with richer mental, social, and creative lives built measurably more protection against dementia — regardless of genetics.",
-    bar: "Challenge your mind, every day",
-    barLabel: "Cognitive reserve — your brain's buffer against decline — is built through consistent engagement with new or difficult material. Social engagement and creative activity count, not just formal learning.",
+    id: "expand",
+    label: "Expand",
+    headline: "The self isn't fixed. Weeks that make it bigger are the ones you remember.",
+    body: "Self-Determination Theory identifies competence as one of three basic psychological needs, alongside relatedness and autonomy — and it's the one a well-balanced week most often misses. Arthur Aron's self-expansion model explains why: people are motivated to grow the self by taking on new perspectives, skills and identities, and the feeling that accompanies that growth is one of the most reliable sources of vitality we know how to produce on purpose. Aron's 2000 study found that couples who did novel, challenging things together reported higher relationship quality afterwards — the expansion, not the activity, was the active ingredient. Csikszentmihalyi located the same effect at the individual level: flow arrives when a challenge sits just past your current skill, which means it is only available to someone in the process of getting better at something. The same axis covers going somewhere unfamiliar: hedonic adaptation normalises good circumstances within weeks, and Lyubomirsky's work shows the antidote isn't chasing bigger things but variety and novelty. Keltner adds a specific prescription — encounters with something vast quiet self-focused thinking and reliably increase generosity.",
+    bar: "Be a beginner at something",
+    barLabel: "Expand is the axis that Learn, Make and Explore each cut a slice from — new skills, new work, new places. A week is expanding if there's something in it you're not good at yet.",
     chips: [{
-      text: "Dweck · The Power of Believing You Can Improve (TED)",
-      url: "https://www.ted.com/talks/carol_dweck_the_power_of_believing_that_you_can_improve"
+      text: "Aron · Self-Expansion Model (Stony Brook)",
+      url: "https://www.psychology.stonybrook.edu/aronlab-/"
     }, {
-      text: "Harvard Health · Building a Cognitive Reserve (Neurology study)",
-      url: "https://www.health.harvard.edu/mind-and-mood/building-a-cognitive-reserve-offers-brain-protection-in-old-age"
-    }]
-  }, {
-    id: "make",
-    label: "Make",
-    headline: "Creative absorption is one of the most reliably positive experiences a person can have.",
-    body: "Csikszentmihalyi spent decades studying what people were doing when they felt most alive. The consistent answer: flow — total absorption in a task that matches but stretches your skills. Cooking, painting, baking, building can all produce it. Fredrickson's broaden-and-build theory explains why it matters beyond the moment: positive emotions generated in flow don't just feel good — they compound over time, building durable resources like resilience and creativity that outlast the activity itself.",
-    bar: "Find your flow",
-    barLabel: "Aim for at least one session a week where time disappears and you're fully absorbed. The activity doesn't matter — what matters is the match between challenge and skill.",
-    chips: [{
-      text: "Csikszentmihalyi · Flow: The Secret to Happiness (TED)",
-      url: "https://www.ted.com/talks/mihaly_csikszentmihalyi_flow_the_secret_to_happiness"
+      text: "Center for Self-Determination Theory",
+      url: "https://selfdeterminationtheory.org/theory/"
     }, {
-      text: "Fredrickson · Broaden-and-Build Theory",
-      url: "https://positivepsychology.com/broaden-build-theory/"
-    }]
-  }, {
-    id: "explore",
-    label: "Explore",
-    headline: "We adapt to good things with startling speed. Novelty and awe are the reset.",
-    body: "Hedonic adaptation is the brain's tendency to normalize circumstances — good or bad — within weeks to months. The promotion, the new relationship, the bigger apartment: research shows they all lose their power to generate positive feeling faster than we expect. Lyubomirsky's work shows the antidote isn't chasing bigger things — it's variety, novelty, and paying attention. Keltner's research on awe adds a specific prescription: encounters with something vast or unfamiliar quiet self-focused thinking and reliably increase generosity and connection.",
-    bar: "Seek novelty and awe",
-    barLabel: "New experiences interrupt the habituation cycle. Something that makes you feel small and wonder-filled counts. You don't need to travel far — an unfamiliar neighborhood or museum does the job.",
-    chips: [{
-      text: "Greater Good · Why Do We Feel Awe?",
+      text: "Greater Good \u00b7 Why Do We Feel Awe?",
       url: "https://greatergood.berkeley.edu/article/item/why_do_we_feel_awe"
-    }, {
-      text: "Greater Good · Lyubomirsky on the Myths of Happiness",
-      url: "https://greatergood.berkeley.edu/article/item/sonja_lyubomirsky_on_the_myths_of_happiness"
     }]
   }, {
     id: "rest",
@@ -2289,21 +2328,73 @@ function SciencePage({
       url: "https://www.nih.gov/news-events/nih-research-matters/brain-may-flush-out-toxins-during-sleep"
     }]
   }, {
-    id: "gsd",
-    label: "GSD",
-    headline: "Unfinished tasks quietly drain your energy — until you close them.",
-    body: "Zeigarnik showed in 1927 that the brain keeps incomplete tasks in active memory, looping back to them disproportionately. Masicampo and Baumeister confirmed in 2011 why this matters: unfinished goals don't just sit there — they actively interfere with performance on unrelated tasks, creating a persistent cognitive drag. The antidote: closing the loop. Making a concrete plan for an unfinished task — even if you don't do it yet — is enough to release the mental hold. Seligman's PERMA model counts Accomplishment as a pillar of wellbeing for the same reason: completion genuinely satisfies.",
-    bar: "Clear your open loops",
-    barLabel: "Every unfinished task on your mental list is a small, active drain on focus and energy. The goal isn't productivity — it's clearing the cognitive overhead that comes with things left undone.",
+    id: "make",
+    label: "Make",
+    headline: "Creative absorption is one of the most reliably positive experiences a person can have.",
+    body: "Csikszentmihalyi spent decades studying what people were doing when they felt most alive. The consistent answer: flow — total absorption in a task that matches but stretches your skills. Cooking, painting, baking, building can all produce it. The direction of the effect is the part worth knowing. Conner, DeYoung and Silvia followed 658 people through 13 days of daily diaries and found that on days after people did more creative activity than usual, they reported higher positive affect and more flourishing. The reverse didn't hold — feeling good did not predict making things the next day — so the making appears to be doing the work. Fredrickson's broaden-and-build theory explains why it lasts: positive emotions generated this way compound, building durable resources like resilience that outlive the activity.",
+    bar: "Find your flow",
+    barLabel: "Aim for at least one session a week where time disappears and you're fully absorbed. The activity doesn't matter — what matters is the match between challenge and skill.",
     chips: [{
-      text: "Psychology Today · How the Zeigarnik Effect Impacts Everyone Daily",
-      url: "https://www.psychologytoday.com/us/blog/natural-order/202209/how-the-little-known-zeigarnik-effect-impacts-everyone-daily"
+      text: "Csikszentmihalyi · Flow: The Secret to Happiness (TED)",
+      url: "https://www.ted.com/talks/mihaly_csikszentmihalyi_flow_the_secret_to_happiness"
     }, {
-      text: "Seligman · PERMA",
-      url: "https://positivepsychology.com/perma-model/"
+      text: "Fredrickson · Broaden-and-Build Theory",
+      url: "https://positivepsychology.com/broaden-build-theory/"
+    }]
+  }, {    id: "play",
+    label: "Play",
+    headline: "Adults stop being silly long before they stop needing to be.",
+    body: "The clearest evidence starts with children, where free play turns out to differ in kind from organised activity rather than just in degree. Barker and colleagues found that six- and seven-year-olds who spent more time in less-structured activities showed better self-directed executive function \u2014 and that time in structured activities predicted the opposite. It's a small correlational study, so treat it as suggestive; what it suggests is that supervision is not a substitute for freedom. For adults the evidence is more direct: Proyer and colleagues randomised 533 people into playfulness exercises or a placebo and found the exercises raised playfulness on every facet and reduced depressive symptoms, with short-term gains in well-being. Playfulness is trainable, and training it moves the outcome. The social forms are the strongest \u2014 Dunbar found that shared laughter raises pain threshold, a marker of endorphin release, in a way that ordinary conversation does not.",
+    bar: "Do something with no point",
+    barLabel: "Dancing, karaoke, frisbee, a game with nothing at stake. Play is the pillar most likely to be missing from a week that looks otherwise well spent \u2014 and a league you're committed to is closer to Move than to this.",
+    chips: [{
+      text: "Proyer et al. \u00b7 Can Playfulness be Stimulated? (Applied Psych: Health & Well-Being)",
+      url: "https://iaap-journals.onlinelibrary.wiley.com/doi/10.1111/aphw.12220"
+    }, {
+      text: "Barker et al. \u00b7 Less-Structured Time and Self-Directed Executive Function",
+      url: "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2014.00593/full"
+    }, {
+      text: "Dunbar et al. \u00b7 Social Laughter and Pain Threshold (Proc. Royal Society B)",
+      url: "https://royalsocietypublishing.org/doi/10.1098/rspb.2011.1373"
+    }]
+  
+  }, {    id: "outside",
+    label: "Get outside",
+    headline: "Two hours a week outdoors is a threshold, not a gradient.",
+    body: "Most wellbeing advice can't tell you how much is enough. This can. White and colleagues analysed nature contact for 19,806 people in England and found something unusually clean: compared with no time outdoors, people reporting 120 minutes or more a week were substantially more likely to report good health and high wellbeing \u2014 and people reporting anything between 1 and 119 minutes were no better off than those reporting none. It didn't matter whether the two hours came in one visit or several. The benefit peaked somewhere around 200 to 300 minutes and stopped climbing after that. The study is observational, so it shows a pattern rather than proving cause, but the threshold shape has held up across age, income, occupation and existing illness.",
+    bar: "120 minutes a week",
+    barLabel: "One long walk or six short ones \u2014 the total is what counted. This is the one pillar with a number worth setting as a weekly intention, because below the threshold the study found nothing at all.",
+    chips: [{
+      text: "White et al. \u00b7 120 Minutes a Week in Nature (Scientific Reports)",
+      url: "https://www.nature.com/articles/s41598-019-44097-3"
     }]
   }];
   const planit = [{
+    label: "Rough Scheduling",
+    headline: "Pinning fun to a clock time is the one way planning can backfire.",
+    body: "Tonietto and Malkoc ran 13 studies on scheduled leisure and found the same thing throughout: giving an enjoyable activity a specific time makes it feel structured and work-like, and reduces both the excitement beforehand and the enjoyment during. Coffee at 3pm is less fun than coffee this afternoon. The effect is a real cost of calendars, and it would be dishonest for a planner not to say so. The same research found the fix, though: scheduling roughly \u2014 a day, or a loose window, with no start time \u2014 removes the penalty entirely while keeping the benefit that made people schedule in the first place, which is that planned things actually happen.",
+    connection: "This is why an activity here only needs a day. Times are optional and always have been \u2014 use them for the things that genuinely need one, and leave Play, Rest and Connect loose. A pillar left rough isn't a plan you failed to finish.",
+    bar: "A day, not a time",
+    barLabel: "Rough scheduling gets you the participation without the work-like feeling. Reserve clock times for what actually depends on them.",
+    chips: [{
+      text: "Tonietto & Malkoc \u00b7 The Calendar Mindset (J. Marketing Research)",
+      url: "https://journals.sagepub.com/doi/abs/10.1509/jmr.14.0591"
+    }, {
+      text: "Tonietto et al. \u00b7 Viewing Leisure as Wasteful Undermines Enjoyment",
+      url: "https://www.sciencedirect.com/science/article/abs/pii/S0022103121001013"
+    }]
+  }, {
+    label: "Completion",
+    headline: "Unfinished tasks quietly drain your energy — until you close them.",
+    body: "Zeigarnik showed in 1927 that the brain keeps incomplete tasks in active memory, looping back to them disproportionately. Masicampo and Baumeister confirmed in 2011 why this matters: unfinished goals don't just sit there — they actively interfere with performance on unrelated tasks, creating a persistent cognitive drag. The antidote isn't finishing everything. Making a concrete plan for an unfinished task — even if you don't do it yet — is enough to release the mental hold.",
+    connection: "This is why errands belong on the calendar but not in a pillar. Writing down when you'll deal with something closes the loop; giving chores their own pillar just turns a week meant for living into a to-do list.",
+    bar: "Give it a time, not a pillar",
+    barLabel: "Drop tasks straight onto the calendar and leave them untagged. The plan is what quiets them — the tag adds nothing.",
+    chips: [{
+      text: "Masicampo & Baumeister · Consider It Done (APA)",
+      url: "https://psycnet.apa.org/record/2011-11349-001"
+    }]
+  }, {
     label: "Goal Setting",
     headline: "Specific, challenging goals consistently outperform vague ones — or none at all.",
     body: "Locke and Latham spent 35 years establishing one of the most replicated findings in psychology: specific, challenging goals produce dramatically better outcomes than vague ones. \"Do your best\" is nearly as ineffective as no goal at all. The mechanism: specificity focuses attention, difficulty increases effort, and putting it in writing makes the goal feel like identity rather than intention.",
@@ -2502,7 +2593,19 @@ function SciencePage({
         textTransform: "uppercase",
         color: C[p.id]
       }
-    }, p.label)), /*#__PURE__*/React.createElement("h2", {
+    }, p.label),
+    // Which pillars a new planner starts with is a real decision, so the page
+    // that justifies them should say which four they are rather than leaving
+    // the reader to compare against the app.
+    /*#__PURE__*/React.createElement("span", {
+      style: DEFAULT_ACTIVE.includes(p.id) ? {
+        fontSize: 9, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase",
+        color: "#fff", background: C[p.id], padding: "2px 6px", borderRadius: 3
+      } : {
+        fontSize: 9, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase",
+        color: "#A79C88", border: "1px solid #E7DECB", padding: "2px 6px", borderRadius: 3
+      }
+    }, DEFAULT_ACTIVE.includes(p.id) ? "Starts on" : "Add anytime")), /*#__PURE__*/React.createElement("h2", {
       style: {
         fontSize: 18,
         fontWeight: 700,
@@ -2891,7 +2994,7 @@ function SciencePage({
       maxWidth: 500,
       marginBottom: 36
     }
-  }, "The default categories aren't arbitrary. Each maps to a body of research on what actually generates wellbeing, meaning, and longevity. Together they form a blueprint for a week worth looking forward to."), liveit.map((p, i) => /*#__PURE__*/React.createElement(LiveItPillar, {
+  }, "These eight aren't arbitrary. Each maps to a body of research on what actually generates wellbeing, meaning, and longevity. A new planner starts with five — your body, the people around you, a sense of purpose, becoming more than you were, and real recovery. The other three are one tap away in the Pillars panel: Make for the weeks you want something to exist at the end of, Play for the fun that performance culture quietly deletes, and Get outside for the one target here with a number attached."), liveit.map((p, i) => /*#__PURE__*/React.createElement(LiveItPillar, {
     key: p.id,
     p: p,
     i: i,
@@ -4522,13 +4625,42 @@ function useIdeasStore({ readOnly, override }) {
 const MORE_IDEAS = {
   move: ["Stretch for 10 minutes", "Walk somewhere you'd normally drive", "Bike ride", "Try a new class", "Take the stairs all week", "Play a sport you loved as a kid"],
   connect: ["Voice memo instead of a text", "Reconnect with someone you've lost touch with", "Invite a neighbour over", "Walk with a friend", "Ask someone about their week and really listen", "Plan a trip with someone"],
-  contribute: ["Leave a generous tip", "Give away something you don't use", "Support a local business", "Offer a skill to someone", "Pick up litter on your street", "Thank someone who helped you"],
-  learn: ["Watch a documentary", "Learn 10 words of a new language", "Read outside your usual genre", "Ask an expert a question", "Take notes on something you enjoyed", "Teach someone what you know"],
-  make: ["Cook something you've never made", "Fix something that's broken", "Write 200 words", "Take photos on a walk", "Rearrange a room", "Make something for someone else"],
-  explore: ["Take a different route home", "Visit a park you've never been to", "Try a cuisine you don't know", "Go somewhere at a different time of day", "Wander with no destination", "Say yes to an invitation"],
+  contribute: ["Leave a generous tip", "Give away something you don't use", "Support a local business", "Offer a skill to someone", "Cook a meal for someone who needs one", "Thank someone who helped you"],
+  expand: ["Start something you'll be bad at for a while", "Read outside your usual genre", "Ask someone to teach you what they know", "Take a different route home", "Learn 10 words of a new language", "Go somewhere that makes you feel small"],
   rest: ["Go to bed an hour early", "Sit outside with no phone", "Read for pleasure", "Take a real lunch break", "Listen to a whole album", "Cancel one thing"],
+  make: ["Cook something you've never made", "Fix something that's broken", "Write 200 words", "Take photos on a walk", "Bake for the fun of it", "Make something for someone else"],
+  play: ["Say yes to something silly", "Dance in the kitchen", "Play a game with no stakes", "Throw a frisbee around", "Go to a comedy night", "Do something you'd be embarrassed to be seen doing"],
+  outside: ["Eat a meal outdoors", "Find a park you've never been to", "Watch a sunrise or sunset", "Walk without headphones", "Swim outdoors", "Sit by water"],
+  learn: ["Watch a documentary", "Learn 10 words of a new language", "Read outside your usual genre", "Ask an expert a question", "Take notes on something you enjoyed", "Teach someone what you know"],
+  explore: ["Take a different route home", "Visit a park you've never been to", "Try a cuisine you don't know", "Go somewhere at a different time of day", "Wander with no destination", "Say yes to an invitation"],
   gsd: ["Unsubscribe from 10 emails", "Sort one shelf", "Cancel a subscription you forgot about", "Make the appointment you've been putting off", "Write the list that's in your head", "Do the 2-minute task"]
 };
+
+// Resolves which curated idea pool a pillar draws from.
+//
+// The pools are keyed by built-in pillar id, but a pillar drifts away from
+// that key in two ways: one added from a suggestion is created with a
+// generated id (cat_1754...), and any pillar can be renamed. Either used to
+// leave Suggest with nothing to offer, silently — rename Explore to Expand and
+// its whole bench disappeared without a word.
+//
+// So a pillar now records where it came from in `seed` at creation, and
+// lookup runs origin -> id -> label. The last two are courtesies for pillars
+// created before `seed` existed: a default still carries its library id, and
+// an un-renamed suggestion can still be matched back by name.
+function pillarSeedKey(pillar) {
+  if (!pillar) return null;
+  if (pillar.seed) return pillar.seed;
+  if (MORE_IDEAS[pillar.id] || DEFAULT_IDEAS[pillar.id]) return pillar.id;
+  const label = (pillar.label || "").trim().toLowerCase();
+  const known = PILLAR_LIBRARY.find(p => p.label.toLowerCase() === label);
+  return known ? known.id : label;
+}
+// The label a pillar was created under, for the pools that are keyed by the
+// suggestion's display name rather than by a library id.
+function pillarSeedLabel(pillar) {
+  return (pillar && (pillar.seedLabel || pillar.label)) || "";
+}
 
 const staticSuggestions = {
   id: "static",
@@ -4538,11 +4670,11 @@ const staticSuggestions = {
   // user already has (seeing through markdown links so "[Yoga](url)" still
   // counts as Yoga).
   async suggest({ pillar, existing, limit = 4 }) {
-    const key = pillar.label.toLowerCase();
+    const key = pillarSeedKey(pillar);
     const pool = [
-      ...(MORE_IDEAS[pillar.id] || MORE_IDEAS[key] || []),
-      ...(SUGGESTION_IDEAS[pillar.label] || []),
-      ...(DEFAULT_IDEAS[pillar.id] || DEFAULT_IDEAS[key] || [])
+      ...(MORE_IDEAS[key] || []),
+      ...(SUGGESTION_IDEAS[pillarSeedLabel(pillar)] || []),
+      ...(DEFAULT_IDEAS[key] || [])
     ];
     const have = new Set(existing.map(t => t.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").trim().toLowerCase()));
     const out = [];
@@ -5569,12 +5701,7 @@ function GoalsPanel({
           textOverflow: "ellipsis",
           whiteSpace: "nowrap"
         }
-      }, cat.label), /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 11,
-          color: "#A79C88"
-        }
-      }, "Tap to set a weekly target")), /*#__PURE__*/React.createElement("div", {
+      }, cat.label)), /*#__PURE__*/React.createElement("div", {
         style: {
           width: 34,
           height: 22,
@@ -5748,13 +5875,21 @@ const pillarOps = {
     const clean = (label || "").trim();
     if (!clean) return { next: cats, pillar: null };
     const pal = pillarOps.nextColor(cats);
+    // Stamp where this pillar came from. Renaming it later changes `label`;
+    // `seed` and `seedLabel` are what the idea pools are found by, so a rename
+    // costs the user nothing.
+    const known = PILLAR_LIBRARY.find(p => p.label.toLowerCase() === clean.toLowerCase());
+    const namedPool = Object.keys(SUGGESTION_IDEAS).find(k => k.toLowerCase() === clean.toLowerCase());
     const pillar = { id: id || `cat_${Date.now()}`, label: clean, color: pal.color, bg: pal.bg };
+    if (known) pillar.seed = known.id;
+    if (namedPool) pillar.seedLabel = namedPool;
     return { next: [...cats, pillar], pillar };
   },
-  // The starter ideas offered for a newly added pillar, matched by the label
-  // the user chose (either a suggestion or their own wording).
-  seedIdeasFor(label) {
-    return SUGGESTION_IDEAS[label] || DEFAULT_IDEAS[(label || "").toLowerCase()] || null;
+  // The starter ideas offered for a newly added pillar, found by its recorded
+  // origin rather than by whatever it happens to be called right now.
+  seedIdeasFor(pillar) {
+    if (!pillar) return null;
+    return SUGGESTION_IDEAS[pillarSeedLabel(pillar)] || DEFAULT_IDEAS[pillarSeedKey(pillar)] || null;
   }
 };
 
@@ -6011,7 +6146,6 @@ function Planner() {
   const [cats, setCats] = useState(DEFAULT_CATS);
   const [ideaOverride, setIdeaOverride] = useState(null);
   const [ideaPanelCatId, setIdeaPanelCatId] = useState(null);
-  const [catSuggestionsOpen, setCatSuggestionsOpen] = useState(false);
   const [catTyping, setCatTyping] = useState(false);
   const [catCustomInput, setCatCustomInput] = useState("");
   // Names the user has tweaked on suggestions before adding them, keyed by
@@ -6026,6 +6160,13 @@ function Planner() {
   const [draggedId, setDraggedId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
   const [dragPos, setDragPos] = useState(null);
+  // Pillar reorder is offered on two surfaces at once — the planner's row
+  // headers and the management sidebar, which overlays them. Both drive the
+  // same drag state and the same pillarOps.reorder, but the drop indicator
+  // has to be drawn on one surface only: without this, dragging in the
+  // sidebar lights up a matching drop line on the grid showing through
+  // beside it.
+  const [dragScope, setDragScope] = useState(null);
   const [hoveredId, setHoveredId] = useState(null);
   const [hoveredDayHeader, setHoveredDayHeader] = useState(null);
   const [renamingId, setRenamingId] = useState(null);
@@ -6289,7 +6430,6 @@ function Planner() {
     }
   }
   function openIdeasSidebar(catId) {
-    setCatSuggestionsOpen(false);
     setCatTyping(false);
     setCatCustomInput("");
     setIdeaPanelCatId(catId);
@@ -6298,14 +6438,12 @@ function Planner() {
     setSidebarOpen(true);
   }
   function openGoalsSidebar() {
-    setCatSuggestionsOpen(false);
     setCatTyping(false);
     setCatCustomInput("");
     setSidebarTab('goals');
     setSidebarOpen(true);
   }
   function openReflectionSidebar(withNewEntry = false) {
-    setCatSuggestionsOpen(false);
     setCatTyping(false);
     setCatCustomInput("");
     if (!sidebarOpen && !ideaPanelCatId) {
@@ -6338,7 +6476,6 @@ function Planner() {
     }
   }
   function openReflectWithItem(itemText, catLabel, catColor, date = null, wasCompleted = null, allCats = null) {
-    setCatSuggestionsOpen(false);
     setCatTyping(false);
     setCatCustomInput("");
     if (!sidebarOpen) {
@@ -6363,7 +6500,6 @@ function Planner() {
     });
   }
   function openReflectionsOnly(itemText, date = null) {
-    setCatSuggestionsOpen(false);
     setCatTyping(false);
     setCatCustomInput("");
     if (!sidebarOpen) {
@@ -6381,7 +6517,6 @@ function Planner() {
   // linkedItem.itemText) created from the "reflect on this day" button,
   // so re-clicking it surfaces the existing entry instead of making a new one.
   function openDayReflection(ds) {
-    setCatSuggestionsOpen(false);
     setCatTyping(false);
     setCatCustomInput("");
     if (!sidebarOpen) {
@@ -6544,33 +6679,84 @@ function Planner() {
     setRenamingId(null);
     setRenameVal("");
   }
+  // Deleting a pillar untags its work; it never destroys it.
+  //
+  // The old confirm warned that activities would be removed, and the old code
+  // didn't remove them — it left them tagged to a pillar that no longer
+  // existed, so they vanished from the pillar grid while still sitting in
+  // storage. Both halves were wrong in different directions. Now the tag is
+  // actually stripped from every stored week, and an entry left with no tags
+  // at all simply reads as untagged: still on its day, still in the calendar,
+  // reflections and links intact. This is already how removing an entry from
+  // one of several pillars behaves, so deletion is no longer a special case.
+  //
+  // Ideas are kept in storage rather than dropped. They're the one thing a
+  // pillar holds that has no other home, and an accidental delete shouldn't
+  // be the thing that loses a list someone has been building for months.
+  function untagPillarEverywhere(id) {
+    const snap = storageSnapshot();
+    Object.keys(snap).forEach(k => {
+      if (!k.startsWith("planner:week:")) return;
+      // readStoredWeek normalises the pre-v2 shapes on the way in, so weeks
+      // saved before the entry model landed get untagged correctly too.
+      const week = readStoredWeek(k);
+      let touched = false;
+      const next = {};
+      Object.entries(week).forEach(([ds, day]) => {
+        const bucket = {};
+        Object.entries(day || {}).forEach(([eid, e]) => {
+          const pillars = pillarsOrDefault(e.pillars);
+          if (!pillars.includes(id)) { bucket[eid] = e; return; }
+          touched = true;
+          const remaining = pillars.filter(pid => pid !== id);
+          bucket[eid] = { ...e, pillars: remaining.length ? remaining : [UNTAGGED_CAT.id] };
+        });
+        next[ds] = bucket;
+      });
+      if (touched) writeStoredWeek(k, next);
+    });
+    // The week on screen was just rewritten underneath us; reload it.
+    setEntries(readStoredWeek(weekKeyForDate(weekStart)));
+  }
   function deleteCat(id) {
     if (cats.length <= 1) return;
     const cat = cats.find(c => c.id === id);
     if (!cat) return;
-    const hasIdeas = ideasStore.hasOwnIdeas(id);
-    if (hasIdeas || pillarHasPlannedWork(id)) {
-      if (!window.confirm(`Deleting "${cat.label}" will also remove all its ideas and any planned activities. Delete anyway?`)) return;
+    if (pillarHasPlannedWork(id)) {
+      if (!window.confirm(`Remove "${cat.label}"? Anything you planned under it stays in your calendar, just untagged.`)) return;
     }
+    untagPillarEverywhere(id);
     saveCats(pillarOps.remove(cats, id));
-    // Don't leave the deleted pillar's ideas behind in storage.
-    ideasStore.dropPillar(id);
   }
+  function openPillarsSidebar({ adding = false } = {}) {
+    setCatTyping(adding);
+    setCatCustomInput("");
+    setSidebarTab('pillars');
+    setSidebarOpen(true);
+  }
+  // Both "+" affordances — the one beside the pillar filters and the one
+  // under the planner's rows — open the same panel, but they promise adding,
+  // so they land with the name field already focused rather than dropping the
+  // user at the top of a list of pillars they already have.
   function addCat() {
-    setCatSuggestionsOpen(true);
+    openPillarsSidebar({ adding: true });
   }
   function addCatFromSuggestion(label) {
     const { next, pillar } = pillarOps.add(cats, label);
     if (pillar) {
       saveCats(next);
-      ideasStore.seedPillar(pillar.id, pillarOps.seedIdeasFor(label));
+      ideasStore.seedPillar(pillar.id, pillarOps.seedIdeasFor(pillar));
     }
-    setCatSuggestionsOpen(false);
+    // The panel stays open. Adding a pillar is rarely a single act — people
+    // arrive wanting to shape the whole set — and closing on the first pick
+    // hides the one piece of feedback that matters: the pillar leaving the
+    // suggestions and appearing, in its colour, under Active Pillars.
     setCatTyping(false);
     setCatCustomInput("");
   }
-  function handleRowDragStart(e, id) {
+  function handleRowDragStart(e, id, scope) {
     setDraggedId(id);
+    setDragScope(scope || "grid");
     e.dataTransfer.effectAllowed = "move";
   }
   function handleRowDragOver(e, id) {
@@ -6596,6 +6782,7 @@ function Planner() {
     setDraggedId(null);
     setDragOverId(null);
     setDragPos(null);
+    setDragScope(null);
   }
   // Opens a reflection for whatever item was just dragged onto a reflection
   // drop target, from either view.
@@ -7366,8 +7553,8 @@ return /*#__PURE__*/React.createElement("div", {
       }
     }, d.getDate()));
   })), displayCats.map((cat, ci) => {
-    const isDragging = isOwnView && draggedId === cat.id,
-      isTarget = isOwnView && dragOverId === cat.id && !isDragging,
+    const isDragging = isOwnView && dragScope === "grid" && draggedId === cat.id,
+      isTarget = isOwnView && dragScope === "grid" && dragOverId === cat.id && !isDragging,
       isHovered = hoveredId === cat.id;
     const panelOpen = sidebarOpen && sidebarTab === 'ideas' && ideaPanelCatId === cat.id;
     const dropLine = /*#__PURE__*/React.createElement("div", {
@@ -7429,7 +7616,7 @@ return /*#__PURE__*/React.createElement("div", {
       }
     }, isOwnView && /*#__PURE__*/React.createElement("div", {
       draggable: true,
-      onDragStart: e => handleRowDragStart(e, cat.id),
+      onDragStart: e => handleRowDragStart(e, cat.id, "grid"),
       onDragEnd: resetRowDrag,
       onClick: e => e.stopPropagation(),
       style: {
@@ -7472,8 +7659,7 @@ return /*#__PURE__*/React.createElement("div", {
       onDoubleClick: isOwnView ? e => {
         e.stopPropagation();
         closeSidebar();
-        setCatSuggestionsOpen(false);
-        setCatTyping(false);
+            setCatTyping(false);
         setCatCustomInput("");
         startRename(cat);
       } : undefined,
@@ -7780,7 +7966,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v8.5.8")), (() => {
+  }, "v8.5.15")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -7848,7 +8034,192 @@ return /*#__PURE__*/React.createElement("div", {
       canEdit: isOwnView,
       weekLabelText: weekLabel(dates),
       onClose: closeSidebar
-    })), /*#__PURE__*/React.createElement("div", {
+    }), sidebarTab === 'pillars' && isOwnView && (() => {
+    const suggLabels = new Set(CAT_SUGGESTIONS.map(s => s.label.toLowerCase()));
+    const newSuggestions = [
+      ...CAT_SUGGESTIONS,
+      ...PILLAR_LIBRARY.filter(dc => !suggLabels.has(dc.label.toLowerCase())).map(dc => ({ label: dc.label, desc: null }))
+    ]
+      // `key` is the suggestion's original label (stable identity for the
+      // edit map); `label` is what the user actually sees and will add.
+      .map(s => ({ ...s, key: s.label, label: suggestionNames[s.label] ?? s.label }))
+      .filter(s => !cats.some(c => c.label.toLowerCase() === s.label.toLowerCase()));
+    return /*#__PURE__*/React.createElement(React.Fragment, null,
+    /*#__PURE__*/React.createElement("div", {
+    style: PANEL_HEADER
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 10 }
+  },
+  // The other sidebars head themselves with a single squared band in their
+  // pillar's colour. This panel belongs to no one pillar, so its band is the
+  // whole set stacked — the palette currently in play, growing by a segment
+  // every time a pillar is added below.
+  /*#__PURE__*/React.createElement("div", {
+    "aria-hidden": "true",
+    style: {
+      width: 7,
+      alignSelf: "stretch",
+      minHeight: 30,
+      flexShrink: 0,
+      display: "flex",
+      flexDirection: "column",
+      background: NEUTRAL_OUTLINE
+    }
+  }, cats.slice(0, 12).map(c => /*#__PURE__*/React.createElement("i", {
+    key: c.id,
+    style: { flex: "1 1 0", minHeight: 2, background: c.color }
+  }))), /*#__PURE__*/React.createElement("div", null,
+    /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: PLAN_MUTED, marginBottom: 2 }
+    }, "Pillars"),
+    // The count is the title. "Pillars / 8 Pillars" said the word twice; the
+    // eyebrow already names the panel, so the title's job is the one number
+    // nothing else in the app says out loud.
+    /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 13, fontWeight: 700, color: "#1C1917", textTransform: "uppercase", letterSpacing: "0.08em" }
+    }, cats.length, " Active")
+  )), /*#__PURE__*/React.createElement("button", {
+    onClick: () => { setCatTyping(false); setCatCustomInput(""); setSuggestionNames({}); closeSidebar(); },
+    style: { background: "none", border: "none", cursor: "pointer", fontSize: 22, color: "#BCB2A0", padding: 0, lineHeight: 1, flexShrink: 0, marginLeft: 8 }
+  }, "\u00d7")),
+  /*#__PURE__*/React.createElement("div", {
+    style: { flex: 1, overflowY: "auto", padding: "12px 14px" }
+  },
+    // The pillars themselves lead the panel — no section label, since the
+    // header's count already names what this list is.
+    // A live pillar is drawn exactly as a planned tile is: white field,
+    // hairline edge in its own colour, and a full band of deep pigment down
+    // the left. The band is one fixed width here rather than the planner's
+    // varied one — a management list is read as a column of like things, and
+    // ragged bands make it look like the rows mean different amounts.
+    cats.map(cat => {
+      const isDragging = dragScope === "sidebar" && draggedId === cat.id;
+      const isTarget = dragScope === "sidebar" && dragOverId === cat.id && !isDragging;
+      const dropLine = /*#__PURE__*/React.createElement("div", {
+        style: { height: 2, background: "#C4622F", borderRadius: 1, margin: "0 0 4px" }
+      });
+      return /*#__PURE__*/React.createElement(React.Fragment, {
+        key: cat.id
+      }, isTarget && dragPos === "above" && dropLine, /*#__PURE__*/React.createElement("div", {
+      onDragOver: e => handleRowDragOver(e, cat.id),
+      onDrop: e => handleRowDrop(e, cat.id),
+      style: {
+        position: "relative",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "10px 12px",
+        paddingLeft: TILE_INDENT,
+        marginBottom: 6,
+        background: TILE_PLAN_FILL,
+        border: `${PLAN_BORDER_W}px solid ${cat.color}`,
+        borderRadius: TILE_RADIUS,
+        opacity: isDragging ? 0.35 : 1,
+        transition: "opacity 0.15s ease",
+        cursor: "default"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      "aria-hidden": "true",
+      style: {
+        position: "absolute",
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: PILLAR_ROW_BAND_W,
+        background: catDeep(cat),
+        borderTopLeftRadius: Math.max(TILE_RADIUS - 1.5, 0),
+        borderBottomLeftRadius: Math.max(TILE_RADIUS - 1.5, 0),
+        pointerEvents: "none"
+      }
+    }), /*#__PURE__*/React.createElement("div", {
+      draggable: true,
+      onDragStart: e => handleRowDragStart(e, cat.id, "sidebar"),
+      onDragEnd: resetRowDrag,
+      title: "Drag to reorder",
+      style: { cursor: "grab", display: "flex", alignItems: "center", flexShrink: 0, marginLeft: -4 }
+    }, /*#__PURE__*/React.createElement(GripIcon, null)), /*#__PURE__*/React.createElement(EditablePillarName, {
+      value: cat.label,
+      accentColor: cat.color,
+      editTitle: "Rename pillar",
+      onCommit: label => saveCats(pillarOps.rename(cats, cat.id, label)),
+      textStyle: { fontSize: 13, color: "#1C1917", fontWeight: 500 }
+    }), /*#__PURE__*/React.createElement("button", {
+      onClick: () => deleteCat(cat.id),
+      title: "Delete pillar",
+      style: {
+        background: "none",
+        border: "none",
+        cursor: "pointer",
+        fontSize: 16,
+        lineHeight: 1,
+        color: PLAN_MUTED,
+        padding: 2,
+        flexShrink: 0
+      }
+    }, "\u00d7")), isTarget && dragPos === "below" && dropLine);
+    }),
+    newSuggestions.length > 0 && /*#__PURE__*/React.createElement("div", {
+      style: { ...SIDEBAR_SECTION_LABEL, marginTop: 18 }
+    }, "Add a pillar"),
+    // Every suggestion previews the same pigment because the palette is a
+    // queue: whichever one is added next takes the first unused colour.
+    newSuggestions.map(s => /*#__PURE__*/React.createElement(CatSuggestionItem, {
+      key: s.key,
+      label: s.label,
+      desc: s.desc,
+      disabled: false,
+      color: pillarOps.nextColor(cats).color,
+      onRename: label => setSuggestionNames(prev => ({ ...prev, [s.key]: label })),
+      onClick: () => addCatFromSuggestion(s.label)
+    }))
+  ),
+  /*#__PURE__*/React.createElement("div", {
+    style: { padding: "12px 14px", borderTop: "1px solid #E7DECB", flexShrink: 0 }
+  }, catTyping ? /*#__PURE__*/React.createElement("input", {
+    autoFocus: true,
+    value: catCustomInput,
+    onChange: e => setCatCustomInput(e.target.value),
+    onBlur: () => {
+      if (catCustomInput.trim()) addCatFromSuggestion(catCustomInput.trim());
+      setCatTyping(false);
+      setCatCustomInput("");
+    },
+    onKeyDown: e => {
+      if (e.key === "Enter" && catCustomInput.trim()) { addCatFromSuggestion(catCustomInput.trim()); setCatTyping(false); setCatCustomInput(""); }
+      if (e.key === "Escape") { setCatTyping(false); setCatCustomInput(""); }
+    },
+    placeholder: "Pillar name\u2026",
+    style: {
+      width: "100%",
+      padding: "11px",
+      paddingLeft: TILE_INDENT,
+      borderRadius: TILE_RADIUS,
+      border: `${PLAN_BORDER_W}px solid ${pillarOps.nextColor(cats).color}`,
+      background: TILE_PLAN_FILL,
+      outline: "none",
+      fontSize: 13,
+      color: "#1C1917",
+      fontFamily: "'DM Sans',sans-serif",
+      boxSizing: "border-box",
+      fontWeight: 500
+    }
+  }) : /*#__PURE__*/React.createElement("button", {
+    onClick: () => { setCatTyping(true); setCatCustomInput(""); },
+    style: {
+      width: "100%",
+      padding: "11px",
+      borderRadius: TILE_RADIUS,
+      border: `${PLAN_BORDER_W}px dashed ${NEUTRAL_OUTLINE}`,
+      background: TILE_PLAN_FILL,
+      cursor: "pointer",
+      fontSize: 13,
+      color: PLAN_TEXT,
+      fontWeight: 600,
+      fontFamily: "inherit",
+      letterSpacing: "0.02em"
+    }
+  }, "+ Name your own")));
+  })()), /*#__PURE__*/React.createElement("div", {
       style: {
         width: 28,
         background: PLAN_BG,
@@ -7976,148 +8347,36 @@ return /*#__PURE__*/React.createElement("div", {
       d: "M12 13c-1.3-1.8-5.5-1.8-5.5 0.8c0 1.8 1.8 3.5 5.5 1.7"
     }), /*#__PURE__*/React.createElement("path", {
       d: "M12 13c1.3-1.8 5.5-1.8 5.5 0.8c0 1.8-1.8 3.5-5.5 1.7"
-    }))))));
-  })(), catSuggestionsOpen && (() => {
-    const suggLabels = new Set(CAT_SUGGESTIONS.map(s => s.label.toLowerCase()));
-    const newSuggestions = [
-      ...CAT_SUGGESTIONS,
-      ...DEFAULT_CATS.filter(dc => !suggLabels.has(dc.label.toLowerCase())).map(dc => ({ label: dc.label, desc: null }))
-    ]
-      // `key` is the suggestion's original label (stable identity for the
-      // edit map); `label` is what the user actually sees and will add.
-      .map(s => ({ ...s, key: s.label, label: suggestionNames[s.label] ?? s.label }))
-      .filter(s => !cats.some(c => c.label.toLowerCase() === s.label.toLowerCase()));
-    return /*#__PURE__*/React.createElement("div", {
-    style: {
-      position: "fixed",
-      top: 0,
-      right: 28,
-      bottom: 0,
-      width: 272,
-      background: "#fff",
-      borderLeft: "2px solid #E7DECB",
-      boxShadow: "-6px 0 28px rgba(0,0,0,0.09)",
-      display: "flex",
-      flexDirection: "column",
-      zIndex: 200
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: PANEL_HEADER
-  }, /*#__PURE__*/React.createElement("div", {
-    style: { display: "flex", alignItems: "center", gap: 10 }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: { width: 10, height: 10, borderRadius: "50%", background: "#DCD2BF", flexShrink: 0, marginTop: 1 }
-  }), /*#__PURE__*/React.createElement("div", null,
-    /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: PLAN_MUTED, marginBottom: 2 }
-    }, "Ideas"),
-    /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 13, fontWeight: 700, color: "#1C1917", textTransform: "uppercase", letterSpacing: "0.08em" }
-    }, "Add Pillar"),
-    /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 11, color: "#A79C88", marginTop: 2 }
-    }, "Tap to add · or create your own")
-  )), /*#__PURE__*/React.createElement("button", {
-    onClick: () => { setCatSuggestionsOpen(false); setCatTyping(false); setCatCustomInput(""); setSuggestionNames({}); },
-    style: { background: "none", border: "none", cursor: "pointer", fontSize: 22, color: "#BCB2A0", padding: 0, lineHeight: 1, flexShrink: 0, marginLeft: 8 }
-  }, "×")),
-  /*#__PURE__*/React.createElement("div", {
-    style: { flex: 1, overflowY: "auto", padding: "12px 14px" }
-  },
-    newSuggestions.map(s => /*#__PURE__*/React.createElement(CatSuggestionItem, {
-      key: s.key,
-      label: s.label,
-      desc: s.desc,
-      disabled: false,
-      onRename: label => setSuggestionNames(prev => ({ ...prev, [s.key]: label })),
-      onClick: () => addCatFromSuggestion(s.label)
-    })),
-    cats.length > 0 && /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: "#A79C88", margin: "14px 2px 6px" }
-    }, "Active Pillars"),
-    cats.map(cat => /*#__PURE__*/React.createElement("div", {
-      key: cat.id,
+    })))), isOwnView && /*#__PURE__*/React.createElement("div", {
+      onClick: () => sidebarOpen && sidebarTab === 'pillars' ? closeSidebar() : openPillarsSidebar(),
+      title: "Pillars",
       style: {
+        width: "100%",
+        height: 44,
         display: "flex",
         alignItems: "center",
-        gap: 8,
-        padding: "10px 12px",
-        marginBottom: 6,
-        background: cat.bg || PLAN_BG,
-        borderTop: "1px solid transparent",
-        borderRight: "1px solid transparent",
-        borderBottom: "1px solid transparent",
-        borderLeft: `3px solid ${cat.color}`,
-        borderRadius: 6,
-        cursor: "default"
-      }
-    }, /*#__PURE__*/React.createElement(EditablePillarName, {
-      value: cat.label,
-      accentColor: cat.color,
-      editTitle: "Rename pillar",
-      onCommit: label => saveCats(pillarOps.rename(cats, cat.id, label)),
-      textStyle: { fontSize: 13, color: "#1C1917", fontWeight: 500 }
-    }), /*#__PURE__*/React.createElement("button", {
-      onClick: () => deleteCat(cat.id),
-      title: "Delete pillar",
-      style: {
-        background: "none",
-        border: "none",
+        justifyContent: "center",
         cursor: "pointer",
-        fontSize: 16,
-        lineHeight: 1,
-        color: "#A79C88",
-        padding: 2,
-        flexShrink: 0
+        background: sidebarOpen && sidebarTab === 'pillars' ? PAPER : "transparent",
+        transition: "background 0.15s ease",
+        color: sidebarOpen && sidebarTab === 'pillars' ? "#1C1917" : "#A79C88"
       }
-    }, "×"))
-    )
-  ),
-  /*#__PURE__*/React.createElement("div", {
-    style: { padding: "12px 14px", borderTop: "1px solid #E7DECB", flexShrink: 0 }
-  }, catTyping ? /*#__PURE__*/React.createElement("input", {
-    autoFocus: true,
-    value: catCustomInput,
-    onChange: e => setCatCustomInput(e.target.value),
-    onBlur: () => {
-      if (catCustomInput.trim()) addCatFromSuggestion(catCustomInput.trim());
-      setCatTyping(false);
-      setCatCustomInput("");
     },
-    onKeyDown: e => {
-      if (e.key === "Enter" && catCustomInput.trim()) { addCatFromSuggestion(catCustomInput.trim()); setCatTyping(false); setCatCustomInput(""); }
-      if (e.key === "Escape") { setCatTyping(false); setCatCustomInput(""); }
-    },
-    placeholder: "Pillar name…",
-    style: {
-      width: "100%",
-      padding: "11px",
-      borderRadius: 6,
-      border: "1.5px solid #DCD2BF",
-      background: "none",
-      outline: "none",
-      fontSize: 13,
-      color: "#1C1917",
-      fontFamily: "'DM Sans',sans-serif",
-      boxSizing: "border-box",
-      fontWeight: 500
-    }
-  }) : /*#__PURE__*/React.createElement("button", {
-    onClick: () => { setCatTyping(true); setCatCustomInput(""); },
-    style: {
-      width: "100%",
-      padding: "11px",
-      borderRadius: 6,
-      border: "1.5px dashed #DCD2BF",
-      background: "none",
-      cursor: "pointer",
-      fontSize: 13,
-      color: PLAN_TEXT,
-      fontWeight: 600,
-      fontFamily: "inherit",
-      letterSpacing: "0.02em"
-    }
-  }, "+ Add pillar")));
+    // Three squared bars of uneven height: the same left-edge band the pillar
+    // rows and the tiles are built from, stood upright. Every other icon on
+    // the rail is a drawn object; this one is the app's own vocabulary.
+    /*#__PURE__*/React.createElement("svg", {
+      width: "17",
+      height: "17",
+      viewBox: "0 0 24 24",
+      fill: "currentColor"
+    }, /*#__PURE__*/React.createElement("rect", {
+      x: "3", y: "9", width: "4.5", height: "12"
+    }), /*#__PURE__*/React.createElement("rect", {
+      x: "9.75", y: "4", width: "4.5", height: "17"
+    }), /*#__PURE__*/React.createElement("rect", {
+      x: "16.5", y: "13", width: "4.5", height: "8"
+    })))));
   })(), showStartFreshConfirm && /*#__PURE__*/React.createElement("div", {
     onClick: () => setShowStartFreshConfirm(false),
     style: MODAL_OVERLAY
