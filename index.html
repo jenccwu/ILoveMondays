@@ -347,59 +347,53 @@ const PLAN_TEXT = "#5B5246";
 const PLAN_MUTED = "#A79C88";
 const PLAN_RING = "#CFC5B0";
 const FADE = "90";
-// Two palettes, same slot order, so a pillar keeps its identity when the
-// theme changes: a pillar remembers its slot, not a hex.
-const PALETTES = {
-  groovy: {
-    label: "Groovy Spring",
-    slots: [{ color: "#E98B64", bg: "#FBEAE4", deep: "#CF653A", ink: "#8D3C1C" }, { color: "#31939F", bg: "#DEF1F5", deep: "#007080", ink: "#004650" }, { color: "#6CB48E", bg: "#E3F1E8", deep: "#3D966B", ink: "#246244" }, { color: "#DD7DA4", bg: "#FBE9EF", deep: "#BF5081", ink: "#7D2A51" }, { color: "#8DA7D4", bg: "#E8EEFB", deep: "#6A8ABD", ink: "#475A79" }, { color: "#9BAE5C", bg: "#EDEFE2", deep: "#7A9231", ink: "#4E6016" }, { color: "#A185BF", bg: "#F2EBF8", deep: "#7F5FA3", ink: "#4C3665" }, { color: "#CEAA43", bg: "#F5EDE0", deep: "#B08900", ink: "#775A00" }, { color: "#9E698D", bg: "#F8EAF3", deep: "#7C406A", ink: "#58314C" }, { color: "#3C80A8", bg: "#E3F0FA", deep: "#005C88", ink: "#004360" }, { color: "#9C704E", bg: "#F9EBE2", deep: "#774B23", ink: "#55371D" }, { color: "#508561", bg: "#E4F1E7", deep: "#20603A", ink: "#1D452C" }]
-  },
-  dusty: {
-    label: "Dusty Haze",
-    slots: [{ color: "#D2907F", bg: "#FCEAE5", deep: "#B86D5B", ink: "#774539" }, { color: "#6F9AA7", bg: "#DFF1F7", deep: "#497988", ink: "#1E4A56" }, { color: "#82B5A8", bg: "#E0F2ED", deep: "#589788", ink: "#3D635A" }, { color: "#C799AA", bg: "#FBE9EF", deep: "#AC778B", ink: "#6F4E5A" }, { color: "#92A1BE", bg: "#E8EEFB", deep: "#6F82A3", ink: "#45536C" }, { color: "#9CAF83", bg: "#EAF0E3", deep: "#7C9360", ink: "#526141" }, { color: "#9F8CB2", bg: "#F2EBF8", deep: "#7F6996", ink: "#4C3F5A" }, { color: "#C7A364", bg: "#F6ECE1", deep: "#AA823B", ink: "#715522" }, { color: "#8B7382", bg: "#F8EAF3", deep: "#6A4B60", ink: "#503647" }, { color: "#657C8E", bg: "#E3F0FA", deep: "#355970", ink: "#224154" }, { color: "#8B7666", bg: "#F9EBE2", deep: "#694F3B", ink: "#4F3928" }, { color: "#697F6F", bg: "#E4F1E7", deep: "#3E5B47", ink: "#2A4332" }]
-  }
-};
-const PALETTE_ORDER = ["groovy", "dusty"];
-const DEFAULT_PALETTE = "groovy";
-function readPaletteName() {
-  try {
-    const r = store.get("planner:palette");
-    const v = r && r.value;
-    return PALETTES[v] ? v : DEFAULT_PALETTE;
-  } catch (e) {
-    return DEFAULT_PALETTE;
-  }
-}
-let ACTIVE_PALETTE = readPaletteName();
-let COLOR_PALETTE = PALETTES[ACTIVE_PALETTE].slots;
-function setActivePalette(name) {
-  if (!PALETTES[name]) return;
-  ACTIVE_PALETTE = name;
-  COLOR_PALETTE = PALETTES[name].slots;
-  store.set("planner:palette", name);
-}
+// Dusty Haze, in the order pillars claim it.
+//
+// The sequence matters more than the set: a new pillar takes the first colour
+// nobody is using, so position 1 is what a single-pillar week looks like and
+// position 12 only ever appears to someone running a dozen. It is ordered on
+// two rules. Hue spread first — each colour lands in the widest gap left by
+// the ones before it, so any prefix of this list is a balanced wheel rather
+// than three neighbouring blues. Chroma second — the eight saturated hues come
+// first and the four low-chroma earth tones wait at the end, which is why a
+// normal week never has to look muddy.
+const COLOR_PALETTE = [
+  // 1 — terracotta rose: the warm signature, and the highest chroma here
+  { color: "#D2907F", bg: "#FCEAE5", deep: "#B86D5B", ink: "#774539" },
+  // 2 — dusty teal: nearly opposite the rose, so two pillars read as a pair
+  { color: "#6F9AA7", bg: "#DFF1F7", deep: "#497988", ink: "#1E4A56" },
+  // 3 — sage: completes a triad
+  { color: "#9CAF83", bg: "#EAF0E3", deep: "#7C9360", ink: "#526141" },
+  // 4 — dusty violet: completes a tetrad, four evenly spaced hues
+  { color: "#9F8CB2", bg: "#F2EBF8", deep: "#7F6996", ink: "#4C3F5A" },
+  // 5 — dusty pink: fills the gap between violet and rose
+  { color: "#C799AA", bg: "#FBE9EF", deep: "#AC778B", ink: "#6F4E5A" },
+  // 6 — seafoam: fills between sage and teal
+  { color: "#82B5A8", bg: "#E0F2ED", deep: "#589788", ink: "#3D635A" },
+  // 7 — periwinkle: fills between teal and violet
+  { color: "#92A1BE", bg: "#E8EEFB", deep: "#6F82A3", ink: "#45536C" },
+  // 8 — gold: fills between rose and sage, and keeps the eight from turning
+  //     cold. The one ochre in the core set; its done state is the warmest
+  //     thing on the page.
+  { color: "#C7A364", bg: "#F6ECE1", deep: "#AA823B", ink: "#715522" },
+  // --- past here the chroma drops. Nine or more pillars only. ---
+  // 9 — slate blue
+  { color: "#657C8E", bg: "#E3F0FA", deep: "#355970", ink: "#224154" },
+  // 10 — mauve
+  { color: "#8B7382", bg: "#F8EAF3", deep: "#6A4B60", ink: "#503647" },
+  // 11 — grey-green
+  { color: "#697F6F", bg: "#E4F1E7", deep: "#3E5B47", ink: "#2A4332" },
+  // 12 — brown
+  { color: "#8B7666", bg: "#F9EBE2", deep: "#694F3B", ink: "#4F3928" }
+];
 // Which slot a pillar belongs to, however old the stored colour is.
 function slotForColor(color) {
   const hex = String(color || "").toUpperCase();
-  for (const name of PALETTE_ORDER) {
-    const i = PALETTES[name].slots.findIndex(
-      s => s.color.toUpperCase() === hex || s.deep.toUpperCase() === hex);
-    if (i >= 0) return i;
-  }
+  const i = COLOR_PALETTE.findIndex(
+    s => s.color.toUpperCase() === hex || s.deep.toUpperCase() === hex);
+  if (i >= 0) return i;
   const legacy = LEGACY_COLOR_MAP[hex];
   return legacy == null ? null : legacy;
-}
-// Repaint a set of pillars in the active palette, by slot.
-function applyPalette(cats, name) {
-  const slots = PALETTES[name || ACTIVE_PALETTE].slots;
-  if (!Array.isArray(cats)) return cats;
-  return cats.map(c => {
-    if (!c || typeof c !== "object") return c;
-    const slot = typeof c.slot === "number" ? c.slot : slotForColor(c.color);
-    if (slot == null) return c;
-    const s = slots[slot % slots.length];
-    return { ...c, slot, color: s.color, bg: s.bg, deep: s.deep, ink: s.ink };
-  });
 }
 const UNTAGGED_CAT = {
   id: "untagged",
@@ -414,21 +408,37 @@ const UNTAGGED_CAT = {
 // look without the user having to re-pick colours.
 const LEGACY_COLOR_MAP = {
   // original jewel tones
-  "#2563EB": 4, "#EA580C": 0, "#DB2777": 3, "#D97706": 2,
-  "#7C3AED": 6, "#059669": 1, "#4D7C0F": 5, "#0891B2": 1,
-  "#C026D3": 6, "#B45309": 7, "#0E7490": 1, "#6D28D9": 6,
+  "#2563EB": 6, "#EA580C": 0, "#DB2777": 4, "#D97706": 5,
+  "#7C3AED": 3, "#059669": 1, "#4D7C0F": 2, "#0891B2": 1,
+  "#C026D3": 3, "#B45309": 7, "#0E7490": 1, "#6D28D9": 3,
   // the muted set some pillars were hand-tuned to before the mosaic redesign
-  "#5C7A50": 5, "#4A8C8C": 1, "#C4714B": 0, "#A06070": 3,
-  "#B07D2A": 2, "#8B6BAE": 6, "#6A8C7A": 7,
+  "#5C7A50": 2, "#4A8C8C": 1, "#C4714B": 0, "#A06070": 4,
+  "#B07D2A": 5, "#8B6BAE": 3, "#6A8C7A": 7,
   // the v8.4.6 watercolour set, in case pillars were re-saved under it
-  "#D4704A": 0, "#55A8A2": 1, "#E2B23A": 2, "#C77BA4": 3,
-  "#7396BB": 4, "#93A96B": 5, "#9179C2": 6, "#A88463": 7,
-  "#5EA3C4": 4, "#DD9350": 8, "#5F9463": 9, "#A96BB0": 6,
+  "#D4704A": 0, "#55A8A2": 1, "#E2B23A": 5, "#C77BA4": 4,
+  "#7396BB": 6, "#93A96B": 2, "#9179C2": 3, "#A88463": 7,
+  "#5EA3C4": 6, "#DD9350": 9, "#5F9463": 8, "#A96BB0": 3,
   // the v8.4.7–v8.4.11 sets
-  "#E28168": 0, "#3C929E": 1, "#DAB45B": 2, "#EA91B1": 3,
-  "#7CA1CC": 4, "#99AE65": 5, "#9788C6": 6, "#A68268": 7,
-  "#CE6B77": 8, "#628B64": 9,
-  "#398F9E": 1, "#6AC3AE": 2, "#9BB164": 5, "#E1C160": 7,
+  "#E28168": 0, "#3C929E": 1, "#DAB45B": 5, "#EA91B1": 4,
+  "#7CA1CC": 6, "#99AE65": 2, "#9788C6": 3, "#A68268": 7,
+  "#CE6B77": 9, "#628B64": 8,
+  "#398F9E": 1, "#6AC3AE": 5, "#9BB164": 2, "#E1C160": 7,
+  // Groovy Spring, retired in v8.5.5. A pillar carries its slot number, so
+  // these only matter for anything old enough to be identified by hex alone —
+  // but slotForColor no longer walks a live palette that contains them.
+  "#E98B64": 0, "#31939F": 1, "#6CB48E": 5, "#DD7DA4": 4,
+  "#8DA7D4": 6, "#9BAE5C": 2, "#A185BF": 3, "#CEAA43": 7,
+  "#9E698D": 9, "#3C80A8": 8, "#9C704E": 11, "#508561": 10,
+  "#CF653A": 0, "#007080": 1, "#3D966B": 5, "#BF5081": 4,
+  "#6A8ABD": 6, "#7A9231": 2, "#7F5FA3": 3, "#B08900": 7,
+  "#7C406A": 9, "#005C88": 8, "#774B23": 11, "#20603A": 10,
+  // Hazy Sunrise, retired in v8.5.7.
+  "#D5907B": 0, "#E9A692": 0, "#77A8B7": 1, "#97C2D0": 1,
+  "#66AE99": 5, "#86C9B4": 5, "#C88DA5": 4, "#E1A9BF": 4,
+  "#8EA0C2": 6, "#A9BADA": 6, "#92AB74": 2, "#AEC691": 2,
+  "#A690BC": 3, "#C0ABD5": 3, "#C5A86A": 7, "#E1C387": 7,
+  "#9B8291": 9, "#B59BAB": 9, "#728CA0": 8, "#8BA6BA": 8,
+  "#9D8573": 11, "#B79E8C": 11, "#76917D": 10, "#8FAB96": 10,
   "#A79C88": null
 };
 function paletteEntryFor(color) {
@@ -440,11 +450,18 @@ function paletteEntryFor(color) {
 }
 // Fills in deep/ink for any pillar that predates them, and swaps legacy hexes
 // for their palette equivalents.
+//
+// The colour is trusted ahead of any stored slot number. A slot is a position
+// in a list that has been reordered before and may be again; the hex is what
+// the pillar actually looked like, and every hex this app has ever shipped
+// resolves through the palette or the legacy map. Reading the slot first would
+// mean a pillar silently changing colour every time the sequence moves.
 function migrateCatColors(cats) {
   if (!Array.isArray(cats)) return cats;
   return cats.map(c => {
     if (!c || typeof c !== "object") return c;
-    const slot = typeof c.slot === "number" ? c.slot : slotForColor(c.color);
+    const byColor = slotForColor(c.color);
+    const slot = byColor != null ? byColor : (typeof c.slot === "number" ? c.slot : null);
     if (slot == null) {
       // A bespoke colour we do not recognise — leave it, just fill the ramp.
       return { ...c, deep: c.deep || darkenHex(c.color, 0.22), ink: c.ink || darkenHex(c.color, 0.5) };
@@ -481,14 +498,6 @@ function hexA(hex, a) {
   const n = parseInt(h, 16);
   return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
 }
-// Builds the left-edge accent for an item: a solid color for a single
-// pillar, or stacked hard-stop color bands when tagged to more than one.
-// The border is full-strength regardless of done state, so pillar identity
-// stays easy to read while planning. The fill is what carries the
-// done-state "reward": white while pending, tinted once completed (a
-// single pillar keeps its own tinted fill; a multi-pillar item uses a
-// neutral fill instead of picking one tag's color over the others).
-// Module-level so both CalendarView and the pillar-view grid (Cell) can share it.
 // Shared style objects. Only the shapes that genuinely recur live here — most
 // styles in this file are one-offs, and hoisting those would trade a little
 // duplication for a lot of indirection.
@@ -600,6 +609,19 @@ function extractStrayEntries(weekEntries, dates) {
 // comes from how thick the band is and where the lines fall inside it.
 const BAND_W_MAX = 20;    // widest a left column gets
 const TILE_INDENT = BAND_W_MAX + 7; // uniform text indent on every tile
+// Outline weight, and one radius for every squared field in the app.
+//
+// Both tile states share a hairline edge: once the outline treatment reached
+// the filter chips, the sidebars and the intention strips, a heavier planned
+// border stopped reading as emphasis and started reading as noise. Planned
+// and done are told apart by fill — white field versus flooded pigment —
+// which is the distinction that carries the feeling anyway.
+const PLAN_BORDER_W = 1.5;
+const DONE_BORDER_W = 1.5;
+// Corners drifted apart as each surface was built: planner rows sat at 6,
+// calendar events at 4, chips at 3. One value now, so a tile is the same
+// shape wherever it appears.
+const TILE_RADIUS = 4;
 // Curated split ratios, in rising order of imbalance. Near-even splits read
 // as a repeated pattern, so the table starts at 2:3 and leans on the small
 // whole-number ratios Mondrian favoured.
@@ -632,6 +654,7 @@ function pillarAccent(allCats, isDone, leadCat, layout, tileH, seed) {
       text: TILE_PLAN_TEXT,
       faint: PLAN_MUTED,
       outline: NEUTRAL_OUTLINE,
+      borderW: isDone ? DONE_BORDER_W : PLAN_BORDER_W,
       mark: PLAN_RING,
       blocks: null,
       border: null,
@@ -676,6 +699,7 @@ function pillarAccent(allCats, isDone, leadCat, layout, tileH, seed) {
     text: isDone ? (lightDeep ? catInk(p0) : TILE_DONE_TEXT) : TILE_PLAN_TEXT,
     faint: isDone ? (lightDeep ? hexA(catInk(p0), 0.72) : "rgba(253,249,240,0.72)") : PLAN_MUTED,
     outline: isDone ? deep : p0.color,
+    borderW: isDone ? DONE_BORDER_W : PLAN_BORDER_W,
     mark: isDone ? (lightDeep ? hexA(catInk(p0), 0.85) : TILE_DONE_MARK) : PLAN_RING,
     blocks: rest.length ? rest.map(c => ({ deep: catDeep(c), mid: c.color })) : null,
     layout: bandLayout,
@@ -684,6 +708,36 @@ function pillarAccent(allCats, isDone, leadCat, layout, tileH, seed) {
     weights,
     border: null,
     isDone: !!isDone
+  };
+}
+// ---------------------------------------------------------------------------
+// Pillar chrome
+//
+// Everywhere a pillar is *named* rather than planned against — the calendar's
+// filter row, the planner's row headers, a sidebar's title — it speaks the
+// same language as the tiles: a squared field, white and outlined in the
+// pillar's colour while idle, flooded with deep pigment once chosen. Round
+// dots and rounded pills were the pre-mosaic vocabulary; a circle cannot
+// belong to a grid built entirely from straight lines and right angles.
+// ---------------------------------------------------------------------------
+const CHIP_RADIUS = TILE_RADIUS;
+function pillarChip(cat, active) {
+  const deep = catDeep(cat);
+  const lightDeep = active && hexLuma(deep) > 150;
+  return {
+    background: active ? deep : TILE_PLAN_FILL,
+    border: `${active ? DONE_BORDER_W : PLAN_BORDER_W}px solid ${active ? deep : cat.color}`,
+    color: active ? (lightDeep ? catInk(cat) : TILE_DONE_TEXT) : TILE_PLAN_TEXT,
+    borderRadius: CHIP_RADIUS
+  };
+}
+// The same shape for controls that carry no pillar of their own.
+function plainChip(active) {
+  return {
+    background: active ? PLAN_BG : TILE_PLAN_FILL,
+    border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+    color: PLAN_TEXT,
+    borderRadius: CHIP_RADIUS
   };
 }
 const DEFAULT_CATS = [{
@@ -695,8 +749,8 @@ const DEFAULT_CATS = [{
 {
   id: "connect",
   label: "Connect",
-  slot: 3,
-  ...COLOR_PALETTE[3]
+  slot: 4,
+  ...COLOR_PALETTE[4]
 },
 {
   id: "contribute",
@@ -707,26 +761,26 @@ const DEFAULT_CATS = [{
 {
   id: "learn",
   label: "Learn",
-  slot: 4,
-  ...COLOR_PALETTE[4]
+  slot: 6,
+  ...COLOR_PALETTE[6]
 },
 {
   id: "make",
   label: "Make",
-  slot: 2,
-  ...COLOR_PALETTE[2]
-},
-{
-  id: "explore",
-  label: "Explore",
   slot: 5,
   ...COLOR_PALETTE[5]
 },
 {
+  id: "explore",
+  label: "Explore",
+  slot: 2,
+  ...COLOR_PALETTE[2]
+},
+{
   id: "rest",
   label: "Rest",
-  slot: 6,
-  ...COLOR_PALETTE[6]
+  slot: 3,
+  ...COLOR_PALETTE[3]
 },
 {
   id: "gsd",
@@ -1068,7 +1122,7 @@ function GripIcon() {
 // While planned they stay white and only the shared edges are drawn, in
 // each pillar's colour, so tile outline and internal lines read as one
 // continuous grid. Pointer-events off; returns null for single-pillar items.
-function accentBar(accent, radius = 6) {
+function accentBar(accent, radius = TILE_RADIUS) {
   const blocks = accent && accent.blocks;
   if (!blocks || !blocks.length) return null;
   const done = accent.isDone;
@@ -1103,7 +1157,7 @@ function accentBar(accent, radius = 6) {
   const fieldSide = bottom ? "borderTop" : "borderRight";
   const alongSide = bottom ? "borderLeft" : "borderTop";
   const ws = accent.weights || blocks.map(() => 1);
-  const line = b => `1.5px solid ${done ? GROUT : b.mid}`;
+  const line = b => `${done ? DONE_BORDER_W : PLAN_BORDER_W}px solid ${done ? GROUT : b.mid}`;
   return /*#__PURE__*/React.createElement("span", { style: wrap },
     blocks.map((b, i) => /*#__PURE__*/React.createElement("i", {
       key: i,
@@ -1534,17 +1588,17 @@ function Cell({
         padding: "3px 7px",
         paddingLeft: 7,
         marginBottom: 3,
-        borderRadius: 6,
+        borderRadius: TILE_RADIUS,
         cursor: readOnly ? "default" : "pointer",
         ...(accent?.style || { background: TILE_PLAN_FILL }),
-        border: `1.5px solid ${accent.outline}`,
+        border: `${accent.borderW || DONE_BORDER_W}px solid ${accent.outline}`,
         opacity: dragRowId === row.id ? 0.3 : 1,
         boxShadow: isOver && dragOverPos === "before" ? `0 -2px 0 ${cat.color}` : isOver && dragOverPos === "after" ? `0 2px 0 ${cat.color}` : "none",
         transition: "opacity 0.1s ease, box-shadow 0.05s ease",
         position: "relative",
         zIndex: hoveredRowId === row.id ? 5 : "auto"
       }
-    }, accentBar(accent, 6), /*#__PURE__*/React.createElement("span", {
+    }, accentBar(accent, TILE_RADIUS), /*#__PURE__*/React.createElement("span", {
       style: {
         position: "relative",
         fontSize: 12,
@@ -1616,8 +1670,8 @@ function Cell({
       alignItems: "flex-start",
       gap: 6,
       width: "100%",
-      borderRadius: 6,
-      border: `1.5px solid ${singleRowAccent?.outline || NEUTRAL_OUTLINE}`,
+      borderRadius: TILE_RADIUS,
+      border: `${singleRowAccent?.borderW || PLAN_BORDER_W}px solid ${singleRowAccent?.outline || NEUTRAL_OUTLINE}`,
       padding: "3px 7px",
       paddingLeft: 7,
       paddingBottom: !readOnly && linkingRowId !== null ? 20 : 3,
@@ -1647,8 +1701,8 @@ function Cell({
       alignItems: "flex-start",
       width: "100%",
       fontWeight: 400,
-      borderRadius: 6,
-      border: `1.5px solid ${singleRowAccent?.outline || NEUTRAL_OUTLINE}`,
+      borderRadius: TILE_RADIUS,
+      border: `${singleRowAccent?.borderW || PLAN_BORDER_W}px solid ${singleRowAccent?.outline || NEUTRAL_OUTLINE}`,
       padding: "3px 7px",
       paddingLeft: 7,
       paddingBottom: !readOnly && linkingRowId !== null ? 20 : 3,
@@ -1803,40 +1857,31 @@ function JournalEntry({
       padding: 0,
       lineHeight: 1
     }
-  }, "×")), entry.linkedItem && (() => {
+  }, "\u00d7")), entry.linkedItem && (() => {
+    // The tag that ties a reflection back to the thing it is about. It is the
+    // same object as the tile on the calendar, so it is built by the same
+    // machinery: pillarAccent for the field and outline, accentBar for the
+    // Mondrian bands when the item carried more than one pillar. A completed
+    // item shows up here already flooded with pigment, exactly as it does in
+    // the week — which is the whole point of the tag.
     const chipDone = entry.linkedItem.wasCompleted !== false;
     const chipPillars = entry.linkedItem.pillars && entry.linkedItem.pillars.length > 1 ? entry.linkedItem.pillars : entry.linkedItem.catLabel ? [{ label: entry.linkedItem.catLabel, color: entry.linkedItem.catColor, bg: entry.linkedItem.catBg || null }] : [];
-    const chipFill = !chipDone ? "#fff" : chipPillars.length === 0 ? PLAN_BG : chipPillars.length === 1 ? chipPillars[0].bg || PLAN_BG : "#F2ECE0";
-    const chipBorder = chipPillars.length === 0 ? null : chipPillars.length === 1 ? chipPillars[0].color : (() => {
-      const seg = 100 / chipPillars.length;
-      const stops = chipPillars.map((p, pi) => `${p.color} ${pi * seg}%, ${p.color} ${(pi + 1) * seg}%`).join(", ");
-      return `linear-gradient(to bottom, ${stops})`;
-    })();
+    const accent = pillarAccent(chipPillars.length ? chipPillars : [], chipDone, null, "left", 0, entry.id);
     return /*#__PURE__*/React.createElement("div", {
       style: {
+        position: "relative",
         display: "flex",
         flexDirection: "column",
         gap: 2,
         marginBottom: 8,
         padding: "5px 8px",
-        paddingLeft: chipBorder ? 11 : 8,
-        background: chipFill,
-        borderRadius: 6,
-        border: `1px solid ${chipDone ? "transparent" : "#E7DECB"}`,
-        position: "relative"
+        ...accent.style,
+        border: `${accent.borderW}px solid ${accent.outline}`,
+        borderRadius: TILE_RADIUS
       }
-    }, chipBorder && /*#__PURE__*/React.createElement("span", {
+    }, accentBar(accent, TILE_RADIUS), /*#__PURE__*/React.createElement("div", {
       style: {
-        position: "absolute",
-        left: 0,
-        top: 0,
-        bottom: 0,
-        width: 3,
-        borderRadius: "6px 0 0 6px",
-        ...(chipBorder.startsWith("linear-gradient") ? { backgroundImage: chipBorder } : { background: chipBorder })
-      }
-    }), /*#__PURE__*/React.createElement("div", {
-      style: {
+        position: "relative",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
@@ -1849,7 +1894,7 @@ function JournalEntry({
       style: {
         fontSize: 9,
         fontWeight: 700,
-        color: "#57534E",
+        color: accent.faint,
         textTransform: "uppercase",
         letterSpacing: "0.08em"
       }
@@ -1859,8 +1904,7 @@ function JournalEntry({
       style: {
         fontSize: 9,
         fontWeight: 600,
-        color: "#78716C",
-        opacity: 0.7,
+        color: accent.faint,
         flexShrink: 0
       }
     }, (() => {
@@ -1876,24 +1920,24 @@ function JournalEntry({
       cy: "6",
       r: "4.5",
       fill: "none",
-      stroke: PLAN_RING,
+      stroke: accent.mark,
       strokeWidth: "1.5"
     }) : /*#__PURE__*/React.createElement("path", {
       d: "M2 6.4L4.7 9L10 3.4",
       fill: "none",
-      stroke: PLAN_RING,
+      stroke: accent.mark,
       strokeWidth: "1.5",
       strokeLinecap: "round",
       strokeLinejoin: "round"
     })))), entry.linkedItem.itemText && /*#__PURE__*/React.createElement("span", {
       style: {
+        position: "relative",
         fontSize: 11,
-        color: "#1C1917",
+        color: accent.text,
         fontWeight: 400,
         overflow: "hidden",
         textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-        paddingLeft: 13
+        whiteSpace: "nowrap"
       }
     }, entry.linkedItem.itemText));
   })(), isFeel && /*#__PURE__*/React.createElement("div", {
@@ -3548,7 +3592,7 @@ function CalendarView({
       gap: "6px 8px",
       padding: "12px 14px",
       borderBottom: "1px solid #E7DECB",
-      background: "#FAFAF9"
+      background: PLAN_BG
     }
   }, cats.map(cat => {
     const selected = selectedPillar === cat.id;
@@ -3558,28 +3602,17 @@ function CalendarView({
       style: {
         display: "flex",
         alignItems: "center",
-        gap: 5,
-        fontSize: 11,
-        fontWeight: 600,
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: "0.07em",
+        textTransform: "uppercase",
         fontFamily: "inherit",
         cursor: "pointer",
-        border: `1px solid ${selected ? "#DCD2BF" : "#E7DECB"}`,
-        background: selected ? (cat.bg || PLAN_BG) : "#fff",
-        color: selected ? "#1C1917" : PLAN_TEXT,
-        borderRadius: 20,
-        padding: "4px 10px 4px 8px",
-        transition: "all 0.12s ease"
+        padding: "4px 9px",
+        transition: "all 0.12s ease",
+        ...pillarChip(cat, selected)
       }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        width: 7,
-        height: 7,
-        borderRadius: "50%",
-        background: cat.color,
-        display: "inline-block",
-        flexShrink: 0
-      }
-    }), cat.label);
+    }, cat.label);
   }), onAddPillar && /*#__PURE__*/React.createElement("button", {
     key: "add-pillar",
     onClick: () => onAddPillar(),
@@ -3594,10 +3627,10 @@ function CalendarView({
       fontWeight: 700,
       fontFamily: "inherit",
       cursor: "pointer",
-      border: "1.5px dashed #DCD2BF",
-      background: "none",
-      color: PLAN_TEXT,
-      borderRadius: "50%",
+      border: `${PLAN_BORDER_W}px dashed ${NEUTRAL_OUTLINE}`,
+      background: TILE_PLAN_FILL,
+      color: PLAN_MUTED,
+      borderRadius: CHIP_RADIUS,
       padding: 0,
       transition: "all 0.12s ease"
     }
@@ -3609,7 +3642,7 @@ function CalendarView({
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      background: "#FAFAF9"
+      background: PLAN_BG
     }
   }), dates.map((d, i) => {
     const ds = ymd(d),
@@ -3849,10 +3882,10 @@ function CalendarView({
           zIndex: isHoveredThis || isNudgeThis ? 5 : "auto",
           fontSize: 12,
           padding: "3px 6px",
-          borderRadius: 5,
+          borderRadius: TILE_RADIUS,
           ...accent.style,
           color: nameColor,
-          border: `1.5px solid ${accent.outline}`,
+          border: `${accent.borderW || DONE_BORDER_W}px solid ${accent.outline}`,
           cursor: isOwnView ? "pointer" : "default",
           width: "100%",
           minWidth: 0,
@@ -3868,7 +3901,7 @@ function CalendarView({
           alignItems: "center",
           gap: 4
         }
-      }, accentBar(accent, 5), /*#__PURE__*/React.createElement("span", {
+      }, accentBar(accent, TILE_RADIUS), /*#__PURE__*/React.createElement("span", {
         style: {
           position: "relative",
           overflow: "hidden",
@@ -4128,8 +4161,8 @@ function CalendarView({
           width: widthCalc,
           top,
           height,
-          border: `1.5px solid ${accent.outline}`,
-          borderRadius: 4,
+          border: `${accent.borderW || DONE_BORDER_W}px solid ${accent.outline}`,
+          borderRadius: TILE_RADIUS,
           padding: "0 6px",
           ...accent.style,
           fontSize: 12,
@@ -4145,7 +4178,7 @@ function CalendarView({
           opacity: isBeingDraggedSched ? 0.3 : isDimmed(it.allCats) ? 0.25 : 1,
           transition: "opacity 0.15s ease"
         }
-      }, accentBar(accent, 4), /*#__PURE__*/React.createElement("div", {
+      }, accentBar(accent, TILE_RADIUS), /*#__PURE__*/React.createElement("div", {
         style: {
           position: "relative",
           display: "flex",
@@ -4672,13 +4705,13 @@ function IdeasPanel({
         gap: 10
       }
     }, /*#__PURE__*/React.createElement("div", {
+      "aria-hidden": "true",
       style: {
-        width: 10,
-        height: 10,
-        borderRadius: "50%",
+        width: 7,
+        alignSelf: "stretch",
+        minHeight: 30,
         background: pillar.color,
-        flexShrink: 0,
-        marginTop: 1
+        flexShrink: 0
       }
     }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -4775,12 +4808,9 @@ function IdeasPanel({
           gap: 6,
           padding: "7px 10px",
           marginBottom: 4,
-          background: "#fff",
-          borderTop: "1px solid #EAE1D0",
-          borderRight: "1px solid #EAE1D0",
-          borderBottom: "1px solid #EAE1D0",
-          borderLeft: `3px solid ${pillar.color}`,
-          borderRadius: 6,
+          background: TILE_PLAN_FILL,
+          border: `${PLAN_BORDER_W}px solid ${pillar.color}`,
+          borderRadius: TILE_RADIUS,
           opacity: isDraggingThis ? 0.3 : 1,
           cursor: isEditing ? "text" : "default"
         }
@@ -5194,9 +5224,9 @@ function ReflectionsPanel({
     }, canEdit && /*#__PURE__*/React.createElement("button", {
       onClick: () => addEntry(),
       style: {
-        background: "none",
-        border: "1.5px dashed #D1CCCA",
-        borderRadius: 20,
+        background: TILE_PLAN_FILL,
+        border: `${PLAN_BORDER_W}px dashed ${NEUTRAL_OUTLINE}`,
+        borderRadius: CHIP_RADIUS,
         padding: "5px 10px",
         fontSize: 11,
         color: "#A79C88",
@@ -5209,27 +5239,22 @@ function ReflectionsPanel({
       key: q,
       onClick: () => canEdit && addEntry(q.replace(/\.\.\.$/, '').trimEnd() + ' '),
       style: {
-        background: "#F2ECE0",
-        border: "none",
-        borderRadius: 20,
         padding: "5px 10px",
         fontSize: 11,
-        color: "#78716C",
         cursor: canEdit ? "pointer" : "default",
         fontFamily: "inherit",
         fontWeight: 500,
-        lineHeight: 1.2
+        lineHeight: 1.2,
+        ...plainChip(false)
       }
     }, q)), canEdit && /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
         gap: 4,
-        background: "#F2ECE0",
-        borderRadius: 20,
-        padding: "5px 10px",
+        ...plainChip(false),
+        padding: "4px 9px",
         fontSize: 11,
-        color: "#78716C",
         fontFamily: "inherit",
         fontWeight: 500,
         lineHeight: 1.2,
@@ -5358,44 +5383,61 @@ function GoalsPanel({
       const plannedSeg = Math.min(plannedCount, goal - doneSeg);
       const openSeg = Math.max(0, goal - doneSeg - plannedSeg);
       const exceeded = doneCount - goal;
-      const doneDeg = doneSeg / goal * 360;
-      const plannedDeg = doneDeg + plannedSeg / goal * 360;
-      const ringBg = `conic-gradient(${cat.color} 0deg ${doneDeg}deg, ${cat.color}55 ${doneDeg}deg ${plannedDeg}deg, #F2ECE0 ${plannedDeg}deg 360deg)`;
       const breakdown = `${doneSeg} done \u00b7 ${plannedSeg} planned \u00b7 ${openSeg} open`;
       const isExpanded = expanded === cat.id;
+      // The intention reads as the week's mosaic in miniature: one cell per
+      // day meant for this pillar, in exactly the three states a tile can be
+      // in — flooded when lived, outlined when planned, faint when still
+      // open. A ring could only ever be a dashboard; this is the thing being
+      // filled in.
+      const deep = catDeep(cat);
+      const cells = Array.from({ length: goal }, (_, i) => {
+        const lived = i < doneSeg;
+        const planned = !lived && i < doneSeg + plannedSeg;
+        return /*#__PURE__*/React.createElement("span", {
+          key: i,
+          style: {
+            flex: 1,
+            height: 18,
+            borderRadius: 2,
+            background: lived ? deep : TILE_PLAN_FILL,
+            border: lived ? `${DONE_BORDER_W}px solid ${deep}`
+              : planned ? `${PLAN_BORDER_W}px solid ${cat.color}`
+              : `1.5px solid ${NEUTRAL_OUTLINE}`
+          }
+        });
+      });
       return /*#__PURE__*/React.createElement("div", {
         key: cat.id,
         style: {
           marginBottom: 4,
-          background: "#fff",
-          borderTop: "1px solid #EAE1D0",
-          borderRight: "1px solid #EAE1D0",
-          borderBottom: "1px solid #EAE1D0",
-          borderLeft: `3px solid ${cat.color}`,
-          borderRadius: 6,
+          background: TILE_PLAN_FILL,
+          border: `${PLAN_BORDER_W}px solid ${cat.color}`,
+          borderRadius: TILE_RADIUS,
           padding: "0 10px"
         }
       }, /*#__PURE__*/React.createElement("div", {
         onClick: () => canEdit && setExpanded(isExpanded ? null : cat.id),
+        title: breakdown,
         style: {
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "7px 0",
+          padding: "9px 0",
           cursor: canEdit ? "pointer" : "default"
         }
       }, /*#__PURE__*/React.createElement("div", {
         style: {
-          flex: 1,
-          minWidth: 0,
           display: "flex",
-          flexDirection: "column",
-          gap: 1
+          alignItems: "baseline",
+          gap: 8,
+          marginBottom: 7
         }
       }, /*#__PURE__*/React.createElement("span", {
         style: {
-          fontSize: 12,
-          fontWeight: 500,
+          flex: 1,
+          minWidth: 0,
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: "0.07em",
+          textTransform: "uppercase",
           color: "#1C1917",
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -5404,49 +5446,24 @@ function GoalsPanel({
       }, cat.label), /*#__PURE__*/React.createElement("span", {
         style: {
           fontSize: 11,
-          color: "#A79C88"
-        }
-      }, `Intention: ${goal}x per week`)), /*#__PURE__*/React.createElement("div", {
-        style: { position: "relative", width: 42, height: 42, flexShrink: 0 }
-      }, /*#__PURE__*/React.createElement("div", {
-        title: breakdown,
-        style: {
-          width: 42,
-          height: 42,
-          borderRadius: "50%",
-          background: ringBg,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center"
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: {
-          width: 30,
-          height: 30,
-          borderRadius: "50%",
-          background: "#fff",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 10,
           fontWeight: 700,
-          color: "#1C1917"
+          color: catInk(cat),
+          flexShrink: 0
         }
-      }, `${doneCount}/${goal}`)), exceeded > 0 && /*#__PURE__*/React.createElement("div", {
+      }, `${doneCount}/${goal}`), exceeded > 0 && /*#__PURE__*/React.createElement("span", {
         title: `Exceeded by ${exceeded}`,
         style: {
-          position: "absolute",
-          top: -4,
-          right: -6,
-          background: cat.color,
-          color: "#fff",
-          fontSize: 9,
+          fontSize: 10,
           fontWeight: 700,
-          padding: "1px 5px",
-          borderRadius: 8,
-          border: "1.5px solid #fff"
+          color: catDeep(cat),
+          background: cat.bg || PLAN_BG,
+          padding: "1px 4px",
+          borderRadius: 2,
+          flexShrink: 0
         }
-      }, `+${exceeded}`))), isExpanded && /*#__PURE__*/React.createElement("div", {
+      }, `+${exceeded}`)), /*#__PURE__*/React.createElement("div", {
+        style: { display: "flex", gap: 3 }
+      }, cells)), isExpanded && /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           gap: 4,
@@ -5462,14 +5479,11 @@ function GoalsPanel({
         style: {
           flex: 1,
           height: 26,
-          borderRadius: 6,
-          border: `1.5px solid ${v === goal ? cat.color : "#E7DECB"}`,
-          background: v === goal ? cat.color : "#fff",
-          color: v === goal ? "#fff" : "#78716C",
           fontSize: 11,
           fontWeight: 700,
           cursor: "pointer",
-          fontFamily: "inherit"
+          fontFamily: "inherit",
+          ...pillarChip(cat, v === goal)
         }
       }, v))), isExpanded && /*#__PURE__*/React.createElement("button", {
         onClick: e => {
@@ -5509,12 +5523,9 @@ function GoalsPanel({
       return /*#__PURE__*/React.createElement("div", {
         key: cat.id,
         style: {
-          background: "#fff",
-          borderTop: "1px solid #EAE1D0",
-          borderRight: "1px solid #EAE1D0",
-          borderBottom: "1px solid #EAE1D0",
-          borderLeft: `3px solid ${cat.color}`,
-          borderRadius: 6
+          background: TILE_PLAN_FILL,
+          border: `${PLAN_BORDER_W}px solid ${cat.color}`,
+          borderRadius: TILE_RADIUS
         }
       }, /*#__PURE__*/React.createElement("button", {
         onClick: () => setExpanded(isExpanded ? null : cat.id),
@@ -5525,7 +5536,7 @@ function GoalsPanel({
           width: "100%",
           padding: "7px 10px",
           border: "none",
-          borderRadius: 6,
+          borderRadius: TILE_RADIUS,
           background: "none",
           cursor: "pointer",
           fontFamily: "inherit",
@@ -5541,8 +5552,10 @@ function GoalsPanel({
         }
       }, /*#__PURE__*/React.createElement("span", {
         style: {
-          fontSize: 12,
-          fontWeight: 500,
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: "0.07em",
+          textTransform: "uppercase",
           color: "#1C1917",
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -5551,22 +5564,21 @@ function GoalsPanel({
       }, cat.label), /*#__PURE__*/React.createElement("span", {
         style: {
           fontSize: 11,
-          color: "#A79C88",
-          fontStyle: "italic"
+          color: "#A79C88"
         }
       }, "Tap to set a weekly target")), /*#__PURE__*/React.createElement("div", {
         style: {
-          width: 42,
-          height: 42,
+          width: 34,
+          height: 22,
           flexShrink: 0,
-          borderRadius: "50%",
-          border: `1.5px dashed ${cat.color}80`,
+          borderRadius: 2,
+          border: `${PLAN_BORDER_W}px dashed ${hexA(cat.color, 0.55)}`,
           display: "flex",
           alignItems: "center",
           justifyContent: "center"
         }
       }, /*#__PURE__*/React.createElement("span", {
-        style: { fontSize: 17, lineHeight: 1, color: cat.color }
+        style: { fontSize: 14, lineHeight: 1, color: cat.color }
       }, "+"))), isExpanded && /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
@@ -5582,14 +5594,11 @@ function GoalsPanel({
         style: {
           flex: 1,
           height: 26,
-          borderRadius: 6,
-          border: "1.5px solid #E7DECB",
-          background: "#fff",
-          color: "#78716C",
           fontSize: 11,
           fontWeight: 700,
           cursor: "pointer",
-          fontFamily: "inherit"
+          fontFamily: "inherit",
+          ...plainChip(false)
         }
       }, v))));
     }))));
@@ -5992,20 +6001,6 @@ function useEntryStore({ readOnly, weekKey }) {
 function Planner() {
   const [offset, setOffset] = useState(0);
   const [cats, setCats] = useState(DEFAULT_CATS);
-  const [paletteName, setPaletteName] = useState(ACTIVE_PALETTE);
-  // Switching palette repaints every pillar by slot and saves the choice.
-  function cyclePalette() {
-    const next = PALETTE_ORDER[(PALETTE_ORDER.indexOf(paletteName) + 1) % PALETTE_ORDER.length];
-    setActivePalette(next);
-    setPaletteName(next);
-    setCats(prev => {
-      const repainted = applyPalette(prev, next);
-      try {
-        store.set("planner:cats", JSON.stringify(repainted));
-      } catch (e) {}
-      return repainted;
-    });
-  }
   const [ideaOverride, setIdeaOverride] = useState(null);
   const [ideaPanelCatId, setIdeaPanelCatId] = useState(null);
   const [catSuggestionsOpen, setCatSuggestionsOpen] = useState(false);
@@ -7262,7 +7257,7 @@ return /*#__PURE__*/React.createElement("div", {
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      background: "#FAFAF9",
+      background: PLAN_BG,
       padding: "10px 12px",
       display: "flex",
       alignItems: "center"
@@ -7397,19 +7392,31 @@ return /*#__PURE__*/React.createElement("div", {
         panelOpen ? closeSidebar() : openIdeasSidebar(cat.id);
       },
       style: {
-        background: panelOpen ? `${cat.bg}` : "#fff",
+        background: panelOpen ? (cat.bg || PLAN_BG) : TILE_PLAN_FILL,
         borderRight: "1px solid #E7DECB",
         position: "relative",
         userSelect: "none",
         cursor: "pointer",
         transition: "background 0.15s ease"
       }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("span", {
+      "aria-hidden": "true",
+      style: {
+        position: "absolute",
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: panelOpen ? 14 : 7,
+        background: cat.color,
+        pointerEvents: "none",
+        transition: "width 0.15s ease"
+      }
+    }), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
         gap: 6,
-        padding: "0 8px",
+        padding: "0 8px 0 20px",
         minHeight: 50
       }
     }, isOwnView && /*#__PURE__*/React.createElement("div", {
@@ -7423,15 +7430,7 @@ return /*#__PURE__*/React.createElement("div", {
         alignItems: "center",
         flexShrink: 0
       }
-    }, /*#__PURE__*/React.createElement(GripIcon, null)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 8,
-        height: 8,
-        borderRadius: "50%",
-        background: cat.color,
-        flexShrink: 0
-      }
-    }), isOwnView && renamingId === cat.id ? /*#__PURE__*/React.createElement("input", {
+    }, /*#__PURE__*/React.createElement(GripIcon, null)), isOwnView && renamingId === cat.id ? /*#__PURE__*/React.createElement("input", {
       ref: renameRef,
       value: renameVal,
       onChange: e => setRenameVal(e.target.value),
@@ -7676,33 +7675,7 @@ return /*#__PURE__*/React.createElement("div", {
       alignItems: "center",
       gap: 10
     }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: cyclePalette,
-    title: `Colour palette: ${PALETTES[paletteName].label} — click to switch`,
-    "aria-label": `Colour palette: ${PALETTES[paletteName].label}. Click to switch.`,
-    style: {
-      background: "none",
-      border: "none",
-      cursor: "pointer",
-      padding: "2px 4px",
-      display: "flex",
-      alignItems: "center",
-      gap: 3,
-      opacity: 0.75
-    },
-    onMouseEnter: e => e.currentTarget.style.opacity = 1,
-    onMouseLeave: e => e.currentTarget.style.opacity = 0.75
-  }, [0, 5, 3, 7].map(i => /*#__PURE__*/React.createElement("span", {
-    key: i,
-    style: {
-      width: 9,
-      height: 9,
-      borderRadius: 2,
-      background: PALETTES[paletteName].slots[i].deep
-    }
-  }))), /*#__PURE__*/React.createElement("span", {
-    style: { color: "#DCD2BF", fontSize: 11 }
-  }, "|"), /*#__PURE__*/React.createElement("input", {
+  }, /*#__PURE__*/React.createElement("input", {
     ref: importRef,
     type: "file",
     accept: ".json",
@@ -7799,7 +7772,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v8.4.15")), (() => {
+  }, "v8.5.7")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -7818,8 +7791,8 @@ return /*#__PURE__*/React.createElement("div", {
     }, sidebarOpen && /*#__PURE__*/React.createElement("div", {
       style: {
         width: 272,
-        background: "#fff",
-        borderLeft: "2px solid #E7DECB",
+        background: PAPER,
+        borderLeft: `2px solid ${NEUTRAL_OUTLINE}`,
         boxShadow: "-6px 0 28px rgba(0,0,0,0.09)",
         display: "flex",
         flexDirection: "column"
@@ -7870,7 +7843,7 @@ return /*#__PURE__*/React.createElement("div", {
     })), /*#__PURE__*/React.createElement("div", {
       style: {
         width: 28,
-        background: "#F7F6F4",
+        background: PLAN_BG,
         borderLeft: "1px solid #E7DECB",
         display: "flex",
         flexDirection: "column",
@@ -7889,7 +7862,7 @@ return /*#__PURE__*/React.createElement("div", {
         alignItems: "center",
         justifyContent: "center",
         cursor: "pointer",
-        background: sidebarOpen && sidebarTab === 'ideas' ? "#fff" : "transparent",
+        background: sidebarOpen && sidebarTab === 'ideas' ? PAPER : "transparent",
         transition: "background 0.15s ease",
         color: sidebarOpen && sidebarTab === 'ideas' ? "#1C1917" : "#A79C88"
       }
@@ -7927,7 +7900,7 @@ return /*#__PURE__*/React.createElement("div", {
         alignItems: "center",
         justifyContent: "center",
         cursor: "pointer",
-        background: isOwnView && externalItemDrag ? "#EDE9FE" : sidebarOpen && sidebarTab === 'reflections' ? "#fff" : "transparent",
+        background: isOwnView && externalItemDrag ? "#EDE9FE" : sidebarOpen && sidebarTab === 'reflections' ? PAPER : "transparent",
         transition: "background 0.15s ease",
         color: isOwnView && externalItemDrag ? "#7C3AED" : sidebarOpen && sidebarTab === 'reflections' ? "#7C3AED" : "#A79C88",
         gap: 2
@@ -7970,7 +7943,7 @@ return /*#__PURE__*/React.createElement("div", {
         alignItems: "center",
         justifyContent: "center",
         cursor: "pointer",
-        background: sidebarOpen && sidebarTab === 'goals' ? "#fff" : "transparent",
+        background: sidebarOpen && sidebarTab === 'goals' ? PAPER : "transparent",
         transition: "background 0.15s ease",
         color: sidebarOpen && sidebarTab === 'goals' ? "#1C1917" : "#A79C88"
       }
@@ -8603,37 +8576,27 @@ return /*#__PURE__*/React.createElement("div", {
         display: "flex",
         alignItems: "center",
         gap: 5,
-        fontSize: 11,
-        fontWeight: 600,
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: "0.07em",
+        textTransform: "uppercase",
         fontFamily: "inherit",
         cursor: "pointer",
-        border: `1px solid ${sel ? "#DCD2BF" : "#E7DECB"}`,
-        background: sel ? (cat.bg || PLAN_BG) : "#fff",
-        color: sel ? "#1C1917" : PLAN_TEXT,
-        borderRadius: 20,
-        padding: "4px 10px 4px 8px"
+        padding: "4px 9px",
+        ...pillarChip(cat, sel)
       }
-    }, sel ? /*#__PURE__*/React.createElement("svg", {
+    }, sel && /*#__PURE__*/React.createElement("svg", {
       width: "9",
       height: "9",
       viewBox: "0 0 24 24",
       fill: "none",
-      stroke: cat.color,
+      stroke: "currentColor",
       strokeWidth: "3",
       strokeLinecap: "round",
       strokeLinejoin: "round"
     }, /*#__PURE__*/React.createElement("polyline", {
       points: "20 6 9 17 4 12"
-    })) : /*#__PURE__*/React.createElement("span", {
-      style: {
-        width: 7,
-        height: 7,
-        borderRadius: "50%",
-        background: cat.color,
-        display: "inline-block",
-        flexShrink: 0
-      }
-    }), cat.label);
+    })), cat.label);
   })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
