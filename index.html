@@ -6703,7 +6703,7 @@ function Planner() {
       setActiveViewId("own");
       setPendingImport(null);
       setImportConfirm({
-        msg: "Your data has been replaced. You can edit it as normal.",
+        msg: "My Plan replaced. Edit as normal.",
         type: "replace"
       });
       setTimeout(() => setImportConfirm(null), 4000);
@@ -6715,7 +6715,7 @@ function Planner() {
       setActiveViewId(newView.id);
       setPendingImport(null);
       setImportConfirm({
-        msg: `Added "${newView.name}" as a new view. Your own data is untouched.`,
+        msg: `Added ${splitViewName(newView.name).who}'s plan, read-only. My Plan untouched.`,
         type: "view"
       });
       setTimeout(() => setImportConfirm(null), 4000);
@@ -7232,7 +7232,7 @@ return /*#__PURE__*/React.createElement("div", {
       textAlign: "center",
       marginBottom: 6
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, !isOwnView && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       letterSpacing: "0.15em",
@@ -7241,7 +7241,7 @@ return /*#__PURE__*/React.createElement("div", {
       marginBottom: 6,
       fontWeight: 600
     }
-    }, "I Love Mondays"), /*#__PURE__*/React.createElement("div", {
+    }, "Shared with you"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 33,
       fontWeight: 600,
@@ -7249,7 +7249,7 @@ return /*#__PURE__*/React.createElement("div", {
       color: "#4A4136",
       letterSpacing: "-0.01em"
     }
-  }, isOwnView ? "My Plan" : splitViewName(activeView.name).who + "'s Plan"), !isOwnView && /*#__PURE__*/React.createElement("div", {
+  }, isOwnView ? "I Love Mondays" : splitViewName(activeView.name).who + "'s Plan"), !isOwnView && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "inline-flex",
       alignItems: "center",
@@ -8153,7 +8153,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v8.6.8")), (() => {
+  }, "v8.6.11")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -8587,7 +8587,7 @@ return /*#__PURE__*/React.createElement("div", {
       fontWeight: 600,
       marginBottom: 6
     }
-  }, "Start Fresh"), /*#__PURE__*/React.createElement("div", {
+  }, "Start fresh"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 16,
       fontWeight: 700,
@@ -8601,7 +8601,7 @@ return /*#__PURE__*/React.createElement("div", {
       marginBottom: 20,
       lineHeight: 1.5
     }
-  }, "This permanently deletes every entry, idea, reflection, and intention across all weeks, and returns your pillars to the defaults. Views you've imported from others are not affected. Export a backup first if you want to keep any of this."), /*#__PURE__*/React.createElement("button", {
+  }, "Erases My Plan across all weeks \u2014 entries, ideas, reflections, intentions \u2014 and resets your pillars. Shared plans aren't affected. Back it up first if you want to keep any of it."), /*#__PURE__*/React.createElement("button", {
     onClick: startFresh,
     style: {
       width: "100%",
@@ -8626,7 +8626,7 @@ return /*#__PURE__*/React.createElement("div", {
       color: "#78716C",
       lineHeight: 1.4
     }
-  }, "Everything is wiped and you're back to a blank week.")), /*#__PURE__*/React.createElement("button", {
+  }, "You'll land on a blank week.")), /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowStartFreshConfirm(false),
     style: {
       marginTop: 16,
@@ -8662,21 +8662,18 @@ return /*#__PURE__*/React.createElement("div", {
       fontWeight: 600,
       marginBottom: 6
     }
-  }, "Import Backup"), /*#__PURE__*/React.createElement("div", {
+  }, "Open a shared plan"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 16,
       fontWeight: 700,
       color: "#1C1917",
       marginBottom: 4
     }
-  }, pendingImport._meta?.exportedBy ? "File from " + pendingImport._meta.exportedBy : "Planner backup"), /*#__PURE__*/React.createElement("div", {
+  }, pendingImport._meta?.exportedBy ? pendingImport._meta.exportedBy + "'s plan" : "A shared plan"), /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 13,
-      color: "#78716C",
-      marginBottom: 24,
-      lineHeight: 1.5
+      height: 20
     }
-  }, "How would you like to load this data?"), /*#__PURE__*/React.createElement("div", {
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
@@ -8700,13 +8697,13 @@ return /*#__PURE__*/React.createElement("div", {
       color: "#1C1917",
       marginBottom: 3
     }
-  }, "Open as a new view"), /*#__PURE__*/React.createElement("div", {
+  }, "Open alongside mine"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       color: "#78716C",
       lineHeight: 1.4
     }
-  }, "Your data stays untouched. Browse", pendingImport._meta?.exportedBy ? " " + pendingImport._meta.exportedBy + "'s" : "", " planner side-by-side using the view switcher.")), /*#__PURE__*/React.createElement("button", {
+  }, "Read-only. My Plan stays untouched.")), /*#__PURE__*/React.createElement("button", {
     onClick: () => doImport("replace"),
     style: {
       padding: "14px 16px",
@@ -8724,13 +8721,13 @@ return /*#__PURE__*/React.createElement("div", {
       color: "#DC2626",
       marginBottom: 3
     }
-  }, "Replace my data"), /*#__PURE__*/React.createElement("div", {
+  }, "Replace My Plan"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       color: "#78716C",
       lineHeight: 1.4
     }
-  }, "Overwrites your existing planner data. Export a backup first if you want to keep it."))), /*#__PURE__*/React.createElement("button", {
+  }, "Overwrites everything. Back mine up first."))), /*#__PURE__*/React.createElement("button", {
     onClick: () => setPendingImport(null),
     style: {
       marginTop: 16,
@@ -8839,20 +8836,36 @@ return /*#__PURE__*/React.createElement("div", {
       fontWeight: 600,
       marginBottom: 16
     }
-  }, "Export"), /*#__PURE__*/React.createElement("div", {
+  }, "Share or back up"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
       justifyContent: "space-between",
+      gap: 16,
       marginBottom: 20
     }
   }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 14,
       fontWeight: 600,
       color: "#1C1917"
     }
-  }, "Include reflections"), /*#__PURE__*/React.createElement("button", {
+  }, "Include reflections"),
+  // Which entries a reflection covers isn't obvious from the toggle alone,
+  // and it's the one setting here you'd regret getting wrong when the file
+  // is going to another person.
+  /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#A79C88",
+      marginTop: 2,
+      lineHeight: 1.4
+    }
+  }, "Your private journal. Leave off when sharing.")), /*#__PURE__*/React.createElement("button", {
     onClick: () => setExportIncludeReflections(v => !v),
     style: {
       width: 42,
@@ -8895,7 +8908,7 @@ return /*#__PURE__*/React.createElement("div", {
       fontWeight: 600,
       fontFamily: "inherit"
     }
-  }, "Export"))), importConfirm && /*#__PURE__*/React.createElement("div", {
+  }, "Download"))), importConfirm && /*#__PURE__*/React.createElement("div", {
     style: {
       position: "fixed",
       bottom: 28,
