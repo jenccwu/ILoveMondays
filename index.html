@@ -313,6 +313,16 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     input[type=number]::-webkit-outer-spin-button,
     input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
     input[type=number] { -moz-appearance: textfield; }
+    /* The brief wash behind the science section a pillar's info button jumps
+       to. It fades to nothing so the page reads normally once you're there. */
+    @keyframes sciLand {
+      0%   { background: rgba(255,214,160,0.55); }
+      55%  { background: rgba(255,214,160,0.45); }
+      100% { background: rgba(255,214,160,0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      @keyframes sciLand { 0%, 100% { background: rgba(255,214,160,0); } }
+    }
   </style>
 </head>
 <body>
@@ -639,6 +649,74 @@ const DONE_BORDER_W = 1.5;
 // calendar events at 4, chips at 3. One value now, so a tile is the same
 // shape wherever it appears.
 const TILE_RADIUS = 4;
+// The "How did it go?" nudge is the same object wherever it appears, so it
+// gets one definition rather than three near-copies that drift apart. It had
+// drifted: the planner rendered it at 10px pinned to the bottom of the whole
+// cell, the calendar at 8px floating below the event. At two sizes it read as
+// two different features, and pinned to a cell it pointed at nothing in
+// particular once a pillar held more than one item.
+//
+// The bubble now hangs off the event itself, centred and lifted so its top
+// edge bites into the tile. Overlap is what makes it read as attached: a gap,
+// however small, lets the eye treat it as a separate row of chrome.
+// Kept small on purpose. A planner row is only ~26px tall, so a deep overlap
+// would sit on top of the item's own text; 6px is enough to close the gap and
+// read as attached without obscuring what the nudge is asking about.
+const NUDGE_OVERLAP = 6;
+const NUDGE_ANCHOR = {
+  position: "absolute",
+  top: `calc(100% - ${NUDGE_OVERLAP}px)`,
+  left: "50%",
+  transform: "translateX(-50%)",
+  zIndex: 30,
+  cursor: "pointer",
+  whiteSpace: "nowrap"
+};
+const NUDGE_BUBBLE = {
+  background: "#EDE9FE",
+  border: "1px solid #C4B5FD",
+  borderRadius: 20,
+  padding: "4px 12px",
+  fontSize: 10,
+  fontWeight: 700,
+  color: "#6D28D9",
+  letterSpacing: "0.03em",
+  lineHeight: 1.2,
+  display: "flex",
+  alignItems: "center",
+  gap: 4,
+  whiteSpace: "nowrap",
+  boxShadow: "0 1px 4px rgba(109,40,217,0.15)"
+};
+// Height of the bubble below the tile's bottom edge, used to reserve room so
+// the nudge doesn't collide with whatever sits under it.
+const NUDGE_BUBBLE_H = 24;
+const NUDGE_CLEARANCE = NUDGE_BUBBLE_H - NUDGE_OVERLAP;
+// Marks an occurrence of a repeating event. Drawn in the item's own text
+// colour at low opacity so it reads as a property of the tile rather than a
+// second thing competing with the name — you should notice it when you look
+// for it, not every time you scan the week.
+function repeatGlyph(color, size = 9, extraStyle) {
+  return /*#__PURE__*/React.createElement("svg", {
+    width: size,
+    height: size,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: color,
+    strokeWidth: "2.5",
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    style: { flexShrink: 0, opacity: 0.55, ...(extraStyle || {}) }
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M17 2l4 4-4 4"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M3 11V9a4 4 0 0 1 4-4h14"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M7 22l-4-4 4-4"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M21 13v2a4 4 0 0 1-4 4H3"
+  }));
+}
 // The planner varies band widths per item so a grid of tiles reads as a
 // composition. List surfaces don't want that: rows of like things scanned
 // top to bottom look arbitrary rather than composed when their bands ripple.
@@ -830,6 +908,70 @@ const PILLAR_LIBRARY = [{
 }];
 const DEFAULT_ACTIVE = ["move", "connect", "serve", "expand", "rest"];
 const DEFAULT_CATS = PILLAR_LIBRARY.filter(p => DEFAULT_ACTIVE.includes(p.id));
+// Which pillars the science page can be jumped to for. The library is the
+// right list to derive this from rather than a second one written by hand:
+// the page holds itself to offering a section for everything the app offers
+// and nothing it doesn't, so the two sets are the same set by construction,
+// and deriving it means adding a pillar can't quietly leave a dead button
+// behind. A pillar the user named themselves has no section and gets no
+// button — which is the honest answer, not an omission.
+//
+// The alias covers ids that outlived a rename: a planner set up before Serve
+// was called Serve still stores "contribute", and that pillar has the same
+// science behind it as the one with the current id.
+const SCIENCE_ALIASES = { contribute: "serve" };
+function scienceSectionFor(catId) {
+  const id = SCIENCE_ALIASES[catId] || catId;
+  return PILLAR_LIBRARY.some(p => p.id === id) ? id : null;
+}
+// The science page opens in its own browser tab rather than swapping out the
+// planner in place. It used to replace the planner, which left no way back
+// once you'd scrolled past the header — and after a pillar's info button
+// scrolled you deep into a section, the only exit was above the fold, which
+// read as being trapped. A tab has an exit built into the browser.
+//
+// It's a hash route into this same file, so the whole thing stays one
+// document: a new tab boots the app, sees "#science", and renders the page
+// instead of the planner. Same origin means it reads the same localStorage,
+// so it can draw the reader's real pillars in their real colours.
+const SCIENCE_HASH = "#science";
+function scienceHref(pillarId) {
+  const sid = pillarId ? scienceSectionFor(pillarId) : null;
+  return SCIENCE_HASH + (sid ? "/" + sid : "");
+}
+function plannerHref() {
+  return window.location.pathname + window.location.search;
+}
+function scienceRoute() {
+  const h = String(window.location.hash || "");
+  if (h !== SCIENCE_HASH && !h.startsWith(SCIENCE_HASH + "/")) return null;
+  const rest = h.slice(SCIENCE_HASH.length).replace(/^\//, "");
+  return { pillar: rest ? scienceSectionFor(decodeURIComponent(rest)) : null };
+}
+// What the science tab needs to know about the reader's week. Read straight
+// from storage because that tab has no planner mounted to ask.
+function scienceContext() {
+  let cats = null;
+  try {
+    const r = store.get("planner:cats");
+    if (r) cats = migrateCatColors(JSON.parse(r.value));
+  } catch {}
+  if (!cats || !cats.length) cats = DEFAULT_CATS;
+  // Every section gets a pigment, including pillars not in the week — a
+  // suggestion previews in the colour the library assigns it.
+  const palette = {};
+  PILLAR_LIBRARY.forEach(p => {
+    palette[p.id] = { color: p.color, deep: p.deep, ink: p.ink };
+  });
+  const activeIds = [];
+  cats.forEach(c => {
+    const sid = scienceSectionFor(c.id);
+    if (!sid) return;
+    activeIds.push(sid);
+    palette[sid] = { color: c.color, deep: catDeep(c), ink: catInk(c) };
+  });
+  return { activeIds, palette };
+}
 function makeIdea(text) {
   return {
     id: `idea_${Math.random().toString(36).slice(2)}`,
@@ -1037,6 +1179,190 @@ function entriesFromLegacyView(view) {
     });
   });
   return out;
+}
+// --- Recurring events ------------------------------------------------------
+//
+// The planner stores one file per week, so a repeating event can't simply
+// "live in the future": there is no future file until you open that week.
+// Rules therefore live in their own store, and each week materialises the
+// instances it owns the first time it's loaded. After that an instance is an
+// ordinary entry — it drags, resizes, completes, gets reflected on and
+// exports like anything else — so no read path anywhere in the app needs to
+// know it came from a rule.
+//
+// The link back to the rule is one field, `seriesId`, and two facts follow
+// from it that are the whole system:
+//   * an entry carrying seriesId R on date D stops R materialising again on
+//     D, so re-opening a week never duplicates
+//   * a date listed in R.skip stops it too, which is how a deleted or
+//     moved-away occurrence stays gone when no entry survives to block it
+//
+// Rule = { id, text, pillars, sched, freq, byDay:[0-6], startDs, endDs, skip:[ds] }
+const RECUR_KEY = "planner:recurring";
+const DOW_INITIALS = ["S", "M", "T", "W", "T", "F", "S"];
+const DOW_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const REPEAT_NONE = "none";
+const REPEAT_WEEKLY = "weekly";
+const REPEAT_BIWEEKLY = "biweekly";
+function genRuleId() {
+  return "r_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+function dsToDate(ds) {
+  const [y, m, d] = String(ds).split("-").map(Number);
+  const dt = new Date(y, (m || 1) - 1, d || 1);
+  dt.setHours(0, 0, 0, 0);
+  return dt;
+}
+function dowOfDs(ds) {
+  return dsToDate(ds).getDay();
+}
+function shiftDs(ds, days) {
+  const dt = dsToDate(ds);
+  dt.setDate(dt.getDate() + days);
+  return ymd(dt);
+}
+// Whole weeks between two dates, measured Monday to Monday so the count can't
+// flip mid-week. This is what makes every-other-week parity stable no matter
+// which day of the week you happen to be looking at.
+function weekSpan(fromDs, toDs) {
+  const a = mondayOfDate(fromDs).getTime();
+  const b = mondayOfDate(toDs).getTime();
+  return Math.round((b - a) / 604800000);
+}
+function loadRules() {
+  try {
+    const r = store.get(RECUR_KEY);
+    if (!r) return {};
+    const parsed = JSON.parse(r.value);
+    return parsed && parsed.rules ? parsed.rules : {};
+  } catch {
+    return {};
+  }
+}
+function saveRules(rules) {
+  store.set(RECUR_KEY, JSON.stringify({ __v: 1, rules }));
+}
+function ruleAppliesOn(rule, ds) {
+  if (!rule || !Array.isArray(rule.byDay) || !rule.byDay.length) return false;
+  if (!rule.startDs || ds < rule.startDs) return false;
+  if (rule.endDs && ds > rule.endDs) return false;
+  if ((rule.skip || []).includes(ds)) return false;
+  if (!rule.byDay.includes(dowOfDs(ds))) return false;
+  if (rule.freq === REPEAT_BIWEEKLY && weekSpan(rule.startDs, ds) % 2 !== 0) return false;
+  return true;
+}
+// Plain-language summary, shown under the repeat control so the setting can
+// be read back without re-deriving it from a row of day chips.
+function describeRule(rule) {
+  if (!rule || rule.freq === REPEAT_NONE) return "Doesn't repeat";
+  const days = [...(rule.byDay || [])].sort((a, b) => a - b);
+  if (!days.length) return "Doesn't repeat";
+  const cadence = rule.freq === REPEAT_BIWEEKLY ? "Every other week" : "Every week";
+  let when;
+  if (days.length === 7) when = "every day";
+  else if (days.length === 5 && days.every(d => d >= 1 && d <= 5)) when = "on weekdays";
+  else when = "on " + days.map(d => DOW_SHORT[d]).join(", ");
+  const until = rule.endDs ? `, until ${fmtDsShort(rule.endDs)}` : "";
+  return `${cadence} ${when}${until}`;
+}
+function fmtDsShort(ds) {
+  const d = dsToDate(ds);
+  return `${MONTHS_S[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+// The dates within one displayed week that a rule should occupy.
+function ruleDatesInWeek(rule, dates) {
+  return dates.map(ymd).filter(ds => ruleAppliesOn(rule, ds));
+}
+// Fills in whatever instances a week is missing. Pure, and returns the very
+// same object when there was nothing to add, so callers can skip the write
+// rather than churning storage on every navigation.
+function materializeRules(weekEntries, rules, dates) {
+  let next = weekEntries;
+  let changed = false;
+  Object.values(rules || {}).forEach(rule => {
+    ruleDatesInWeek(rule, dates).forEach(ds => {
+      const bucket = next[ds] || {};
+      if (Object.values(bucket).some(e => e.seriesId === rule.id)) return;
+      const order = Object.values(bucket).reduce((m, x) => Math.max(m, x.order ?? 0), -1) + 1;
+      const entry = {
+        id: genEntryId(),
+        text: rule.text,
+        pillars: pillarsOrDefault(rule.pillars),
+        done: false,
+        sched: sanitizeSched(rule.sched),
+        order,
+        seriesId: rule.id
+      };
+      if (!changed) {
+        next = { ...next };
+        changed = true;
+      }
+      next[ds] = { ...bucket, [entry.id]: entry };
+    });
+  });
+  return { next, changed };
+}
+// Pushes a rule's current values onto every already-materialised instance
+// dated `fromDs` or later, across every stored week. Instances the rule no
+// longer covers (its days shrank, or it now ends earlier) are removed; days
+// it newly covers are picked up by materialisation when that week loads.
+//
+// Deliberately bounded at `fromDs` rather than rewriting all of history: the
+// weeks behind you are a record of what actually happened, and an app built
+// around reflecting on them shouldn't quietly edit them.
+function syncSeriesInstances(rule, fromDs) {
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith("planner:week:")) continue;
+    const week = readStoredWeek(k);
+    let touched = false;
+    const nextWeek = {};
+    Object.entries(week).forEach(([ds, bucket]) => {
+      const nextBucket = {};
+      Object.entries(bucket || {}).forEach(([eid, e]) => {
+        if (e.seriesId !== rule.id || ds < fromDs) {
+          nextBucket[eid] = e;
+          return;
+        }
+        if (!ruleAppliesOn(rule, ds)) {
+          touched = true;
+          return;
+        }
+        touched = true;
+        nextBucket[eid] = {
+          ...e,
+          text: rule.text,
+          pillars: pillarsOrDefault(rule.pillars),
+          sched: sanitizeSched(rule.sched)
+        };
+      });
+      nextWeek[ds] = nextBucket;
+    });
+    if (touched) writeStoredWeek(k, nextWeek);
+  }
+}
+// Drops every instance of a series dated `fromDs` or later. Used when a
+// series is cut short from a given day.
+function dropSeriesInstances(seriesId, fromDs) {
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith("planner:week:")) continue;
+    const week = readStoredWeek(k);
+    let touched = false;
+    const nextWeek = {};
+    Object.entries(week).forEach(([ds, bucket]) => {
+      const nextBucket = {};
+      Object.entries(bucket || {}).forEach(([eid, e]) => {
+        if (e.seriesId === seriesId && ds >= fromDs) {
+          touched = true;
+          return;
+        }
+        nextBucket[eid] = e;
+      });
+      nextWeek[ds] = nextBucket;
+    });
+    if (touched) writeStoredWeek(k, nextWeek);
+  }
 }
 // Returns a day bucket's entries in display order. Scoped to one pillar
 // when catId is given (the pillar grid's per-cell list), or the whole day
@@ -1453,7 +1779,7 @@ function Cell({
     } : undefined,
     style: {
       padding: isPastOrToday && filled ? "8px 10px" : "8px 6px",
-      paddingBottom: isPastOrToday && nudgeEntryId != null && filled ? 26 : !readOnly && filled ? 22 : undefined,
+      paddingBottom: isPastOrToday && nudgeEntryId != null && filled ? NUDGE_CLEARANCE + 6 : !readOnly && filled ? 22 : undefined,
       cursor: readOnly ? "default" : "pointer",
       background: isDragHovered ? `${cat.color}18` : bg,
       transition: "background 0.15s ease",
@@ -1644,7 +1970,7 @@ function Cell({
         boxShadow: isOver && dragOverPos === "before" ? `0 -2px 0 ${cat.color}` : isOver && dragOverPos === "after" ? `0 2px 0 ${cat.color}` : "none",
         transition: "opacity 0.1s ease, box-shadow 0.05s ease",
         position: "relative",
-        zIndex: hoveredRowId === row.id ? 5 : "auto"
+        zIndex: hoveredRowId === row.id || nudgeEntryId === row.id ? 5 : "auto"
       }
     }, accentBar(accent, TILE_RADIUS), /*#__PURE__*/React.createElement("span", {
       style: {
@@ -1658,7 +1984,7 @@ function Cell({
         userSelect: "text",
         transition: "color 0.2s ease"
       }
-    }, renderWithLinks(row.text, nameColor)), isPastOrToday && onToggleDone && !readOnly && doneToggleButton(row, rowDone, accent.mark), !readOnly && hoveredRowId === row.id && dragRowId === null && linkingRowId !== row.id && /*#__PURE__*/React.createElement("div", {
+    }, renderWithLinks(row.text, nameColor)), row.seriesId && repeatGlyph(nameColor, 9, { marginTop: 4 }), isPastOrToday && onToggleDone && !readOnly && doneToggleButton(row, rowDone, accent.mark), !readOnly && hoveredRowId === row.id && dragRowId === null && linkingRowId !== row.id && /*#__PURE__*/React.createElement("div", {
       style: {
         position: "absolute",
         bottom: "100%",
@@ -1710,7 +2036,16 @@ function Cell({
         color: "#BCB2A0",
         padding: 0
       }
-    }, "×")));
+    }, "×")), isPastOrToday && nudgeEntryId === row.id && onNudgeClick && /*#__PURE__*/React.createElement("div", {
+      onClick: e => {
+        e.stopPropagation();
+        onNudgeClick();
+      },
+      style: {
+        ...NUDGE_ANCHOR,
+        ...NUDGE_BUBBLE
+      }
+    }, /*#__PURE__*/React.createElement("span", null, "How did it go?")));
   })) : isPastOrToday ? /*#__PURE__*/React.createElement("div", {
     ...wholeCellDragProps,
     style: {
@@ -1739,7 +2074,16 @@ function Cell({
       userSelect: "text",
       transition: "color 0.2s ease"
     }
-  }, renderWithLinks(singleRow.text, singleRowAccent?.text || "#1C1917")), !readOnly && onToggleDone && doneToggleButton(singleRow, singleRowDone, singleRowAccent?.mark || PLAN_RING)) : /*#__PURE__*/React.createElement("span", {
+  }, renderWithLinks(singleRow.text, singleRowAccent?.text || "#1C1917")), singleRow.seriesId && repeatGlyph(singleRowAccent?.text || "#1C1917", 9, { marginTop: 5 }), !readOnly && onToggleDone && doneToggleButton(singleRow, singleRowDone, singleRowAccent?.mark || PLAN_RING), nudgeEntryId != null && nudgeEntryId === singleRow.id && onNudgeClick && /*#__PURE__*/React.createElement("div", {
+    onClick: e => {
+      e.stopPropagation();
+      onNudgeClick();
+    },
+    style: {
+      ...NUDGE_ANCHOR,
+      ...NUDGE_BUBBLE
+    }
+  }, /*#__PURE__*/React.createElement("span", null, "How did it go?"))) : /*#__PURE__*/React.createElement("span", {
     ...wholeCellDragProps,
     style: {
       fontSize: 13,
@@ -1799,36 +2143,7 @@ function Cell({
       lineHeight: 1,
       userSelect: "none"
     }
-  }, "+")), isPastOrToday && nudgeEntryId != null && onNudgeClick && /*#__PURE__*/React.createElement("div", {
-    onClick: e => {
-      e.stopPropagation();
-      onNudgeClick();
-    },
-    style: {
-      position: "absolute",
-      bottom: 5,
-      left: "50%",
-      transform: "translateX(-50%)",
-      zIndex: 10,
-      cursor: "pointer",
-      whiteSpace: "nowrap"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      background: "#EDE9FE",
-      border: "1px solid #C4B5FD",
-      borderRadius: 20,
-      padding: "4px 12px",
-      fontSize: 10,
-      fontWeight: 700,
-      color: "#6D28D9",
-      letterSpacing: "0.03em",
-      display: "flex",
-      alignItems: "center",
-      gap: 4,
-      boxShadow: "0 1px 4px rgba(109,40,217,0.15)"
-    }
-  }, /*#__PURE__*/React.createElement("span", null, "How did it go?"))));
+  }, "+")));
 }
 function JournalEntry({
   entry,
@@ -2175,7 +2490,60 @@ function EditablePillarName({ value, onCommit, textStyle, accentColor, editTitle
 // pillar is only a suggestion — nothing has claimed a colour yet. Hovering
 // floods it with the exact pigment the pillar *would* take on being added,
 // so the palette decision is previewed rather than discovered afterwards.
-function CatSuggestionItem({label, desc, onClick, disabled, onRename, color}) {
+// The "why this pillar" control that sits on every pillar row in the sidebar,
+// live or suggested, and opens that pillar's section of the science page.
+//
+// It's an anchor rather than a button calling window.open, because anchors
+// carrying target="_blank" are never treated as popups — a scripted open on a
+// file:// page is exactly the shape a blocker reaches for.
+//
+// It is drawn quiet on purpose. This is a row you came to manage — rename,
+// reorder, delete — and a bright control on each line would compete with the
+// pillar's own colour and turn a calm list into a row of buttons. It comes up
+// to full strength on hover, which is when it's being looked for.
+//
+// stopPropagation matters on the suggestion rows: the whole tile is a click
+// target that adds the pillar, and reading about one is the opposite of
+// committing to it.
+function ScienceInfoButton({ pillarId, label, dim }) {
+  const [hovered, setHovered] = React.useState(false);
+  return React.createElement("a", {
+    href: scienceHref(pillarId),
+    target: "_blank",
+    rel: "noopener noreferrer",
+    onClick: e => e.stopPropagation(),
+    title: `The science behind ${label} (opens a new tab)`,
+    "aria-label": `The science behind ${label} (opens a new tab)`,
+    onMouseEnter: () => setHovered(true),
+    onMouseLeave: () => setHovered(false),
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      padding: 2,
+      display: "flex",
+      alignItems: "center",
+      flexShrink: 0,
+      lineHeight: 1,
+      textDecoration: "none",
+      color: hovered ? "#1C1917" : dim || PLAN_MUTED,
+      opacity: hovered ? 1 : 0.75,
+      transition: "color 0.12s ease, opacity 0.12s ease"
+    }
+  }, React.createElement("svg", {
+    width: "14",
+    height: "14",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, React.createElement("circle", { cx: "12", cy: "12", r: "9.5" }),
+     React.createElement("path", { d: "M12 11v5" }),
+     React.createElement("path", { d: "M12 7.6v.1" })));
+}
+function CatSuggestionItem({label, desc, onClick, disabled, onRename, color, sciId}) {
   const [hovered, setHovered] = React.useState(false);
   const live = hovered && !disabled;
   const edge = live && color ? color : NEUTRAL_OUTLINE;
@@ -2227,7 +2595,16 @@ function CatSuggestionItem({label, desc, onClick, disabled, onRename, color}) {
     desc ? React.createElement("div", {
       style: { fontSize: 11, color: PLAN_MUTED, marginTop: 2, lineHeight: 1.4 }
     }, desc) : null
-  ));
+  ),
+  // The tile aligns its children to the top, so the button is nudged onto the
+  // name's line rather than floating above it.
+  sciId && !disabled ? React.createElement("div", {
+    style: { marginTop: 1 }
+  }, React.createElement(ScienceInfoButton, {
+    pillarId: sciId,
+    label: label,
+    dim: live && color ? color : PLAN_MUTED
+  })) : null);
 }
 const navBtn = {
   background: "none",
@@ -2241,19 +2618,28 @@ const navBtn = {
   lineHeight: 1
 };
 function SciencePage({
-  onBack
+  focusPillar = null,
+  activeIds = null,
+  palette = null,
+  plannerHref = "./"
 }) {
+  // A pillar's info button lands in Live It, so opening with a focus opens on
+  // that half rather than making the reader find the tab first.
   const [tab, setTab] = useState('liveit');
-  const C = {
-    move: "#C4622F",
-    connect: "#DB2777",
-    serve: "#0891B2",
-    play: "#2563EB",
-    savor: "#059669",
-    make: "#D97706",
-    expand: "#7C3AED",
-    rest: "#6D28D9"
-  };
+  const liveItActive = tab === 'liveit';
+  useEffect(() => {
+    if (!focusPillar) {
+      window.scrollTo(0, 0);
+      return;
+    }
+    setTab('liveit');
+    // One frame's grace: the section has to exist before it can be scrolled to.
+    const t = setTimeout(() => {
+      const el = document.getElementById("sci-" + focusPillar);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 60);
+    return () => clearTimeout(t);
+  }, [focusPillar]);
   // Ordered so the five a new planner starts with come first. Nothing is
   // offered as a pillar that does not have a section here, and nothing has a
   // section here that is not offered.
@@ -2508,6 +2894,21 @@ function SciencePage({
     desc: "Optimal experience occurs when challenge and skill are matched. Planning activities you look forward to is the precondition for flow.",
     url: "https://www.ted.com/talks/mihaly_csikszentmihalyi_flow_the_secret_to_happiness"
   }];
+  // -------------------------------------------------------------------------
+  // Mosaic vocabulary
+  //
+  // This page used to speak a language of its own: round dots, pill-shaped
+  // source chips, 16px card corners and a second hardcoded palette of vivid
+  // web colours. None of that exists in the planner any more, so a reader
+  // arriving from a pillar's info button landed somewhere that looked like a
+  // different product and found their terracotta Move rendered in orange.
+  //
+  // Everything below is the tile treatment the app already uses: a squared
+  // field, cream-white and outlined hairline in the pillar's own colour, with
+  // a full-height band of deep pigment down the left edge. Idle things are
+  // outlined; chosen things are flooded. No circles, no pills — a page about
+  // the grid should be built from the grid.
+  // -------------------------------------------------------------------------
   const pg = {
     fontFamily: "'DM Sans',sans-serif",
     background: PAPER,
@@ -2524,97 +2925,305 @@ function SciencePage({
   };
   const rule = {
     border: "none",
-    borderTop: "1px solid #E7DECB",
+    borderTop: `1px solid ${PAPER_LINE}`,
     margin: "44px 0"
   };
+  // The two halves of the page get palette slots rather than bespoke colours,
+  // for the same reason the pillars do — so the page can only ever contain
+  // pigments the app itself uses.
+  const LIVE_PAINT = { color: COLOR_PALETTE[0].color, deep: COLOR_PALETTE[0].deep, ink: COLOR_PALETTE[0].ink };
+  const PLAN_PAINT = { color: COLOR_PALETTE[1].color, deep: COLOR_PALETTE[1].deep, ink: COLOR_PALETTE[1].ink };
+  const NEUTRAL_PAINT = { color: NEUTRAL_OUTLINE, deep: "#8E8677", ink: "#57534E" };
+  function paintFor(id) {
+    return (palette && palette[id]) || NEUTRAL_PAINT;
+  }
+  // Cream on deep pigment, except where the pigment is light enough that the
+  // pillar's own ink reads better — the planner makes the same call.
+  function onDeep(paint) {
+    return hexLuma(paint.deep) > 150 ? paint.ink : TILE_DONE_TEXT;
+  }
+  // A pillar counts as the reader's if it's in their week right now. Falling
+  // back to the shipped defaults keeps the page honest when it's opened with
+  // no planner data to read.
+  const isActive = id => (activeIds || DEFAULT_ACTIVE).includes(id);
+  // The band that makes a rectangle read as one of the app's tiles.
+  function band(paint, filled) {
+    return /*#__PURE__*/React.createElement("span", {
+      "aria-hidden": "true",
+      style: {
+        position: "absolute",
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: PILLAR_ROW_BAND_W,
+        background: filled ? paint.deep : "transparent",
+        borderRight: `${PLAN_BORDER_W}px solid ${filled ? paint.deep : paint.color}`,
+        borderTopLeftRadius: Math.max(TILE_RADIUS - 1.5, 0),
+        borderBottomLeftRadius: Math.max(TILE_RADIUS - 1.5, 0),
+        boxSizing: "border-box",
+        pointerEvents: "none"
+      }
+    });
+  }
+  function tile(paint, extra) {
+    return {
+      position: "relative",
+      background: TILE_PLAN_FILL,
+      border: `${PLAN_BORDER_W}px solid ${paint.color}`,
+      borderRadius: TILE_RADIUS,
+      paddingLeft: TILE_INDENT,
+      ...extra
+    };
+  }
+  // Source links. Squared and hairline, the same object as a filter chip in
+  // the planner — they were pills at radius 20, the last round thing here.
   function Chip({
     text,
     url
   }) {
+    const base = {
+      fontSize: 10,
+      fontWeight: 600,
+      letterSpacing: "0.03em",
+      padding: "4px 9px",
+      borderRadius: CHIP_RADIUS,
+      border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+      background: TILE_PLAN_FILL,
+      color: PLAN_TEXT,
+      textDecoration: "none",
+      display: "inline-block",
+      transition: "all 0.12s"
+    };
     return url ? /*#__PURE__*/React.createElement("a", {
       href: url,
       target: "_blank",
       rel: "noopener noreferrer",
-      style: {
-        fontSize: 10,
-        fontWeight: 600,
-        letterSpacing: "0.03em",
-        padding: "3px 9px",
-        borderRadius: 20,
-        border: "1px solid #BCB2A0",
-        color: "#57534E",
-        textDecoration: "none",
-        display: "inline-block",
-        transition: "all 0.12s"
-      },
+      style: base,
       onMouseEnter: e => {
         e.currentTarget.style.borderColor = "#1C1917";
         e.currentTarget.style.color = "#1C1917";
-        e.currentTarget.style.background = "#F5F4F3";
+        e.currentTarget.style.background = PLAN_BG;
       },
       onMouseLeave: e => {
-        e.currentTarget.style.borderColor = "#BCB2A0";
-        e.currentTarget.style.color = "#57534E";
-        e.currentTarget.style.background = "transparent";
+        e.currentTarget.style.borderColor = NEUTRAL_OUTLINE;
+        e.currentTarget.style.color = PLAN_TEXT;
+        e.currentTarget.style.background = TILE_PLAN_FILL;
       }
     }, text, " ↗") : /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 10,
-        fontWeight: 600,
-        letterSpacing: "0.03em",
-        padding: "3px 9px",
-        borderRadius: 20,
-        border: "1px solid #BCB2A0",
-        color: "#A79C88",
-        display: "inline-block"
-      }
+      style: { ...base, color: PLAN_MUTED }
     }, text);
   }
-  function LiveItPillar({
-    p,
-    i,
-    total
+  // The pillar's name, drawn exactly as the planner draws a chosen pillar:
+  // squared field flooded with deep pigment, cream text.
+  function NameChip({
+    paint,
+    label
   }) {
-    return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        marginBottom: 44
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        marginBottom: 10
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 8,
-        height: 8,
-        borderRadius: "50%",
-        background: C[p.id],
-        flexShrink: 0
-      }
-    }), /*#__PURE__*/React.createElement("span", {
+    return /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 10,
         fontWeight: 700,
         letterSpacing: "0.13em",
         textTransform: "uppercase",
-        color: C[p.id]
+        padding: "3px 9px",
+        borderRadius: CHIP_RADIUS,
+        background: paint.deep,
+        border: `${DONE_BORDER_W}px solid ${paint.deep}`,
+        color: onDeep(paint)
       }
-    }, p.label),
-    // Which pillars a new planner starts with is a real decision, so the page
-    // that justifies them should say which four they are rather than leaving
-    // the reader to compare against the app.
-    /*#__PURE__*/React.createElement("span", {
-      style: DEFAULT_ACTIVE.includes(p.id) ? {
-        fontSize: 9, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase",
-        color: "#fff", background: C[p.id], padding: "2px 6px", borderRadius: 3
-      } : {
-        fontSize: 9, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase",
-        color: "#A79C88", border: "1px solid #E7DECB", padding: "2px 6px", borderRadius: 3
+    }, label);
+  }
+  // Whether this pillar is one the reader is actually running. Kept quiet —
+  // outlined rather than flooded — because it's a footnote to the section,
+  // not its headline. The wording is the app's own: the sidebar counts
+  // "N Active" and files the rest under "Add a pillar".
+  function StatusChip({
+    active
+  }) {
+    return /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 9,
+        fontWeight: 700,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        padding: "3px 8px",
+        borderRadius: CHIP_RADIUS,
+        background: active ? PLAN_BG : "transparent",
+        border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+        color: active ? PLAN_TEXT : PLAN_MUTED
       }
-    }, DEFAULT_ACTIVE.includes(p.id) ? "Starts on" : "Add anytime")), /*#__PURE__*/React.createElement("h2", {
+    }, active ? "Active pillar" : "Add a pillar");
+  }
+  // The bar to clear, as a real tile. This is the one line in each section a
+  // reader is meant to act on, so it gets the full treatment rather than the
+  // hairline left rule it used to carry.
+  function BarTile({
+    paint,
+    bar,
+    barLabel
+  }) {
+    return /*#__PURE__*/React.createElement("div", {
+      style: tile(paint, { margin: "16px 0", padding: `12px 14px 12px ${TILE_INDENT}px` })
+    }, band(paint, true), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 15,
+        fontWeight: 700,
+        color: "#1C1917",
+        marginBottom: 3,
+        letterSpacing: "-0.01em"
+      }
+    }, bar), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: PLAN_TEXT,
+        lineHeight: 1.6
+      }
+    }, barLabel));
+  }
+  // The two-up chooser at the top. A part you're reading is a chosen tile —
+  // flooded band, pigment outline; the other is idle and outlined in neutral.
+  function PartCard({
+    paint,
+    active,
+    eyebrow,
+    title,
+    blurb,
+    swatch,
+    onPick
+  }) {
+    return /*#__PURE__*/React.createElement("button", {
+      onClick: onPick,
+      style: {
+        position: "relative",
+        background: TILE_PLAN_FILL,
+        border: `${PLAN_BORDER_W}px solid ${active ? paint.deep : NEUTRAL_OUTLINE}`,
+        borderRadius: TILE_RADIUS,
+        padding: `18px 16px 16px ${TILE_INDENT}px`,
+        cursor: "pointer",
+        textAlign: "left",
+        fontFamily: "'DM Sans',sans-serif",
+        transition: "border-color 0.18s ease"
+      }
+    }, band(active ? paint : NEUTRAL_PAINT, active), swatch, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: "0.14em",
+        textTransform: "uppercase",
+        color: active ? paint.ink : PLAN_MUTED,
+        marginBottom: 5,
+        transition: "color 0.18s ease"
+      }
+    }, eyebrow), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 18,
+        fontWeight: 700,
+        color: "#1C1917",
+        letterSpacing: "-0.01em",
+        marginBottom: 8
+      }
+    }, title), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: PLAN_TEXT,
+        lineHeight: 1.65,
+        marginBottom: 16
+      }
+    }, blurb), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+        fontSize: 11,
+        fontWeight: 700,
+        color: active ? paint.ink : PLAN_MUTED,
+        letterSpacing: "0.02em",
+        transition: "color 0.18s ease"
+      }
+    }, /*#__PURE__*/React.createElement("span", null, active ? "Reading now" : "Read this first"), /*#__PURE__*/React.createElement("span", {
+      style: { fontSize: 13 }
+    }, active ? "↓" : "→")));
+  }
+  // Live It's swatch is the palette itself, laid out as a small mosaic: one
+  // squared block per pillar, in the order they're claimed.
+  const liveSwatch = /*#__PURE__*/React.createElement("div", {
+    "aria-hidden": "true",
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(4, 13px)",
+      gap: 3,
+      marginBottom: 16
+    }
+  }, liveit.map(p => /*#__PURE__*/React.createElement("i", {
+    key: p.id,
+    style: {
+      display: "block",
+      height: 13,
+      background: liveItActive ? paintFor(p.id).deep : PAPER_LINE,
+      transition: "background 0.18s ease"
+    }
+  })));
+  // Plan It's is the same idea in one pigment: seven blocks for seven
+  // principles, ragged widths so it reads as a composition rather than a bar
+  // chart.
+  const planSwatch = /*#__PURE__*/React.createElement("div", {
+    "aria-hidden": "true",
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 3,
+      marginBottom: 16,
+      width: 58
+    }
+  }, planit.map((_, i) => /*#__PURE__*/React.createElement("i", {
+    key: i,
+    style: {
+      display: "block",
+      height: 4,
+      // Ragged widths cycled from a fixed table, so the block reads as a
+      // composition and still has one bar per principle however many there are.
+      width: `${[100, 72, 88, 55, 92, 68, 80][i % 7]}%`,
+      background: !liveItActive ? PLAN_PAINT.deep : PAPER_LINE,
+      opacity: !liveItActive ? 0.3 + (i / planit.length) * 0.6 : 1,
+      transition: "background 0.18s ease"
+    }
+  })));
+  function LiveItPillar({
+    p,
+    i,
+    total
+  }) {
+    const paint = paintFor(p.id);
+    // The id is what a pillar's info button jumps to. scrollMarginTop leaves
+    // the heading a little air instead of pinning it to the window edge.
+    const landed = focusPillar === p.id;
+    return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      id: "sci-" + p.id,
+      style: {
+        marginBottom: 44,
+        scrollMarginTop: 24,
+        // Arriving from the sidebar, the section you asked for lights up
+        // briefly and then settles — enough to confirm you landed in the
+        // right place, not enough to become decoration you read past.
+        margin: landed ? "0 -14px 44px" : undefined,
+        padding: landed ? 14 : undefined,
+        borderRadius: landed ? TILE_RADIUS : undefined,
+        animation: landed ? "sciLand 2.4s ease-out forwards" : undefined
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 7,
+        flexWrap: "wrap",
+        marginBottom: 12
+      }
+    }, /*#__PURE__*/React.createElement(NameChip, {
+      paint: paint,
+      label: p.label
+    }), /*#__PURE__*/React.createElement(StatusChip, {
+      active: isActive(p.id)
+    })), /*#__PURE__*/React.createElement("h2", {
       style: {
         fontSize: 18,
         fontWeight: 700,
@@ -2630,27 +3239,11 @@ function SciencePage({
         color: "#57534E",
         margin: "0 0 14px"
       }
-    }, p.body), /*#__PURE__*/React.createElement("div", {
-      style: {
-        borderLeft: `3px solid ${C[p.id]}55`,
-        paddingLeft: 14,
-        margin: "14px 0"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 15,
-        fontWeight: 700,
-        color: "#1C1917",
-        marginBottom: 3,
-        letterSpacing: "-0.01em"
-      }
-    }, p.bar), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: "#78716C",
-        lineHeight: 1.6
-      }
-    }, p.barLabel)), /*#__PURE__*/React.createElement("div", {
+    }, p.body), /*#__PURE__*/React.createElement(BarTile, {
+      paint: paint,
+      bar: p.bar,
+      barLabel: p.barLabel
+    }), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexWrap: "wrap",
@@ -2677,26 +3270,13 @@ function SciencePage({
       style: {
         display: "flex",
         alignItems: "center",
-        gap: 8,
-        marginBottom: 10
+        gap: 7,
+        marginBottom: 12
       }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 8,
-        height: 8,
-        borderRadius: "50%",
-        background: "#0E7490",
-        flexShrink: 0
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 10,
-        fontWeight: 700,
-        letterSpacing: "0.13em",
-        textTransform: "uppercase",
-        color: "#0E7490"
-      }
-    }, p.label)), /*#__PURE__*/React.createElement("h2", {
+    }, /*#__PURE__*/React.createElement(NameChip, {
+      paint: PLAN_PAINT,
+      label: p.label
+    })), /*#__PURE__*/React.createElement("h2", {
       style: {
         fontSize: 18,
         fontWeight: 700,
@@ -2712,47 +3292,36 @@ function SciencePage({
         color: "#57534E",
         margin: "0 0 14px"
       }
-    }, p.body), /*#__PURE__*/React.createElement("div", {
+    }, p.body), /*#__PURE__*/React.createElement(BarTile, {
+      paint: PLAN_PAINT,
+      bar: p.bar,
+      barLabel: p.barLabel
+    }),
+    // Where the finding actually lives in the app. Drawn as a tile in the
+    // planner's own paper tone rather than the old mint-green callout, so it
+    // reads as a piece of the product rather than a web notice.
+    /*#__PURE__*/React.createElement("div", {
       style: {
-        borderLeft: "3px solid #0E749055",
-        paddingLeft: 14,
+        position: "relative",
+        background: PLAN_BG,
+        border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+        borderRadius: TILE_RADIUS,
+        padding: `11px 14px 11px ${TILE_INDENT}px`,
         margin: "14px 0"
       }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 15,
-        fontWeight: 700,
-        color: "#1C1917",
-        marginBottom: 3,
-        letterSpacing: "-0.01em"
-      }
-    }, p.bar), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: "#78716C",
-        lineHeight: 1.6
-      }
-    }, p.barLabel)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        background: "#F0FDF4",
-        border: "1px solid #BBF7D0",
-        borderRadius: 8,
-        padding: "10px 14px",
-        margin: "14px 0"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, band(PLAN_PAINT, true), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
         fontWeight: 700,
         letterSpacing: "0.12em",
         textTransform: "uppercase",
-        color: "#15803D",
+        color: PLAN_PAINT.ink,
         marginBottom: 4
       }
     }, "In the planner"), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 13,
-        color: "#166534",
+        color: "#1C1917",
         lineHeight: 1.6,
         margin: 0
       }
@@ -2770,48 +3339,52 @@ function SciencePage({
       style: rule
     }));
   }
-  const liveItActive = tab === 'liveit';
   return /*#__PURE__*/React.createElement("div", {
     style: pg
   }, /*#__PURE__*/React.createElement("div", {
     style: inner
-  }, /*#__PURE__*/React.createElement("div", {
+  },
+  // The page opens in its own tab, so there is no planner behind it to go
+  // back to — a back arrow here would have been a button that closed nothing.
+  // The wordmark is a link instead: it reaches the app for anyone who arrived
+  // without it, and does no harm to anyone who still has it open.
+  /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
       padding: "28px 0",
       marginBottom: 32
     }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: onBack,
+  }, /*#__PURE__*/React.createElement("a", {
+    href: plannerHref,
     style: {
-      background: "none",
-      border: "none",
-      cursor: "pointer",
       fontFamily: "inherit",
       fontSize: 13,
       fontWeight: 600,
-      color: "#78716C",
-      padding: 0,
+      color: PLAN_TEXT,
+      textDecoration: "none",
       display: "flex",
       alignItems: "center",
-      gap: 5
+      gap: 7
     }
-  }, /*#__PURE__*/React.createElement("svg", {
-    width: "13",
-    height: "13",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: "2.5",
-    strokeLinecap: "round",
-    strokeLinejoin: "round"
-  }, /*#__PURE__*/React.createElement("polyline", {
-    points: "15 18 9 12 15 6"
-  })), "I Love Mondays")), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", {
+    "aria-hidden": "true",
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(2, 6px)",
+      gap: 2
+    }
+  }, [0, 4, 2, 1].map(slot => /*#__PURE__*/React.createElement("i", {
+    key: slot,
+    style: {
+      display: "block",
+      height: 6,
+      background: COLOR_PALETTE[slot].deep
+    }
+  }))), "I Love Mondays")), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 44,
-      borderBottom: "1px solid #E7DECB",
+      borderBottom: `1px solid ${PAPER_LINE}`,
       paddingBottom: 40
     }
   }, /*#__PURE__*/React.createElement("div", {
@@ -2820,7 +3393,7 @@ function SciencePage({
       fontWeight: 700,
       letterSpacing: "0.14em",
       textTransform: "uppercase",
-      color: "#A79C88",
+      color: PLAN_MUTED,
       marginBottom: 14
     }
   }, "The Science Behind I Love Mondays"), /*#__PURE__*/React.createElement("h1", {
@@ -2854,151 +3427,26 @@ function SciencePage({
       gap: 12,
       marginBottom: 48
     }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setTab('liveit'),
-    style: {
-      background: liveItActive ? "#FFF7F5" : "#fff",
-      border: `2px solid ${liveItActive ? "#C4622F" : "#E7DECB"}`,
-      boxShadow: liveItActive ? "0 4px 18px rgba(234,88,12,0.11)" : "none",
-      borderRadius: 16,
-      padding: "20px 18px 18px",
-      cursor: "pointer",
-      textAlign: "left",
-      fontFamily: "'DM Sans',sans-serif",
-      transition: "all 0.18s ease"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexWrap: "wrap",
-      gap: 5,
-      marginBottom: 16,
-      width: 60
-    }
-  }, Object.values(C).map((color, i) => /*#__PURE__*/React.createElement("div", {
-    key: i,
-    style: {
-      width: 10,
-      height: 10,
-      borderRadius: "50%",
-      background: color,
-      opacity: liveItActive ? 1 : 0.45,
-      transition: "opacity 0.18s ease"
-    }
-  }))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      fontWeight: 700,
-      letterSpacing: "0.14em",
-      textTransform: "uppercase",
-      color: liveItActive ? "#C4622F" : "#A79C88",
-      marginBottom: 5,
-      transition: "color 0.18s ease"
-    }
-  }, "Part One"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 18,
-      fontWeight: 700,
-      color: "#1C1917",
-      letterSpacing: "-0.01em",
-      marginBottom: 8
-    }
-  }, "Live It"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: "#78716C",
-      lineHeight: 1.65,
-      marginBottom: 16
-    }
-  }, "The activities that research shows actually move the needle — 8 pillars of wellbeing, meaning, and longevity."), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 5,
-      fontSize: 11,
-      fontWeight: 700,
-      color: liveItActive ? "#C4622F" : "#BCB2A0",
-      letterSpacing: "0.02em",
-      transition: "color 0.18s ease"
-    }
-  }, /*#__PURE__*/React.createElement("span", null, liveItActive ? "Reading now" : "Read this first"), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 13
-    }
-  }, liveItActive ? "↓" : "→"))), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setTab('planit'),
-    style: {
-      background: !liveItActive ? "#F0FDF4" : "#fff",
-      border: `2px solid ${!liveItActive ? "#15803D" : "#E7DECB"}`,
-      boxShadow: !liveItActive ? "0 4px 18px rgba(21,128,61,0.09)" : "none",
-      borderRadius: 16,
-      padding: "20px 18px 18px",
-      cursor: "pointer",
-      textAlign: "left",
-      fontFamily: "'DM Sans',sans-serif",
-      transition: "all 0.18s ease"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 4,
-      marginBottom: 16,
-      width: 60
-    }
-  }, [100, 72, 88, 55, 92, 68, 80].map((w, i) => /*#__PURE__*/React.createElement("div", {
-    key: i,
-    style: {
-      height: 4,
-      borderRadius: 2,
-      width: `${w}%`,
-      background: !liveItActive ? `rgba(21,128,61,${0.25 + i * 0.08})` : "#E7DECB",
-      transition: "background 0.18s ease"
-    }
-  }))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      fontWeight: 700,
-      letterSpacing: "0.14em",
-      textTransform: "uppercase",
-      color: !liveItActive ? "#0E7490" : "#A79C88",
-      marginBottom: 5,
-      transition: "color 0.18s ease"
-    }
-  }, "Part Two"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 18,
-      fontWeight: 700,
-      color: "#1C1917",
-      letterSpacing: "-0.01em",
-      marginBottom: 8
-    }
-  }, "Plan It"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: "#78716C",
-      lineHeight: 1.65,
-      marginBottom: 16
-    }
-  }, "The behavioral science habits that turn good intentions into real change — 7 principles that make the system work."), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 5,
-      fontSize: 11,
-      fontWeight: 700,
-      color: !liveItActive ? "#15803D" : "#BCB2A0",
-      letterSpacing: "0.02em",
-      transition: "color 0.18s ease"
-    }
-  }, /*#__PURE__*/React.createElement("span", null, !liveItActive ? "Reading now" : "Read this first"), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 13
-    }
-  }, !liveItActive ? "↓" : "→")))), liveItActive && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", {
+  }, /*#__PURE__*/React.createElement(PartCard, {
+    paint: LIVE_PAINT,
+    active: liveItActive,
+    eyebrow: "Part One",
+    title: "Live It",
+    blurb: `The activities that research shows actually move the needle — ${liveit.length} pillars of wellbeing, meaning, and longevity.`,
+    swatch: liveSwatch,
+    onPick: () => setTab('liveit')
+  }), /*#__PURE__*/React.createElement(PartCard, {
+    paint: PLAN_PAINT,
+    active: !liveItActive,
+    eyebrow: "Part Two",
+    title: "Plan It",
+    blurb: `The behavioral science habits that turn good intentions into real change — ${planit.length} principles that make the system work.`,
+    swatch: planSwatch,
+    onPick: () => setTab('planit')
+  })), liveItActive && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 14,
-      color: "#78716C",
+      color: PLAN_TEXT,
       lineHeight: 1.75,
       maxWidth: 500,
       marginBottom: 36
@@ -3011,7 +3459,7 @@ function SciencePage({
   }))), !liveItActive && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 14,
-      color: "#78716C",
+      color: PLAN_TEXT,
       lineHeight: 1.75,
       maxWidth: 500,
       marginBottom: 36
@@ -3023,25 +3471,27 @@ function SciencePage({
     total: planit.length
   }))), /*#__PURE__*/React.createElement("div", {
     style: {
+      position: "relative",
       margin: "48px 0 44px",
-      padding: "18px 20px",
-      background: "#F7F6F4",
-      borderRadius: 12,
+      padding: `16px 20px 16px ${TILE_INDENT}px`,
+      background: TILE_PLAN_FILL,
+      border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+      borderRadius: TILE_RADIUS,
       display: "flex",
       alignItems: "center",
       justifyContent: "space-between",
       gap: 16
     }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  }, band(liveItActive ? PLAN_PAINT : LIVE_PAINT, true), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 700,
-      color: "#A79C88",
+      color: PLAN_MUTED,
       letterSpacing: "0.06em",
       textTransform: "uppercase",
       marginBottom: 3
     }
-  }, liveItActive ? "Also worth reading" : "Also worth reading"), /*#__PURE__*/React.createElement("div", {
+  }, "Also worth reading"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       color: "#57534E",
@@ -3050,9 +3500,9 @@ function SciencePage({
   }, liveItActive ? "Part Two: Plan It — the behavioral science behind why the system works." : "Part One: Live It — the activities that research shows actually matter.")), /*#__PURE__*/React.createElement("button", {
     onClick: () => setTab(liveItActive ? 'planit' : 'liveit'),
     style: {
-      background: "#fff",
-      border: "1px solid #E7DECB",
-      borderRadius: 9,
+      background: TILE_PLAN_FILL,
+      border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+      borderRadius: TILE_RADIUS,
       padding: "8px 16px",
       cursor: "pointer",
       fontSize: 12,
@@ -3064,12 +3514,12 @@ function SciencePage({
       transition: "all 0.12s ease"
     },
     onMouseEnter: e => {
-      e.currentTarget.style.borderColor = "#BCB2A0";
-      e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.07)";
+      e.currentTarget.style.borderColor = PLAN_RING;
+      e.currentTarget.style.background = PLAN_BG;
     },
     onMouseLeave: e => {
-      e.currentTarget.style.borderColor = "#E7DECB";
-      e.currentTarget.style.boxShadow = "none";
+      e.currentTarget.style.borderColor = NEUTRAL_OUTLINE;
+      e.currentTarget.style.background = TILE_PLAN_FILL;
     }
   }, liveItActive ? "Read Plan It →" : "Read Live It →")), /*#__PURE__*/React.createElement("hr", {
     style: rule
@@ -3083,7 +3533,7 @@ function SciencePage({
       fontWeight: 700,
       letterSpacing: "0.14em",
       textTransform: "uppercase",
-      color: "#A79C88",
+      color: PLAN_MUTED,
       marginBottom: 4
     }
   }, "The bigger picture"), /*#__PURE__*/React.createElement("h2", {
@@ -3100,29 +3550,33 @@ function SciencePage({
       gridTemplateColumns: "1fr 1fr",
       gap: 10
     }
-  }, frameworks.map(f => /*#__PURE__*/React.createElement("a", {
+  }, frameworks.map((f, fi) => /*#__PURE__*/React.createElement("a", {
     key: f.name,
     href: f.url,
     target: "_blank",
     rel: "noopener noreferrer",
     style: {
-      padding: "13px 15px",
-      background: "#fff",
-      borderRadius: 8,
-      border: "1px solid #E7DECB",
+      position: "relative",
+      padding: `13px 15px 13px ${TILE_INDENT}px`,
+      background: TILE_PLAN_FILL,
+      borderRadius: TILE_RADIUS,
+      border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
       textDecoration: "none",
       display: "block",
       transition: "all 0.12s"
     },
     onMouseEnter: e => {
-      e.currentTarget.style.borderColor = "#BCB2A0";
-      e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.06)";
+      e.currentTarget.style.borderColor = PLAN_RING;
+      e.currentTarget.style.background = PLAN_BG;
     },
     onMouseLeave: e => {
-      e.currentTarget.style.borderColor = "#E7DECB";
-      e.currentTarget.style.boxShadow = "none";
+      e.currentTarget.style.borderColor = NEUTRAL_OUTLINE;
+      e.currentTarget.style.background = TILE_PLAN_FILL;
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  },
+  // The frameworks walk the palette in order, so the block reads as the same
+  // mosaic the week is built from.
+  band({ color: COLOR_PALETTE[fi % COLOR_PALETTE.length].color, deep: COLOR_PALETTE[fi % COLOR_PALETTE.length].deep, ink: COLOR_PALETTE[fi % COLOR_PALETTE.length].ink }, true), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 700,
@@ -3134,14 +3588,14 @@ function SciencePage({
   }, f.name, " ↗"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
-      color: "#A79C88",
+      color: PLAN_MUTED,
       fontWeight: 500,
       marginBottom: 5
     }
   }, f.author), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
-      color: "#78716C",
+      color: PLAN_TEXT,
       lineHeight: 1.55
     }
   }, f.desc))))), /*#__PURE__*/React.createElement("hr", {
@@ -3163,7 +3617,7 @@ function SciencePage({
   }, "\"I Love Mondays\" isn't a feeling you wait for. It's one you build, week by week."), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 14,
-      color: "#78716C",
+      color: PLAN_TEXT,
       lineHeight: 1.8,
       maxWidth: 480
     }
@@ -3964,7 +4418,7 @@ function CalendarView({
           flex: 1,
           minWidth: 0
         }
-      }, plainOf(it.text)), isPastOrToday && onToggleDone && isOwnView && /*#__PURE__*/React.createElement("button", {
+      }, plainOf(it.text)), it.seriesId && repeatGlyph(nameColor, 8), isPastOrToday && onToggleDone && isOwnView && /*#__PURE__*/React.createElement("button", {
         onClick: e => {
           e.stopPropagation();
           onToggleDone(ds, it.cat.id, it.id);
@@ -4025,31 +4479,10 @@ function CalendarView({
           onNudgeClick();
         },
         style: {
-          position: "absolute",
-          top: "calc(100% + 3px)",
-          left: 0,
-          zIndex: 30,
-          cursor: "pointer",
-          maxWidth: 160,
-          overflow: "hidden",
-          background: "#EDE9FE",
-          border: "1px solid #C4B5FD",
-          borderRadius: 8,
-          padding: "1px 5px",
-          boxShadow: "0 1px 3px rgba(109,40,217,0.2)"
+          ...NUDGE_ANCHOR,
+          ...NUDGE_BUBBLE
         }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 8,
-          fontWeight: 700,
-          color: "#6D28D9",
-          letterSpacing: "0.01em",
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          display: "block"
-        }
-      }, "How did it go?")));
+      }, /*#__PURE__*/React.createElement("span", null, "How did it go?")));
     }));
   })), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4250,7 +4683,7 @@ function CalendarView({
           minWidth: 0,
           color: nameColor
         }
-      }, renderWithLinks(it.text, nameColor)), showTime && /*#__PURE__*/React.createElement("span", {
+      }, renderWithLinks(it.text, nameColor)), it.seriesId && repeatGlyph(nameColor, 8), showTime && /*#__PURE__*/React.createElement("span", {
         style: {
           fontSize: 10,
           fontWeight: 500,
@@ -4351,31 +4784,10 @@ function CalendarView({
           onNudgeClick();
         },
         style: {
-          position: "absolute",
-          top: "calc(100% + 3px)",
-          left: 0,
-          zIndex: 30,
-          cursor: "pointer",
-          maxWidth: 160,
-          overflow: "hidden",
-          background: "#EDE9FE",
-          border: "1px solid #C4B5FD",
-          borderRadius: 6,
-          padding: "1px 5px",
-          boxShadow: "0 1px 3px rgba(109,40,217,0.2)"
+          ...NUDGE_ANCHOR,
+          ...NUDGE_BUBBLE
         }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 8,
-          fontWeight: 700,
-          color: "#6D28D9",
-          letterSpacing: "0.01em",
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          display: "block"
-        }
-      }, "How did it go?")));
+      }, /*#__PURE__*/React.createElement("span", null, "How did it go?")));
     }));
   })))));
 }
@@ -6239,10 +6651,20 @@ function Planner() {
   const [sidebarTab, setSidebarTab] = useState('ideas');
   const [lastIdeaCatId, setLastIdeaCatId] = useState(null);
   const [nudgeItem, setNudgeItem] = useState(null);
+  // Recurrence rules are read once at mount rather than in an effect, because
+  // the week-load effect below runs before any effect could have populated
+  // them and would otherwise render the first week short of its repeats.
+  const [rules, setRules] = useState(() => loadRules());
+  // The week-load effect keys on the week alone; reading rules through a ref
+  // keeps a rule edit from re-running the whole load-and-heal path.
+  const rulesRef = useRef(rules);
+  rulesRef.current = rules;
+  // Set while a change to one occurrence of a series needs a scope answer
+  // ("only this" vs "this and future") before it can be applied.
+  const [seriesScope, setSeriesScope] = useState(null);
   const [showExportOptions, setShowExportOptions] = useState(false);
   const [pendingExportName, setPendingExportName] = useState("");
   const [exportIncludeReflections, setExportIncludeReflections] = useState(false);
-  const [showScience, setShowScience] = useState(false);
   const [viewMode, setViewMode] = useState("calendar");
   const dates = weekDates(offset);
   const key = weekKey(dates);
@@ -6284,9 +6706,12 @@ function Planner() {
           Object.values(bucket).forEach(e => appendEntryToWeek(strayDs, e));
         });
       }
-      const weekEntries = kept;
+      // A week gains its recurring instances the first time it's opened.
+      // From then on they're indistinguishable from anything else in the file.
+      const grown = isOwnView ? materializeRules(kept, rulesRef.current, dates) : { next: kept, changed: false };
+      const weekEntries = grown.next;
       setEntries(weekEntries);
-      if (raw || hasStrays) {
+      if (raw || hasStrays || grown.changed) {
         // Persist the migrated/healed shape immediately — covers both a
         // legacy week being upgraded and an already-v2 week whose schedule
         // needed repairing, so the fix sticks in storage, not just this render.
@@ -6295,7 +6720,19 @@ function Planner() {
     } catch {
       setEntries({});
     }
-  }, [key]);
+  }, [key, isOwnView]);
+  // Catches the week already on screen up with a rule the user just created
+  // or changed. The load effect above handles every other week, on open.
+  // Materialisation is idempotent, so an overlapping run here is a no-op.
+  useEffect(() => {
+    if (!isOwnView) return;
+    if (!Object.keys(rules).length) return;
+    const stored = readStoredWeek(key);
+    const { next, changed } = materializeRules(stored, rules, dates);
+    if (!changed) return;
+    writeStoredWeek(key, next);
+    setEntries(next);
+  }, [rules, key, isOwnView]);
   useEffect(() => {
     try {
       const r = store.get("planner:cats");
@@ -6390,6 +6827,7 @@ function Planner() {
         text: e.text,
         sched: sanitizeSched(e.sched),
         isDone: !!e.done,
+        seriesId: e.seriesId || null,
         allPillars,
         allCats: allPillars.map(pid => displayCatById[pid] || cat).filter(Boolean)
       };
@@ -6449,6 +6887,7 @@ function Planner() {
       return;
     }
     const insertInfo = insertInfoFromHover(targetDs, targetCatId);
+    noteOccurrenceMoved(dc.ds, targetDs, entriesForCell(entries, dc.ds, dc.catId).map(e => e.id));
     entryStore.apply(prev => entryOps.moveCell(prev, dc.ds, dc.catId, targetDs, targetCatId, insertInfo));
     setDraggingCell(null);
     setCrossCellHover(null);
@@ -6680,6 +7119,11 @@ function Planner() {
       setRatings(safeParse(rr && rr.value, {}));
       const j = store.get(JOURNAL_STORAGE_KEY);
       journalStore.replaceAll(safeParse(j && j.value, {}));
+      // The restored file carries its own series, so the in-memory rules have
+      // to be replaced rather than left pointing at the old ones.
+      const restoredRules = loadRules();
+      rulesRef.current = restoredRules;
+      setRules(restoredRules);
       try {
         const r = store.get(key);
         const raw = r ? JSON.parse(r.value) : null;
@@ -6736,6 +7180,11 @@ function Planner() {
     }
     setEntries({});
     setCats(DEFAULT_CATS);
+    // Rules are held in state as well as storage, so clearing the keys isn't
+    // enough — without this the series would immediately re-materialise into
+    // the week the user just emptied.
+    rulesRef.current = {};
+    setRules({});
     ideasStore.replaceAll({});
     setGoals({});
     setRatings({});
@@ -6908,6 +7357,7 @@ function Planner() {
     const { ds: srcDs, catId: srcCatId, entryId } = draggingLine;
     if (srcDs === targetDs && srcCatId === targetCatId) return;
     const insertInfo = insertInfoFromHover(targetDs, targetCatId, entryId);
+    noteOccurrenceMoved(srcDs, targetDs, entryId);
     entryStore.apply(prev => entryOps.moveEntry(prev, srcDs, srcCatId, entryId, targetDs, targetCatId, insertInfo));
     setDraggingLine(null);
     setCrossCellHover(null);
@@ -6918,6 +7368,7 @@ function Planner() {
     const e = entryStore.get(srcDs, entryId);
     if (!e) return;
     const sched = resolveSchedInput(timeStr, e.sched?.duration);
+    noteOccurrenceMoved(srcDs, targetDs, entryId);
     entryStore.apply(prev => entryOps.schedule(prev, srcDs, entryId, targetDs, sched, insertInfo));
   }
   function resizeItem(ds, entryId, newDuration) {
@@ -6926,17 +7377,80 @@ function Planner() {
   function setItemLinkById(ds, entryId, url) {
     entryStore.apply(prev => entryOps.setLink(prev, ds, entryId, url));
   }
+  // --- Series plumbing -----------------------------------------------------
+  function commitRules(nextRules) {
+    saveRules(nextRules);
+    // Updated before setRules so anything that runs later in the same handler
+    // — a re-materialisation, say — sees the new rules rather than the ones
+    // this render closed over.
+    rulesRef.current = nextRules;
+    setRules(nextRules);
+  }
+  function ruleFor(entry) {
+    return entry?.seriesId ? rules[entry.seriesId] || null : null;
+  }
+  // Adds one date to a rule's skip list. This is the tombstone that keeps a
+  // deleted — or moved-away — occurrence from being recreated the next time
+  // its week is opened.
+  function skipOccurrence(seriesId, ds) {
+    const rule = rules[seriesId];
+    if (!rule) return;
+    if ((rule.skip || []).includes(ds)) return;
+    commitRules({ ...rules, [seriesId]: { ...rule, skip: [...(rule.skip || []), ds] } });
+  }
+  // Dragging an occurrence to another day leaves its original date empty. To
+  // the materialiser that looks like a missing instance, so without this the
+  // event would grow back on the day it was moved off and the user would end
+  // up with two. Skipping the source date is what makes a moved occurrence
+  // read as moved rather than copied.
+  function noteOccurrenceMoved(srcDs, targetDs, entryIds) {
+    if (srcDs === targetDs) return;
+    const ids = Array.isArray(entryIds) ? entryIds : [entryIds];
+    const skipped = new Set();
+    ids.forEach(entryId => {
+      const e = entryStore.get(srcDs, entryId);
+      if (e?.seriesId && rules[e.seriesId]) skipped.add(e.seriesId);
+    });
+    if (!skipped.size) return;
+    const next = { ...rules };
+    skipped.forEach(sid => {
+      const rule = next[sid];
+      if ((rule.skip || []).includes(srcDs)) return;
+      next[sid] = { ...rule, skip: [...(rule.skip || []), srcDs] };
+    });
+    commitRules(next);
+  }
   function deleteEntryTagById(ds, catId, entryId) {
+    const e = entryStore.get(ds, entryId);
+    const rule = ruleFor(e);
+    // Untagging an entry that's still tagged to another pillar isn't a
+    // deletion, so it never needs a scope question.
+    const removesEntry = !!e && pillarsOrDefault(e.pillars).filter(p => p !== catId).length === 0;
+    if (rule && removesEntry) {
+      setSeriesScope({ kind: "delete", ds, catId, entryId, ruleId: rule.id });
+      return;
+    }
     entryStore.apply(prev => entryOps.removeFromPillar(prev, ds, catId, entryId));
   }
-  function editCalendarItemById(ds, entryId, newText, newPillars, linkUrl, newSched, newDs) {
+  // `detach`, when true, strips the entry's series membership as part of the
+  // same write. It has to happen here rather than in a separate update: the
+  // cross-week branch below copies the entry wholesale, and a detach queued
+  // alongside it would be read from stale state and copied straight back in.
+  function editCalendarItemById(ds, entryId, newText, newPillars, linkUrl, newSched, newDs, detach) {
     const text = linkUrl ? `[${newText}](${linkUrl})` : newText;
     const targetDs = newDs || ds;
+    noteOccurrenceMoved(ds, targetDs, entryId);
     // Within the loaded week, the whole edit is one in-memory update.
     if (weekKeyForDate(targetDs) === key) {
-      entryStore.apply(prev => entryOps.edit(prev, ds, entryId, {
-        text, pillars: newPillars, sched: newSched, targetDs
-      }));
+      entryStore.apply(prev => {
+        const edited = entryOps.edit(prev, ds, entryId, {
+          text, pillars: newPillars, sched: newSched, targetDs
+        });
+        if (!detach) return edited;
+        const e = entryOps.get(edited, targetDs, entryId);
+        if (!e) return edited;
+        return { ...edited, [targetDs]: { ...edited[targetDs], [entryId]: { ...e, seriesId: null } } };
+      });
       return;
     }
     // Moving to another week means writing to that week's file and dropping
@@ -6950,7 +7464,8 @@ function Planner() {
       ...e,
       text: finalText,
       pillars: newPillars && newPillars.length ? newPillars : pillarsOrDefault(e.pillars),
-      sched: sanitizeSched(newSched)
+      sched: sanitizeSched(newSched),
+      seriesId: detach ? null : e.seriesId || null
     });
     entryStore.apply(prev => entryOps.removeEntry(prev, ds, entryId));
   }
@@ -6984,10 +7499,6 @@ function Planner() {
     });
     return set;
   }, [displayJournal, weekStart]);
-  if (showScience) return /*#__PURE__*/React.createElement(SciencePage, {
-    onBack: () => setShowScience(false)
-  });
-  
   // --- Item edit/create dialog (shared by calendar view and planner grid) ---
   const [editingItem, setEditingItem] = useState(null);
   const [editName, setEditName] = useState("");
@@ -6997,6 +7508,13 @@ function Planner() {
   const [editDate, setEditDate] = useState(null);
   const [editStart, setEditStart] = useState("09:00");
   const [editEnd, setEditEnd] = useState("10:00");
+  // Repeat settings for the open dialog. `editRepeatDays` always contains the
+  // weekday the event itself falls on — a series that doesn't include its own
+  // event has no coherent meaning, so that chip is locked on rather than
+  // being allowed into an impossible state.
+  const [editRepeat, setEditRepeat] = useState(REPEAT_NONE);
+  const [editRepeatDays, setEditRepeatDays] = useState([]);
+  const [editRepeatEnd, setEditRepeatEnd] = useState("");
   function timeToMin(str) {
     const [h, m] = str.split(":").map(Number);
     return h * 60 + m;
@@ -7049,7 +7567,11 @@ function Planner() {
       setEditStart("09:00");
       setEditEnd("10:00");
     }
-    setEditingItem({ ds, entryId });
+    const rule = e.seriesId ? rules[e.seriesId] : null;
+    setEditRepeat(rule ? rule.freq : REPEAT_NONE);
+    setEditRepeatDays(rule ? [...rule.byDay] : [dowOfDs(ds)]);
+    setEditRepeatEnd(rule?.endDs || "");
+    setEditingItem({ ds, entryId, seriesId: rule ? rule.id : null });
   }
   // `endMinutes` (minutes from midnight) is supplied when the user drew the
   // block by dragging on the calendar grid; without it the dialog falls back
@@ -7071,11 +7593,27 @@ function Planner() {
       setEditStart("09:00");
       setEditEnd("10:00");
     }
-    setEditingItem({ ds, isNew: true });
+    setEditRepeat(REPEAT_NONE);
+    setEditRepeatDays([dowOfDs(ds)]);
+    setEditRepeatEnd("");
+    setEditingItem({ ds, isNew: true, seriesId: null });
   }
   function togglePillarForEdit(catId) {
     setEditPillarIds(prev => prev.includes(catId) ? prev.filter(id => id !== catId) : [...prev, catId]);
   }
+  // The event's own weekday can't be switched off, so toggling it is a no-op
+  // rather than something that silently produces a series the event isn't in.
+  function toggleRepeatDay(dow) {
+    if (editDate && dow === dowOfDs(editDate)) return;
+    setEditRepeatDays(prev => prev.includes(dow) ? prev.filter(d => d !== dow) : [...prev, dow].sort((a, b) => a - b));
+  }
+  // Keeps that invariant true when the user changes the event's date while
+  // the repeat control is open.
+  useEffect(() => {
+    if (!editingItem || editRepeat === REPEAT_NONE || !editDate) return;
+    const dow = dowOfDs(editDate);
+    setEditRepeatDays(prev => prev.includes(dow) ? prev : [...prev, dow].sort((a, b) => a - b));
+  }, [editDate, editRepeat, editingItem]);
   function saveEdit() {
     if (!editName.trim()) {
       setEditingItem(null);
@@ -7091,12 +7629,130 @@ function Planner() {
       const duration = Math.max(CAL_MIN_DURATION, endMin - startMin);
       sched = { start: editStart, duration };
     }
+    const text = editLinkUrl ? `[${editName.trim()}](${editLinkUrl})` : editName.trim();
+    const repeats = editRepeat !== REPEAT_NONE && editRepeatDays.length > 0;
+    const draft = {
+      text, pillars: finalPillars, sched, targetDs,
+      name: editName.trim(), linkUrl: editLinkUrl,
+      freq: editRepeat, byDay: [...editRepeatDays].sort((a, b) => a - b),
+      endDs: editRepeatEnd || null
+    };
+    // Changing something that belongs to a series is the one case where the
+    // app can't infer what was meant, so it asks instead of guessing.
+    if (editingItem?.seriesId) {
+      setSeriesScope({ kind: "edit", ds: editingItem.ds, entryId: editingItem.entryId, ruleId: editingItem.seriesId, draft });
+      setEditingItem(null);
+      return;
+    }
     if (editingItem?.isNew) {
-      createCalendarItem(targetDs, finalPillars, editName.trim(), editLinkUrl, sched);
+      if (repeats) {
+        startSeries(draft, null, null);
+      } else {
+        createCalendarItem(targetDs, finalPillars, editName.trim(), editLinkUrl, sched);
+      }
     } else if (editingItem) {
       editCalendarItemById(editingItem.ds, editingItem.entryId, editName.trim(), finalPillars, editLinkUrl, sched, targetDs);
+      // A standalone event that just became repeating is adopted as the
+      // series' first occurrence rather than left beside a duplicate of
+      // itself: it already carries this date, so it blocks materialisation.
+      if (repeats) startSeries(draft, targetDs, editingItem.entryId);
     }
     setEditingItem(null);
+  }
+  // Creates a rule and lets materialisation lay down the occurrences. When
+  // `adoptDs`/`adoptId` are given, that existing entry is stamped with the new
+  // seriesId so the first occurrence is the event the user was already editing.
+  function startSeries(draft, adoptDs, adoptId) {
+    const rule = {
+      id: genRuleId(),
+      text: draft.text,
+      pillars: draft.pillars,
+      sched: sanitizeSched(draft.sched),
+      freq: draft.freq,
+      byDay: draft.byDay,
+      startDs: draft.targetDs,
+      endDs: draft.endDs,
+      skip: []
+    };
+    if (adoptDs && adoptId) {
+      entryStore.apply(prev => {
+        const e = entryOps.get(prev, adoptDs, adoptId);
+        if (!e) return prev;
+        return { ...prev, [adoptDs]: { ...prev[adoptDs], [adoptId]: { ...e, seriesId: rule.id } } };
+      });
+    }
+    commitRules({ ...rules, [rule.id]: rule });
+    return rule;
+  }
+  // Applies a scope answer. "Only this" pulls the occurrence out of the
+  // series entirely; the wider option works from today rather than from the
+  // occurrence you happened to be looking at.
+  function resolveSeriesScope(scope) {
+    const s = seriesScope;
+    if (!s) return;
+    setSeriesScope(null);
+    const rule = rules[s.ruleId];
+    if (!rule) return;
+    if (s.kind === "delete") {
+      if (scope === "only") {
+        skipOccurrence(s.ruleId, s.ds);
+        entryStore.apply(prev => entryOps.removeFromPillar(prev, s.ds, s.catId, s.entryId));
+        return;
+      }
+      // Deleting from a day forward is a decision about when the series
+      // should stop, not about what has and hasn't happened yet. Anchoring it
+      // at today instead would have quietly taken out the last fortnight of a
+      // class you were standing past — so it cuts exactly where the label
+      // says, whichever side of today that falls.
+      commitRules({ ...rules, [s.ruleId]: { ...rule, endDs: shiftDs(s.ds, -1) } });
+      dropSeriesInstances(s.ruleId, s.ds);
+      reloadWeekFromStore();
+      return;
+    }
+    const d = s.draft;
+    if (scope === "only") {
+      // Detached: the edit lands on this occurrence, it leaves the series,
+      // and the skip stops the rule growing a replacement on this date.
+      skipOccurrence(s.ruleId, s.ds);
+      editCalendarItemById(s.ds, s.entryId, d.name, d.pillars, d.linkUrl, d.sched, d.targetDs, true);
+      return;
+    }
+    // From this day forward. If repeat was switched off, the series simply
+    // ends here; the occurrence itself stays, detached, carrying the edit.
+    const from = s.ds;
+    if (d.freq === REPEAT_NONE || !d.byDay.length) {
+      commitRules({ ...rules, [s.ruleId]: { ...rule, endDs: shiftDs(from, -1) } });
+      dropSeriesInstances(s.ruleId, from);
+      const { next } = entryOps.create(readStoredWeek(weekKeyForDate(d.targetDs)), d.targetDs, {
+        text: d.text, pillars: d.pillars, sched: d.sched
+      });
+      writeStoredWeek(weekKeyForDate(d.targetDs), next);
+      reloadWeekFromStore();
+      return;
+    }
+    const nextRule = {
+      ...rule,
+      text: d.text,
+      pillars: d.pillars,
+      sched: sanitizeSched(d.sched),
+      freq: d.freq,
+      byDay: d.byDay,
+      endDs: d.endDs,
+      // The occurrence's own date can move, and when it does the series
+      // follows from there rather than leaving a stale anchor behind.
+      startDs: d.targetDs < rule.startDs ? d.targetDs : rule.startDs
+    };
+    commitRules({ ...rules, [s.ruleId]: nextRule });
+    syncSeriesInstances(nextRule, from);
+    reloadWeekFromStore();
+  }
+  // Pulls the on-screen week back out of storage after a series operation has
+  // rewritten it underneath us, and lets any newly-covered days fill in.
+  function reloadWeekFromStore() {
+    const stored = readStoredWeek(key);
+    const { next } = materializeRules(stored, rulesRef.current, dates);
+    writeStoredWeek(key, next);
+    setEntries(next);
   }
   // The pillar focus filter lives up here rather than inside the calendar so
   // it survives a view switch and can narrow both layouts. Picking a pillar
@@ -8104,8 +8760,13 @@ return /*#__PURE__*/React.createElement("div", {
       marginBottom: 18,
       paddingRight: 2
     }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setShowScience(true),
+  },
+  // Opens in its own tab, like every other route to the science page, so the
+  // week you were looking at is still there when you come back.
+  /*#__PURE__*/React.createElement("a", {
+    href: scienceHref(null),
+    target: "_blank",
+    rel: "noopener noreferrer",
     style: {
       background: "none",
       border: "none",
@@ -8129,7 +8790,7 @@ return /*#__PURE__*/React.createElement("div", {
       e.currentTarget.style.color = "#78716C";
       e.currentTarget.style.textDecorationColor = "#BCB2A0";
     }
-  }, "The science behind I Love Mondays →"), /*#__PURE__*/React.createElement("input", {
+  }, "The science behind I Love Mondays ↗"), /*#__PURE__*/React.createElement("input", {
     ref: importRef,
     type: "file",
     accept: ".json",
@@ -8153,7 +8814,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v8.6.11")), (() => {
+  }, "v8.9.3")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -8225,7 +8886,10 @@ return /*#__PURE__*/React.createElement("div", {
     const suggLabels = new Set(CAT_SUGGESTIONS.map(s => s.label.toLowerCase()));
     const newSuggestions = [
       ...CAT_SUGGESTIONS,
-      ...PILLAR_LIBRARY.filter(dc => !suggLabels.has(dc.label.toLowerCase())).map(dc => ({ label: dc.label, desc: null }))
+      // sciId rides along so a suggestion can offer the science behind it
+      // before it's added. A suggestion that came from CAT_SUGGESTIONS rather
+      // than the library has no section and carries no id.
+      ...PILLAR_LIBRARY.filter(dc => !suggLabels.has(dc.label.toLowerCase())).map(dc => ({ label: dc.label, desc: null, sciId: dc.id }))
     ]
       // `key` is the suggestion's original label (stable identity for the
       // edit map); `label` is what the user actually sees and will add.
@@ -8330,7 +8994,15 @@ return /*#__PURE__*/React.createElement("div", {
       editTitle: "Rename pillar",
       onCommit: label => saveCats(pillarOps.rename(cats, cat.id, label)),
       textStyle: { fontSize: 13, color: "#1C1917", fontWeight: 500 }
-    }), /*#__PURE__*/React.createElement("button", {
+    }),
+    // Sits left of the delete ×, so the row reads name → learn → remove and
+    // the destructive control keeps the end position it already had.
+    scienceSectionFor(cat.id) && /*#__PURE__*/React.createElement(ScienceInfoButton, {
+      pillarId: cat.id,
+      label: cat.label,
+      dim: catDeep(cat)
+    }),
+    /*#__PURE__*/React.createElement("button", {
       onClick: () => deleteCat(cat.id),
       title: "Delete pillar",
       style: {
@@ -8357,7 +9029,10 @@ return /*#__PURE__*/React.createElement("div", {
       disabled: false,
       color: pillarOps.nextColor(cats).color,
       onRename: label => setSuggestionNames(prev => ({ ...prev, [s.key]: label })),
-      onClick: () => addCatFromSuggestion(s.label)
+      onClick: () => addCatFromSuggestion(s.label),
+      // Reading why a pillar is worth adding is the step before adding it, so
+      // the button belongs here as much as on a live row.
+      sciId: s.sciId || null
     }))
   ),
   /*#__PURE__*/React.createElement("div", {
@@ -9181,6 +9856,105 @@ return /*#__PURE__*/React.createElement("div", {
   })))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
+      flexDirection: "column",
+      gap: 8,
+      paddingTop: 2
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      color: "#A79C88",
+      fontWeight: 600
+    }
+  }, "Repeat"), /*#__PURE__*/React.createElement("select", {
+    value: editRepeat,
+    onChange: e => setEditRepeat(e.target.value),
+    style: {
+      border: "1px solid #E7DECB",
+      borderRadius: 8,
+      padding: "8px 9px",
+      fontSize: 13,
+      fontFamily: "inherit",
+      outline: "none",
+      color: "#1C1917",
+      background: "#fff",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("option", { value: REPEAT_NONE }, "Doesn't repeat"), /*#__PURE__*/React.createElement("option", { value: REPEAT_WEEKLY }, "Every week"), /*#__PURE__*/React.createElement("option", { value: REPEAT_BIWEEKLY }, "Every other week")),
+  // The day picker is what lets one control cover "every weekday", "Tue and
+  // Thu" and "just Mondays" without a menu of named presets for each. The
+  // event's own day is always lit and can't be turned off, so the setting
+  // can never describe a series the event itself isn't part of.
+  editRepeat !== REPEAT_NONE && /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", gap: 4 }
+  }, [1, 2, 3, 4, 5, 6, 0].map(dow => {
+    const on = editRepeatDays.includes(dow);
+    const locked = editDate && dow === dowOfDs(editDate);
+    return /*#__PURE__*/React.createElement("button", {
+      key: dow,
+      type: "button",
+      onClick: () => toggleRepeatDay(dow),
+      title: locked ? `${DOW_SHORT[dow]} — this event's own day` : DOW_SHORT[dow],
+      style: {
+        flex: 1,
+        height: 30,
+        borderRadius: 15,
+        border: `1px solid ${on ? "#C4622F" : "#E7DECB"}`,
+        background: on ? "#C4622F" : "#fff",
+        color: on ? "#fff" : "#A79C88",
+        fontSize: 11,
+        fontWeight: 700,
+        fontFamily: "inherit",
+        cursor: locked ? "default" : "pointer",
+        padding: 0,
+        transition: "background 0.12s ease, color 0.12s ease"
+      }
+    }, DOW_INITIALS[dow]);
+  })), editRepeat !== REPEAT_NONE && /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      fontSize: 10,
+      color: "#A79C88",
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.06em"
+    }
+  }, "Ends", /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: editRepeatEnd,
+    onChange: e => setEditRepeatEnd(e.target.value),
+    style: {
+      border: "1px solid #E7DECB",
+      borderRadius: 8,
+      padding: "6px 8px",
+      fontSize: 12,
+      fontFamily: "inherit",
+      outline: "none",
+      color: "#1C1917",
+      flex: 1
+    }
+  }), editRepeatEnd && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setEditRepeatEnd(""),
+    title: "No end date",
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 14,
+      color: "#BCB2A0",
+      padding: 0,
+      lineHeight: 1
+    }
+  }, "×")), editRepeat !== REPEAT_NONE && /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11, color: "#8A7F6B", lineHeight: 1.4 }
+  }, describeRule({ freq: editRepeat, byDay: editRepeatDays, endDs: editRepeatEnd || null }), !editRepeatEnd && " — no end date")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
       justifyContent: "flex-end",
       gap: 8,
       marginTop: 4
@@ -9209,9 +9983,106 @@ return /*#__PURE__*/React.createElement("div", {
       padding: "7px 16px",
       borderRadius: 8
     }
-  }, "Save")))));
+  }, "Save")))), seriesScope && /*#__PURE__*/React.createElement("div", {
+    onClick: () => setSeriesScope(null),
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(28,25,23,0.4)",
+      zIndex: 1100,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      background: "#fff",
+      borderRadius: 14,
+      padding: 22,
+      width: 340,
+      maxWidth: "90vw",
+      boxShadow: "0 12px 40px rgba(0,0,0,0.22)",
+      display: "flex",
+      flexDirection: "column",
+      gap: 14,
+      fontFamily: "'DM Sans',sans-serif"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: "#1C1917"
+    }
+  }, seriesScope.kind === "delete" ? "Delete a repeating event" : "Edit a repeating event"),
+  // The labels carry the whole explanation, so there's nothing left for a
+  // description line to add. "From this day forward" says where the cut
+  // falls without needing a sentence about what survives it, and it stays
+  // true whichever side of today the occurrence sits on.
+  [
+    ["only", seriesScope.kind === "delete" ? "Delete only this event" : "Edit only this event"],
+    ["future", seriesScope.kind === "delete"
+      ? "Delete the repeating event from this day forward"
+      : "Edit the repeating event from this day forward"]
+  ].map(([scope, label]) => /*#__PURE__*/React.createElement("button", {
+    key: scope,
+    onClick: () => resolveSeriesScope(scope),
+    style: {
+      textAlign: "left",
+      background: "#FBFAF9",
+      border: "1px solid #E7DECB",
+      borderRadius: 10,
+      padding: "11px 12px",
+      cursor: "pointer",
+      fontFamily: "inherit",
+      width: "100%",
+      fontSize: 13,
+      fontWeight: 600,
+      lineHeight: 1.35,
+      color: seriesScope.kind === "delete" && scope === "future" ? "#B91C1C" : "#1C1917"
+    }
+  }, label)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setSeriesScope(null),
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12,
+      color: "#78716C",
+      fontFamily: "inherit",
+      padding: "7px 10px"
+    }
+  }, "Cancel")))));
 }
-ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(Planner, null));
+// One document, two routes. A tab landing on "#science" renders the page
+// instead of the planner; everything else gets the app. The hashchange
+// listener means using the browser's back button inside the science tab
+// returns to whatever it was showing rather than stranding it.
+function Root() {
+  const [route, setRoute] = useState(scienceRoute);
+  useEffect(() => {
+    const onHash = () => setRoute(scienceRoute());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  useEffect(() => {
+    document.title = route ? "The Science Behind I Love Mondays" : "I Love Mondays";
+  }, [route]);
+  if (!route) return /*#__PURE__*/React.createElement(Planner, null);
+  const ctx = scienceContext();
+  return /*#__PURE__*/React.createElement(SciencePage, {
+    focusPillar: route.pillar,
+    activeIds: ctx.activeIds,
+    palette: ctx.palette,
+    plannerHref: plannerHref()
+  });
+}
+ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(Root, null));
 </script>
 </body>
 </html>
