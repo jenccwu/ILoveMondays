@@ -333,15 +333,122 @@ const {
   useEffect,
   useRef
 } = React;
-const store = {
-  get: key => {
-    const v = localStorage.getItem(key);
-    return v ? {
-      value: v
-    } : null;
+// ---------------------------------------------------------------------------
+// Storage
+//
+// Everything the app remembers lives in localStorage: one key per concern,
+// plus one key per week. `db` is the only code that touches localStorage
+// directly. Reads decode JSON and fall back rather than throwing, so callers
+// stop wrapping every read in its own try/catch, and the `{ value }` box that
+// every read used to unwrap is gone.
+//
+// `eachWeek` is the piece that matters going forward. The week files ARE the
+// app's history, and the only way to walk them used to be a hand-rolled
+// localStorage index loop — which three separate places wrote out longhand.
+// Anything that wants to look back across weeks now has one door.
+// ---------------------------------------------------------------------------
+const DB_PREFIX = "planner:";
+const WEEK_PREFIX = "planner:week:";
+
+// Every storage key in the app, in one place. Spelling one of these wrong
+// used to fail silently as an empty read.
+const K = {
+  cats: "planner:cats",
+  ideas: "planner:ideas",
+  journal: "planner:journal",
+  goals: "planner:goals",
+  ratings: "planner:ratings",
+  rules: "planner:recurring",
+  userName: "planner:userName",
+  importedViews: "planner:importedViews",
+  week: ds => WEEK_PREFIX + ds,
+  // Pre-v8 shapes. Read only by the migration path that upgrades a legacy
+  // week the first time it is opened; never written.
+  legacyDone: "planner:done",
+  legacyTimes: wkKey => "times:" + wkKey
+};
+
+function safeParse(raw, fallback) {
+  if (raw == null) return fallback;
+  try {
+    const v = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return v == null ? fallback : v;
+  } catch {
+    return fallback;
+  }
+}
+
+// State that writes itself through to storage on every change.
+//
+// The three stores below (ideas, journal, entries) each grew their own private
+// `commit(next)` doing the same three things in the same order. The differences
+// that looked like they justified three copies — a read-only mode, an override
+// that shadows the user's own data with an imported view's — are parameters,
+// not separate designs.
+//
+// Returns [value, commit, setLocal]. `commit` persists and returns the value
+// actually in force, so callers can chain. `setLocal` changes state without
+// writing, for the load paths that are only catching state up with what
+// storage already says.
+function usePersisted(key, initial, { readOnly = false, override = null } = {}) {
+  const [own, setOwn] = useState(initial);
+  const value = override || own;
+  function commit(next) {
+    if (readOnly) return value;
+    setOwn(next);
+    db.write(key, next);
+    return next;
+  }
+  return [value, commit, setOwn];
+}
+
+const db = {
+  // Raw string access, for the one value that isn't JSON (the user's name)
+  // and for snapshot/restore, which move stored text around without reading it.
+  readRaw(key) {
+    try { return localStorage.getItem(key); } catch { return null; }
   },
-  set: (key, val) => {
-    localStorage.setItem(key, val);
+  writeRaw(key, str) {
+    try { localStorage.setItem(key, str); } catch {}
+  },
+  read(key, fallback = null) {
+    return safeParse(db.readRaw(key), fallback);
+  },
+  write(key, value) {
+    db.writeRaw(key, JSON.stringify(value));
+  },
+  remove(key) {
+    try { localStorage.removeItem(key); } catch {}
+  },
+  // Every key under a prefix, sorted. Week keys sort chronologically for free:
+  // the date is ISO and fixed-width.
+  keys(prefix = DB_PREFIX) {
+    const out = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(prefix)) out.push(k);
+    }
+    return out.sort();
+  },
+  weekKeys() {
+    return db.keys(WEEK_PREFIX);
+  },
+  // Read-modify-write across every stored week, oldest first. `fn(week, key)`
+  // returns the next week, or the same object it was handed to leave that
+  // file alone.
+  eachWeek(fn) {
+    db.weekKeys().forEach(wkKey => {
+      const week = readStoredWeek(wkKey);
+      const next = fn(week, wkKey);
+      if (next && next !== week) writeStoredWeek(wkKey, next);
+    });
+  },
+  // Every planner key as raw text. The basis of export and of the pre-import
+  // snapshot.
+  snapshot() {
+    const out = {};
+    db.keys().forEach(k => { out[k] = db.readRaw(k); });
+    return out;
   }
 };
 const PLAN_BG = "#F4EFE4";
@@ -353,8 +460,32 @@ const TILE_PLAN_TEXT = "#5B5246";
 const TILE_DONE_TEXT = "#FDF9F0";
 const TILE_DONE_MARK = "rgba(253,249,240,0.82)";
 const NEUTRAL_OUTLINE = "#DCD3C1";
+// ---------------------------------------------------------------------------
+// Chrome tokens.
+//
+// The pillar palette below is data — a user's chosen colours. These eight are
+// the app's own furniture: the ink, the paper edges, the one accent. They were
+// spelled as raw hexes in ~230 places, which is how a ninth grey gets invented
+// by accident. Named here once so a new surface inherits the system instead of
+// guessing at it.
+// ---------------------------------------------------------------------------
+const INK = "#1C1917";        // primary text
+const INK_2 = "#57534E";      // secondary text, body copy
+const INK_3 = "#78716C";      // eyebrow labels, tertiary text
+const MUTED = "#A79C88";      // muted text on paper
+const FAINT = "#BCB2A0";      // faintest text, resting icons, placeholders
+const HAIRLINE = "#E7DECB";   // borders and dividers
+const WASH = "#F2ECE0";       // recessed fill: empty tiles, inset panels
+const ACCENT = "#C4622F";     // the single action accent
+// The reflections family. Journalling is the one place the app leaves its
+// paper palette, and it does so on purpose — a reflection is a different kind
+// of act from a plan, and reads as one.
+const REFLECT = "#7C3AED";
+const REFLECT_DEEP = "#6D28D9";
+const REFLECT_SOFT = "#C4B5FD";
+const REFLECT_BG = "#EDE9FE";
 const PLAN_TEXT = "#5B5246";
-const PLAN_MUTED = "#A79C88";
+const PLAN_MUTED = MUTED;
 const PLAN_RING = "#CFC5B0";
 const FADE = "90";
 // Dusty Haze, in the order pillars claim it.
@@ -419,8 +550,8 @@ const UNTAGGED_CAT = {
 const LEGACY_COLOR_MAP = {
   // original jewel tones
   "#2563EB": 6, "#EA580C": 0, "#DB2777": 4, "#D97706": 5,
-  "#7C3AED": 3, "#059669": 1, "#4D7C0F": 2, "#0891B2": 1,
-  "#C026D3": 3, "#B45309": 7, "#0E7490": 1, "#6D28D9": 3,
+  REFLECT: 3, "#059669": 1, "#4D7C0F": 2, "#0891B2": 1,
+  "#C026D3": 3, "#B45309": 7, "#0E7490": 1, REFLECT_DEEP: 3,
   // the muted set some pillars were hand-tuned to before the mosaic redesign
   "#5C7A50": 2, "#4A8C8C": 1, "#C4714B": 0, "#A06070": 4,
   "#B07D2A": 5, "#8B6BAE": 3, "#6A8C7A": 7,
@@ -528,11 +659,11 @@ const ICON_BTN = {
   alignItems: "center"
 };
 // The same button, in the muted grey used for secondary actions.
-const MUTED_ICON_BTN = { ...ICON_BTN, lineHeight: 1, color: "#BCB2A0" };
+const MUTED_ICON_BTN = { ...ICON_BTN, lineHeight: 1, color: FAINT };
 // Header strip shared by every sidebar panel.
 const PANEL_HEADER = {
   padding: "16px 18px 12px",
-  borderBottom: "1px solid #E7DECB",
+  borderBottom: `1px solid ${HAIRLINE}`,
   flexShrink: 0,
   display: "flex",
   alignItems: "flex-start",
@@ -547,6 +678,91 @@ const SIDEBAR_SECTION_LABEL = {
   color: PLAN_MUTED,
   margin: "2px 2px 8px"
 };
+// The close × that sits at the top-right of every sidebar.
+const PANEL_CLOSE_BTN = {
+  background: "none",
+  border: "none",
+  cursor: "pointer",
+  fontSize: 22,
+  color: FAINT,
+  padding: 0,
+  lineHeight: 1,
+  flexShrink: 0,
+  marginLeft: 8
+};
+// ---------------------------------------------------------------------------
+// PanelHeader
+//
+// Every sidebar wears the same hat: an optional colour band, a small uppercase
+// eyebrow, a title, an optional subtitle, and the close × pushed right. Four
+// panels each drew that longhand, which is four places to forget when the
+// chrome changes — and it had already drifted, with two of them dimming the
+// subtitle a step further than the others. A fifth panel now costs one call.
+//
+// `band` is a colour string when the panel speaks for one pillar, or an array
+// of colours when it speaks for the whole set.
+// ---------------------------------------------------------------------------
+function PanelHeader({ band, eyebrow, eyebrowColor = INK_3, readOnly, title, titleCaps, subtitle, onClose }) {
+  const stacked = Array.isArray(band);
+  const bandEl = !band ? null : /*#__PURE__*/React.createElement("div", {
+    "aria-hidden": "true",
+    style: {
+      width: 7,
+      alignSelf: "stretch",
+      minHeight: 30,
+      flexShrink: 0,
+      background: stacked ? NEUTRAL_OUTLINE : band,
+      ...(stacked ? { display: "flex", flexDirection: "column" } : null)
+    }
+  }, stacked ? band.slice(0, 12).map((c, i) => /*#__PURE__*/React.createElement("i", {
+    key: i,
+    style: { flex: "1 1 0", minHeight: 2, background: c }
+  })) : null);
+
+  const text = /*#__PURE__*/React.createElement("div", null,
+    /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: eyebrowColor, marginBottom: 2 }
+    }, eyebrow, readOnly && /*#__PURE__*/React.createElement("span", {
+      style: { color: MUTED, fontWeight: 500, textTransform: "none", letterSpacing: 0 }
+    }, " · read only")),
+    /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 13, fontWeight: 700, color: INK, ...(titleCaps ? { textTransform: "uppercase", letterSpacing: "0.08em" } : null) }
+    }, title),
+    subtitle && /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 11, color: MUTED, marginTop: 2 }
+    }, subtitle)
+  );
+
+  return /*#__PURE__*/React.createElement("div", { style: PANEL_HEADER },
+    bandEl ? /*#__PURE__*/React.createElement("div", {
+      style: { display: "flex", alignItems: "center", gap: 10 }
+    }, bandEl, text) : text,
+    /*#__PURE__*/React.createElement("button", { onClick: onClose, style: PANEL_CLOSE_BTN }, "\u00d7")
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ReflectBubble
+//
+// The speech-bubble mark that stands for a reflection. It was drawn longhand in
+// six places at three sizes and three stroke weights, which meant the shape
+// itself — 47 characters of bezier — was six things to keep in step. Size and
+// weight are the only things any caller actually varied.
+// ---------------------------------------------------------------------------
+function ReflectBubble({ size = 11, stroke = "currentColor", fill = "none", weight = 1.7 }) {
+  return /*#__PURE__*/React.createElement("svg", {
+    width: size, height: size, viewBox: "0 0 24 24",
+    fill: fill, stroke: stroke, strokeWidth: String(weight),
+    strokeLinecap: "round", strokeLinejoin: "round"
+  },
+    /*#__PURE__*/React.createElement("path", {
+      d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
+    }),
+    /*#__PURE__*/React.createElement("circle", { cx: "6.5", cy: "21", r: "2.2" }),
+    /*#__PURE__*/React.createElement("circle", { cx: "3.5", cy: "24", r: "1.4" })
+  );
+}
+
 // Dimmed full-screen backdrop behind a modal.
 const MODAL_OVERLAY = {
   position: "fixed",
@@ -573,16 +789,28 @@ function mondayOfDate(ds) {
 function weekKeyForDate(ds) {
   return `planner:week:${ymd(mondayOfDate(ds))}`;
 }
+// Reads a week straight out of storage, upgrading a pre-v8 file on the way
+// through. Returns the raw stored value alongside the entries, because the
+// callers use "was there anything there?" to decide whether to write the
+// upgraded shape back.
+function readWeekForLoad(wkKey) {
+  const raw = db.read(wkKey);
+  let doneBlob = {}, timesBlob = {};
+  if (raw && raw.__v !== 2) {
+    // Legacy week: the old global done blob and this week's old times blob
+    // are pulled once, purely to seed the migration.
+    doneBlob = db.read(K.legacyDone, {});
+    timesBlob = db.read(K.legacyTimes(wkKey), {});
+  }
+  return { raw, entries: loadWeekEntries(raw, doneBlob, timesBlob) };
+}
 // Reads one week's stored entries (migrating/healing as usual).
 function readStoredWeek(wkKey) {
-  const r = store.get(wkKey);
-  if (!r) return {};
-  const parsed = safeParse(r.value, null);
-  if (!parsed) return {};
-  return loadWeekEntries(parsed, {}, {});
+  const parsed = db.read(wkKey);
+  return parsed ? loadWeekEntries(parsed, {}, {}) : {};
 }
 function writeStoredWeek(wkKey, weekEntries) {
-  store.set(wkKey, JSON.stringify(packWeekEntries(weekEntries)));
+  db.write(wkKey, packWeekEntries(weekEntries));
 }
 // Files an entry into a week other than the one on screen, at the end of its
 // day. Used when an edit moves an item to a date in a different week.
@@ -673,13 +901,13 @@ const NUDGE_ANCHOR = {
   whiteSpace: "nowrap"
 };
 const NUDGE_BUBBLE = {
-  background: "#EDE9FE",
-  border: "1px solid #C4B5FD",
+  background: REFLECT_BG,
+  border: `1px solid ${REFLECT_SOFT}`,
   borderRadius: 20,
   padding: "4px 12px",
   fontSize: 10,
   fontWeight: 700,
-  color: "#6D28D9",
+  color: REFLECT_DEEP,
   letterSpacing: "0.03em",
   lineHeight: 1.2,
   display: "flex",
@@ -951,12 +1179,8 @@ function scienceRoute() {
 // What the science tab needs to know about the reader's week. Read straight
 // from storage because that tab has no planner mounted to ask.
 function scienceContext() {
-  let cats = null;
-  try {
-    const r = store.get("planner:cats");
-    if (r) cats = migrateCatColors(JSON.parse(r.value));
-  } catch {}
-  if (!cats || !cats.length) cats = DEFAULT_CATS;
+  const stored = db.read(K.cats);
+  let cats = Array.isArray(stored) && stored.length ? migrateCatColors(stored) : DEFAULT_CATS;
   // Every section gets a pigment, including pillars not in the week — a
   // suggestion previews in the colour the library assigns it.
   const palette = {};
@@ -1198,9 +1422,31 @@ function entriesFromLegacyView(view) {
 //     moved-away occurrence stays gone when no entry survives to block it
 //
 // Rule = { id, text, pillars, sched, freq, byDay:[0-6], startDs, endDs, skip:[ds] }
-const RECUR_KEY = "planner:recurring";
 const DOW_INITIALS = ["S", "M", "T", "W", "T", "F", "S"];
 const DOW_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+// What the "this one or all of them?" question says, per operation. Moving an
+// occurrence gets its own wording because "edit" undersells it: dragging a
+// Monday onto a Tuesday either excuses one week or changes which day the thing
+// happens on, and those are worth naming differently.
+const SERIES_SCOPE_TITLE = {
+  edit: "Edit a repeating event",
+  delete: "Delete a repeating event",
+  move: "Move a repeating event"
+};
+const SERIES_SCOPE_CHOICES = {
+  edit: [
+    ["only", "Edit only this event"],
+    ["future", "Edit the repeating event from this day forward"]
+  ],
+  delete: [
+    ["only", "Delete only this event"],
+    ["future", "Delete the repeating event from this day forward"]
+  ],
+  move: [
+    ["only", "Move only this event, just this week"],
+    ["future", "Move the repeating event to this day, from now on"]
+  ]
+};
 const REPEAT_NONE = "none";
 const REPEAT_WEEKLY = "weekly";
 const REPEAT_BIWEEKLY = "biweekly";
@@ -1230,17 +1476,10 @@ function weekSpan(fromDs, toDs) {
   return Math.round((b - a) / 604800000);
 }
 function loadRules() {
-  try {
-    const r = store.get(RECUR_KEY);
-    if (!r) return {};
-    const parsed = JSON.parse(r.value);
-    return parsed && parsed.rules ? parsed.rules : {};
-  } catch {
-    return {};
-  }
+  return db.read(K.rules, {}).rules || {};
 }
 function saveRules(rules) {
-  store.set(RECUR_KEY, JSON.stringify({ __v: 1, rules }));
+  db.write(K.rules, { __v: 1, rules });
 }
 function ruleAppliesOn(rule, ds) {
   if (!rule || !Array.isArray(rule.byDay) || !rule.byDay.length) return false;
@@ -1311,10 +1550,7 @@ function materializeRules(weekEntries, rules, dates) {
 // weeks behind you are a record of what actually happened, and an app built
 // around reflecting on them shouldn't quietly edit them.
 function syncSeriesInstances(rule, fromDs) {
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (!k || !k.startsWith("planner:week:")) continue;
-    const week = readStoredWeek(k);
+  db.eachWeek(week => {
     let touched = false;
     const nextWeek = {};
     Object.entries(week).forEach(([ds, bucket]) => {
@@ -1338,16 +1574,13 @@ function syncSeriesInstances(rule, fromDs) {
       });
       nextWeek[ds] = nextBucket;
     });
-    if (touched) writeStoredWeek(k, nextWeek);
-  }
+    return touched ? nextWeek : week;
+  });
 }
 // Drops every instance of a series dated `fromDs` or later. Used when a
 // series is cut short from a given day.
 function dropSeriesInstances(seriesId, fromDs) {
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (!k || !k.startsWith("planner:week:")) continue;
-    const week = readStoredWeek(k);
+  db.eachWeek(week => {
     let touched = false;
     const nextWeek = {};
     Object.entries(week).forEach(([ds, bucket]) => {
@@ -1361,8 +1594,8 @@ function dropSeriesInstances(seriesId, fromDs) {
       });
       nextWeek[ds] = nextBucket;
     });
-    if (touched) writeStoredWeek(k, nextWeek);
-  }
+    return touched ? nextWeek : week;
+  });
 }
 // Returns a day bucket's entries in display order. Scoped to one pillar
 // when catId is given (the pillar grid's per-cell list), or the whole day
@@ -1448,32 +1681,32 @@ function GripIcon() {
     cx: "3",
     cy: "2.5",
     r: "1.2",
-    fill: "#57534E"
+    fill: INK_2
   }), /*#__PURE__*/React.createElement("circle", {
     cx: "7",
     cy: "2.5",
     r: "1.2",
-    fill: "#57534E"
+    fill: INK_2
   }), /*#__PURE__*/React.createElement("circle", {
     cx: "3",
     cy: "7",
     r: "1.2",
-    fill: "#57534E"
+    fill: INK_2
   }), /*#__PURE__*/React.createElement("circle", {
     cx: "7",
     cy: "7",
     r: "1.2",
-    fill: "#57534E"
+    fill: INK_2
   }), /*#__PURE__*/React.createElement("circle", {
     cx: "3",
     cy: "11.5",
     r: "1.2",
-    fill: "#57534E"
+    fill: INK_2
   }), /*#__PURE__*/React.createElement("circle", {
     cx: "7",
     cy: "11.5",
     r: "1.2",
-    fill: "#57534E"
+    fill: INK_2
   }));
 }
 // Pillar-view cell, rebuilt on the entry model. Receives structured `rows`
@@ -1646,37 +1879,16 @@ function Cell({
     return !!(reflectedItemTexts && reflectedItemTexts.has(`${plainOf(text)}::${date || ''}`));
   }
   function reflectBubbleSvg(color, isFilled) {
-    return /*#__PURE__*/React.createElement("svg", {
-      width: "11",
-      height: "11",
-      viewBox: "0 0 24 24",
-      fill: isFilled ? color : "none",
-      stroke: color,
-      strokeWidth: "1.7",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "6.5",
-      cy: "21",
-      r: "2.2",
-      fill: isFilled ? color : "none"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "3.5",
-      cy: "24",
-      r: "1.4",
-      fill: isFilled ? color : "none"
-    }));
+    return /*#__PURE__*/React.createElement(ReflectBubble, { stroke: color, fill: isFilled ? color : "none" });
   }
   const isMultiRow = rows.length > 1 || (externalDragging && rows.length === 1);
   const singleRow = !isMultiRow && filled ? rows[0] : null;
   const singleRowDone = !!(singleRow && isPastOrToday && singleRow.done);
   const singleRowAccent = singleRow ? pillarAccent(singleRow.allCats, singleRowDone, cat, "left", undefined, singleRow.id) : null;
   const singleRowReflected = !!(singleRow && isRowReflected(singleRow.text));
-  const bg = filled && !isFuture ? "#ffffff" : "#F2ECE0";
-  const textColor = isFuture ? "#A79C88" : cat.color;
-  const placeholderColor = "#BCB2A0";
+  const bg = filled && !isFuture ? "#ffffff" : WASH;
+  const textColor = isFuture ? MUTED : cat.color;
+  const placeholderColor = FAINT;
   const chainIcon = /*#__PURE__*/React.createElement("svg", {
     width: "11",
     height: "11",
@@ -1816,7 +2028,7 @@ function Cell({
     },
     title: "Reflect on this",
     style: ICON_BTN
-  }, reflectBubbleSvg("#BCB2A0", false)), singleRowReflected && /*#__PURE__*/React.createElement("button", {
+  }, reflectBubbleSvg(FAINT, false)), singleRowReflected && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       onOpenReflections?.(plainOf(singleRow.text), date);
@@ -1843,7 +2055,7 @@ function Cell({
       cursor: "pointer",
       fontSize: 14,
       lineHeight: 1,
-      color: "#BCB2A0",
+      color: FAINT,
       padding: 0
     }
   }, "×")), !readOnly && linkingRowId !== null && /*#__PURE__*/React.createElement("div", {
@@ -1892,7 +2104,7 @@ function Cell({
       outline: "none",
       fontSize: 11,
       background: "transparent",
-      color: "#1C1917",
+      color: INK,
       fontFamily: "'DM Sans',sans-serif"
     }
   }), (rows.find(r => r.id === linkingRowId)?.text || "").match(/^\[([^\]]+)\]\(([^)]+)\)$/) && /*#__PURE__*/React.createElement("button", {
@@ -2006,7 +2218,7 @@ function Cell({
       },
       title: "Reflect on this",
       style: ICON_BTN
-    }, reflectBubbleSvg("#BCB2A0", false)), isRowReflected(row.text) && /*#__PURE__*/React.createElement("button", {
+    }, reflectBubbleSvg(FAINT, false)), isRowReflected(row.text) && /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
         onOpenReflections?.(plainOf(row.text), date);
@@ -2033,7 +2245,7 @@ function Cell({
         cursor: "pointer",
         fontSize: 12,
         lineHeight: 1,
-        color: "#BCB2A0",
+        color: FAINT,
         padding: 0
       }
     }, "×")), isPastOrToday && nudgeEntryId === row.id && onNudgeClick && /*#__PURE__*/React.createElement("div", {
@@ -2065,7 +2277,7 @@ function Cell({
     style: {
       position: "relative",
       fontSize: 13,
-      color: singleRowAccent?.text || "#1C1917",
+      color: singleRowAccent?.text || INK,
       lineHeight: 1.5,
       whiteSpace: "pre-wrap",
       wordBreak: "break-word",
@@ -2074,7 +2286,7 @@ function Cell({
       userSelect: "text",
       transition: "color 0.2s ease"
     }
-  }, renderWithLinks(singleRow.text, singleRowAccent?.text || "#1C1917")), singleRow.seriesId && repeatGlyph(singleRowAccent?.text || "#1C1917", 9, { marginTop: 5 }), !readOnly && onToggleDone && doneToggleButton(singleRow, singleRowDone, singleRowAccent?.mark || PLAN_RING), nudgeEntryId != null && nudgeEntryId === singleRow.id && onNudgeClick && /*#__PURE__*/React.createElement("div", {
+  }, renderWithLinks(singleRow.text, singleRowAccent?.text || INK)), singleRow.seriesId && repeatGlyph(singleRowAccent?.text || INK, 9, { marginTop: 5 }), !readOnly && onToggleDone && doneToggleButton(singleRow, singleRowDone, singleRowAccent?.mark || PLAN_RING), nudgeEntryId != null && nudgeEntryId === singleRow.id && onNudgeClick && /*#__PURE__*/React.createElement("div", {
     onClick: e => {
       e.stopPropagation();
       onNudgeClick();
@@ -2087,7 +2299,7 @@ function Cell({
     ...wholeCellDragProps,
     style: {
       fontSize: 13,
-      color: singleRowAccent?.text || "#1C1917",
+      color: singleRowAccent?.text || INK,
       lineHeight: 1.5,
       display: "flex",
       alignItems: "flex-start",
@@ -2110,7 +2322,7 @@ function Cell({
       wordBreak: "break-word",
       userSelect: "text"
     }
-  }, renderWithLinks(singleRow.text, singleRowAccent?.text || "#1C1917"))) : !readOnly && /*#__PURE__*/React.createElement("span", {
+  }, renderWithLinks(singleRow.text, singleRowAccent?.text || INK))) : !readOnly && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 18,
       color: placeholderColor,
@@ -2194,7 +2406,7 @@ function JournalEntry({
       padding: "10px 12px",
       background: "#FAFAF9",
       borderRadius: 10,
-      border: "1px solid #F2ECE0"
+      border: `1px solid ${WASH}`
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -2206,7 +2418,7 @@ function JournalEntry({
   }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
-      color: "#A79C88",
+      color: MUTED,
       fontWeight: 500
     }
   }, timeStr), !readOnly && /*#__PURE__*/React.createElement("button", {
@@ -2216,7 +2428,7 @@ function JournalEntry({
       border: "none",
       cursor: "pointer",
       fontSize: 14,
-      color: "#BCB2A0",
+      color: FAINT,
       padding: 0,
       lineHeight: 1
     }
@@ -2310,22 +2522,22 @@ function JournalEntry({
       gap: 5,
       marginBottom: 8,
       padding: "4px 8px",
-      background: "#EDE9FE",
+      background: REFLECT_BG,
       borderRadius: 6,
-      border: "1px solid #C4B5FD",
+      border: `1px solid ${REFLECT_SOFT}`,
       flexShrink: 0
     }
   }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 9,
       fontWeight: 700,
-      color: "#7C3AED",
+      color: REFLECT,
       textTransform: "uppercase",
       letterSpacing: "0.08em",
       flexShrink: 0
     }
   }, "I feel"), mood && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
-    style: { fontSize: 10, color: "#C4B5FD", flexShrink: 0 }
+    style: { fontSize: 10, color: REFLECT_SOFT, flexShrink: 0 }
   }, "·"), /*#__PURE__*/React.createElement("span", {
     style: { fontSize: 15, lineHeight: 1 }
   }, mood))), editing ? /*#__PURE__*/React.createElement("textarea", {
@@ -2355,7 +2567,7 @@ function JournalEntry({
       background: "transparent",
       fontSize: 13,
       fontFamily: "'DM Sans',sans-serif",
-      color: "#1C1917",
+      color: INK,
       padding: 0,
       lineHeight: 1.6,
       boxSizing: "border-box",
@@ -2369,7 +2581,7 @@ function JournalEntry({
     style: {
       margin: "0 0 4px",
       fontSize: 13,
-      color: text ? "#1C1917" : "#BCB2A0",
+      color: text ? INK : FAINT,
       fontStyle: text ? "normal" : "italic",
       lineHeight: 1.6,
       whiteSpace: "pre-wrap",
@@ -2384,7 +2596,7 @@ function JournalEntry({
       cursor: "pointer",
       padding: 0,
       fontSize: 11,
-      color: "#A79C88",
+      color: MUTED,
       fontFamily: "inherit",
       fontWeight: 600
     }
@@ -2444,7 +2656,7 @@ function EditablePillarName({ value, onCommit, textStyle, accentColor, editTitle
         flex: 1,
         minWidth: 0,
         border: "none",
-        borderBottom: `1.5px solid ${accentColor || "#A79C88"}`,
+        borderBottom: `1.5px solid ${accentColor || MUTED}`,
         outline: "none",
         background: "transparent",
         fontFamily: "'DM Sans',sans-serif",
@@ -2473,7 +2685,7 @@ function EditablePillarName({ value, onCommit, textStyle, accentColor, editTitle
       flexShrink: 0,
       display: "flex",
       alignItems: "center",
-      color: "#A79C88",
+      color: MUTED,
       opacity: hovered ? 1 : 0,
       transition: "opacity 0.1s ease"
     }
@@ -2526,7 +2738,7 @@ function ScienceInfoButton({ pillarId, label, dim }) {
       flexShrink: 0,
       lineHeight: 1,
       textDecoration: "none",
-      color: hovered ? "#1C1917" : dim || PLAN_MUTED,
+      color: hovered ? INK : dim || PLAN_MUTED,
       opacity: hovered ? 1 : 0.75,
       transition: "color 0.12s ease, opacity 0.12s ease"
     }
@@ -2588,9 +2800,9 @@ function CatSuggestionItem({label, desc, onClick, disabled, onRename, color, sci
       value: label,
       onCommit: onRename,
       editTitle: "Edit this name before adding",
-      textStyle: { fontSize: 13, color: hovered && !disabled ? "#1C1917" : PLAN_TEXT, fontWeight: 500, lineHeight: 1.4 }
+      textStyle: { fontSize: 13, color: hovered && !disabled ? INK : PLAN_TEXT, fontWeight: 500, lineHeight: 1.4 }
     }) : React.createElement("div", {
-      style: { fontSize: 13, color: hovered && !disabled ? "#1C1917" : PLAN_TEXT, fontWeight: 500, lineHeight: 1.4 }
+      style: { fontSize: 13, color: hovered && !disabled ? INK : PLAN_TEXT, fontWeight: 500, lineHeight: 1.4 }
     }, label),
     desc ? React.createElement("div", {
       style: { fontSize: 11, color: PLAN_MUTED, marginTop: 2, lineHeight: 1.4 }
@@ -2608,12 +2820,12 @@ function CatSuggestionItem({label, desc, onClick, disabled, onRename, color, sci
 }
 const navBtn = {
   background: "none",
-  border: "1px solid #E7DECB",
+  border: `1px solid ${HAIRLINE}`,
   borderRadius: 8,
   padding: "5px 16px",
   cursor: "pointer",
   fontSize: 20,
-  color: "#78716C",
+  color: INK_3,
   fontFamily: "inherit",
   lineHeight: 1
 };
@@ -2915,7 +3127,7 @@ function SciencePage({
     backgroundImage: "radial-gradient(ellipse 900px 340px at 50% -40px, rgba(255,214,160,0.30), rgba(250,244,232,0) 70%)",
     backgroundAttachment: "fixed",
     minHeight: "100vh",
-    color: "#1C1917",
+    color: INK,
     WebkitFontSmoothing: "antialiased"
   };
   const inner = {
@@ -2933,7 +3145,7 @@ function SciencePage({
   // pigments the app itself uses.
   const LIVE_PAINT = { color: COLOR_PALETTE[0].color, deep: COLOR_PALETTE[0].deep, ink: COLOR_PALETTE[0].ink };
   const PLAN_PAINT = { color: COLOR_PALETTE[1].color, deep: COLOR_PALETTE[1].deep, ink: COLOR_PALETTE[1].ink };
-  const NEUTRAL_PAINT = { color: NEUTRAL_OUTLINE, deep: "#8E8677", ink: "#57534E" };
+  const NEUTRAL_PAINT = { color: NEUTRAL_OUTLINE, deep: "#8E8677", ink: INK_2 };
   function paintFor(id) {
     return (palette && palette[id]) || NEUTRAL_PAINT;
   }
@@ -3000,8 +3212,8 @@ function SciencePage({
       rel: "noopener noreferrer",
       style: base,
       onMouseEnter: e => {
-        e.currentTarget.style.borderColor = "#1C1917";
-        e.currentTarget.style.color = "#1C1917";
+        e.currentTarget.style.borderColor = INK;
+        e.currentTarget.style.color = INK;
         e.currentTarget.style.background = PLAN_BG;
       },
       onMouseLeave: e => {
@@ -3068,7 +3280,7 @@ function SciencePage({
       style: {
         fontSize: 15,
         fontWeight: 700,
-        color: "#1C1917",
+        color: INK,
         marginBottom: 3,
         letterSpacing: "-0.01em"
       }
@@ -3118,7 +3330,7 @@ function SciencePage({
       style: {
         fontSize: 18,
         fontWeight: 700,
-        color: "#1C1917",
+        color: INK,
         letterSpacing: "-0.01em",
         marginBottom: 8
       }
@@ -3230,13 +3442,13 @@ function SciencePage({
         lineHeight: 1.35,
         letterSpacing: "-0.01em",
         marginBottom: 10,
-        color: "#1C1917"
+        color: INK
       }
     }, p.headline), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 14,
         lineHeight: 1.75,
-        color: "#57534E",
+        color: INK_2,
         margin: "0 0 14px"
       }
     }, p.body), /*#__PURE__*/React.createElement(BarTile, {
@@ -3283,13 +3495,13 @@ function SciencePage({
         lineHeight: 1.35,
         letterSpacing: "-0.01em",
         marginBottom: 10,
-        color: "#1C1917"
+        color: INK
       }
     }, p.headline), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 14,
         lineHeight: 1.75,
-        color: "#57534E",
+        color: INK_2,
         margin: "0 0 14px"
       }
     }, p.body), /*#__PURE__*/React.createElement(BarTile, {
@@ -3321,7 +3533,7 @@ function SciencePage({
     }, "In the planner"), /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 13,
-        color: "#1C1917",
+        color: INK,
         lineHeight: 1.6,
         margin: 0
       }
@@ -3403,12 +3615,12 @@ function SciencePage({
       lineHeight: 1.2,
       letterSpacing: "-0.02em",
       marginBottom: 20,
-      color: "#1C1917"
+      color: INK
     }
   }, "The ultimate goal isn't a better week. It's a better life."), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 15,
-      color: "#57534E",
+      color: INK_2,
       lineHeight: 1.8,
       maxWidth: 520,
       marginBottom: 14
@@ -3416,7 +3628,7 @@ function SciencePage({
   }, "A life filled with meaning, purpose, and genuine joy. And there's a signal for when you've built one: you wake up eager. You love starting the week. Mondays feel like opportunity, not dread."), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 15,
-      color: "#57534E",
+      color: INK_2,
       lineHeight: 1.8,
       maxWidth: 520
     }
@@ -3494,7 +3706,7 @@ function SciencePage({
   }, "Also worth reading"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
-      color: "#57534E",
+      color: INK_2,
       fontWeight: 500
     }
   }, liveItActive ? "Part Two: Plan It — the behavioral science behind why the system works." : "Part One: Live It — the activities that research shows actually matter.")), /*#__PURE__*/React.createElement("button", {
@@ -3507,7 +3719,7 @@ function SciencePage({
       cursor: "pointer",
       fontSize: 12,
       fontWeight: 700,
-      color: "#1C1917",
+      color: INK,
       fontFamily: "inherit",
       whiteSpace: "nowrap",
       flexShrink: 0,
@@ -3542,7 +3754,7 @@ function SciencePage({
       fontWeight: 700,
       letterSpacing: "-0.01em",
       marginBottom: 18,
-      color: "#1C1917"
+      color: INK
     }
   }, "The frameworks behind the design"), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -3582,7 +3794,7 @@ function SciencePage({
       fontWeight: 700,
       letterSpacing: "0.05em",
       textTransform: "uppercase",
-      color: "#1C1917",
+      color: INK,
       marginBottom: 2
     }
   }, f.name, " ↗"), /*#__PURE__*/React.createElement("div", {
@@ -3609,7 +3821,7 @@ function SciencePage({
       fontSize: 16,
       fontWeight: 600,
       lineHeight: 1.6,
-      color: "#1C1917",
+      color: INK,
       marginBottom: 10,
       maxWidth: 480,
       letterSpacing: "-0.01em"
@@ -3691,7 +3903,7 @@ function TimeField({ value, onChange, inputStyle }) {
     return {
       border: "none",
       background: active ? "#FFF7ED" : "transparent",
-      color: active ? "#C2410C" : "#1C1917",
+      color: active ? "#C2410C" : INK,
       fontFamily: "inherit",
       fontSize: 13,
       fontWeight: 600,
@@ -3706,8 +3918,8 @@ function TimeField({ value, onChange, inputStyle }) {
   function optStyle(selected) {
     return {
       border: "none",
-      background: selected ? "#C4622F" : "transparent",
-      color: selected ? "#fff" : "#57534E",
+      background: selected ? ACCENT : "transparent",
+      color: selected ? "#fff" : INK_2,
       fontFamily: "inherit",
       fontSize: 12,
       fontWeight: selected ? 700 : 500,
@@ -3724,7 +3936,7 @@ function TimeField({ value, onChange, inputStyle }) {
     left: 0,
     zIndex: 1100,
     background: "#fff",
-    border: "1px solid #E7DECB",
+    border: `1px solid ${HAIRLINE}`,
     borderRadius: 9,
     boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
     padding: 4
@@ -3762,7 +3974,7 @@ function TimeField({ value, onChange, inputStyle }) {
     },
     style: optStyle(h === h12)
   }, h)))), /*#__PURE__*/React.createElement("span", {
-    style: { color: "#A79C88", fontSize: 13, fontWeight: 600 }
+    style: { color: MUTED, fontSize: 13, fontWeight: 600 }
   }, ":"), /*#__PURE__*/React.createElement("span", {
     style: { position: "relative" }
   }, /*#__PURE__*/React.createElement("button", {
@@ -3789,7 +4001,7 @@ function TimeField({ value, onChange, inputStyle }) {
     onMouseDown: e => e.preventDefault(),
     onClick: () => commit(h12, mm, period === "AM" ? "PM" : "AM"),
     onKeyDown: segKeyDown("period"),
-    style: { ...segStyle(false), marginLeft: 3, color: "#57534E" }
+    style: { ...segStyle(false), marginLeft: 3, color: INK_2 }
   }, period));
 }
 function CalendarView({
@@ -3828,28 +4040,7 @@ function CalendarView({
     return s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1").trim();
   }
   function reflectBubbleSvg(color, isFilled) {
-    return /*#__PURE__*/React.createElement("svg", {
-      width: "10",
-      height: "10",
-      viewBox: "0 0 24 24",
-      fill: isFilled ? color : "none",
-      stroke: color,
-      strokeWidth: "2",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "6.5",
-      cy: "21",
-      r: "2.2",
-      fill: isFilled ? color : "none"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "3.5",
-      cy: "24",
-      r: "1.4",
-      fill: isFilled ? color : "none"
-    }));
+    return /*#__PURE__*/React.createElement(ReflectBubble, { size: 10, weight: 2, stroke: color, fill: isFilled ? color : "none" });
   }
   const chainIconSvg = /*#__PURE__*/React.createElement("svg", {
     width: "10",
@@ -4044,7 +4235,7 @@ function CalendarView({
         },
         title: "Reflect on this",
         style: ICON_BTN
-      }, reflectBubbleSvg("#BCB2A0", false)), it.isReflected && onOpenReflections && /*#__PURE__*/React.createElement("button", {
+      }, reflectBubbleSvg(FAINT, false)), it.isReflected && onOpenReflections && /*#__PURE__*/React.createElement("button", {
         onClick: e => {
           e.stopPropagation();
           onOpenReflections(plainOf(it.text), ds);
@@ -4064,7 +4255,7 @@ function CalendarView({
           border: "none",
           cursor: "pointer",
           padding: 0,
-          color: "#BCB2A0",
+          color: FAINT,
           display: "flex",
           alignItems: "center"
         }
@@ -4080,7 +4271,7 @@ function CalendarView({
           cursor: "pointer",
           fontSize: 13,
           lineHeight: 1,
-          color: "#BCB2A0",
+          color: FAINT,
           padding: 0
         }
       }, "\u00d7"));
@@ -4137,7 +4328,7 @@ function CalendarView({
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       background: "#fff",
-      border: "1px solid #E7DECB",
+      border: `1px solid ${HAIRLINE}`,
       borderRadius: 12,
       overflow: "hidden",
       marginBottom: 18
@@ -4146,7 +4337,7 @@ function CalendarView({
     style: {
       display: "grid",
       gridTemplateColumns: colTemplate,
-      borderBottom: "1px solid #BCB2A0"
+      borderBottom: `1px solid ${FAINT}`
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4165,7 +4356,7 @@ function CalendarView({
         position: "relative",
         textAlign: "center",
         padding: "10px 4px 8px",
-        borderLeft: "1px solid #E7DECB"
+        borderLeft: `1px solid ${HAIRLINE}`
       }
     }, isDayHovered && onReflectDay && /*#__PURE__*/React.createElement("button", {
       onClick: e => {
@@ -4188,37 +4379,16 @@ function CalendarView({
         padding: "3px 4px",
         display: "flex",
         alignItems: "center",
-        color: "#7C3AED",
+        color: REFLECT,
         boxShadow: "0 1px 5px rgba(0,0,0,0.16)",
         zIndex: 6
       }
-    }, /*#__PURE__*/React.createElement("svg", {
-      width: "11",
-      height: "11",
-      viewBox: "0 0 24 24",
-      fill: hasDayReflection ? "#7C3AED" : "none",
-      stroke: "currentColor",
-      strokeWidth: "1.7",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "6.5",
-      cy: "21",
-      r: "2.2",
-      fill: hasDayReflection ? "#7C3AED" : "none"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "3.5",
-      cy: "24",
-      r: "1.4",
-      fill: hasDayReflection ? "#7C3AED" : "none"
-    }))), /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement(ReflectBubble, { fill: hasDayReflection ? REFLECT : "none" })), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         letterSpacing: "0.1em",
         textTransform: "uppercase",
-        color: "#78716C",
+        color: INK_3,
         fontWeight: 600,
         marginBottom: 4
       }
@@ -4226,11 +4396,11 @@ function CalendarView({
       style: {
         fontSize: 16,
         fontWeight: isToday ? 700 : 500,
-        color: isToday ? "#fff" : "#1C1917",
+        color: isToday ? "#fff" : INK,
         width: 28,
         height: 28,
         borderRadius: "50%",
-        background: isToday ? "#C4622F" : "transparent",
+        background: isToday ? ACCENT : "transparent",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -4241,14 +4411,14 @@ function CalendarView({
     style: {
       display: "grid",
       gridTemplateColumns: colTemplate,
-      borderBottom: "1px solid #E7DECB",
+      borderBottom: `1px solid ${HAIRLINE}`,
       background: "#FBFAF9"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "6px 6px",
       fontSize: 8,
-      color: "#A79C88",
+      color: MUTED,
       letterSpacing: "0.05em",
       textTransform: "uppercase",
       lineHeight: 1.3
@@ -4315,7 +4485,7 @@ function CalendarView({
         if (e.target === e.currentTarget) openCreate(ds, null, null);
       } : undefined,
       style: {
-        borderLeft: "1px solid #E7DECB",
+        borderLeft: `1px solid ${HAIRLINE}`,
         padding: "6px 6px",
         display: "flex",
         flexDirection: "column",
@@ -4502,9 +4672,9 @@ function CalendarView({
     key: hh,
     style: {
       height: CAL_HOUR_PX,
-      borderTop: "1px solid #F2ECE0",
+      borderTop: `1px solid ${WASH}`,
       fontSize: 10,
-      color: "#A79C88",
+      color: MUTED,
       textAlign: "right",
       paddingRight: 8,
       boxSizing: "border-box",
@@ -4523,7 +4693,7 @@ function CalendarView({
       key: i,
       style: {
         position: "relative",
-        borderLeft: "1px solid #E7DECB"
+        borderLeft: `1px solid ${HAIRLINE}`
       }
     }, hours.map(hh => /*#__PURE__*/React.createElement("div", {
       key: hh,
@@ -4541,7 +4711,7 @@ function CalendarView({
       onMouseDown: isOwnView && onCreateItem ? e => beginDragCreate(ds, e) : undefined,
       style: {
         height: CAL_HOUR_PX,
-        borderTop: "1px solid #F2ECE0",
+        borderTop: `1px solid ${WASH}`,
         boxSizing: "border-box",
         background: dragOverSlot?.ds === ds && dragOverSlot?.hour === hh ? "#FFF7ED" : "transparent",
         position: "relative",
@@ -4556,7 +4726,7 @@ function CalendarView({
         right: 0,
         top: dragOverSlot.minute / 60 * CAL_HOUR_PX,
         height: 2,
-        background: "#C4622F",
+        background: ACCENT,
         pointerEvents: "none"
       }
     }))), dragCreatePreview && dragCreatePreview.ds === ds && /*#__PURE__*/React.createElement("div", {
@@ -4806,13 +4976,9 @@ function CalendarView({
 // which lets us tell an untouched pillar from one they've invested in.
 // ---------------------------------------------------------------------------
 
-const IDEAS_STORAGE_KEY = "planner:ideas";
-
 function loadIdeas() {
-  try {
-    const r = localStorage.getItem(IDEAS_STORAGE_KEY);
-    if (r) return JSON.parse(r);
-  } catch {}
+  const stored = db.read(K.ideas);
+  if (stored) return stored;
   const defaults = {};
   Object.entries(DEFAULT_IDEAS).forEach(([catId, texts]) => {
     defaults[catId] = texts.map(makeSeedIdea);
@@ -4910,14 +5076,7 @@ const ideaOps = {
 // Owns ideas state + persistence. Read-only imported views pass their own
 // ideas in via `override`, in which case every write is a no-op.
 function useIdeasStore({ readOnly, override }) {
-  const [own, setOwn] = useState(loadIdeas);
-  const ideas = override || own;
-  function commit(next) {
-    if (readOnly) return ideas;
-    setOwn(next);
-    store.set(IDEAS_STORAGE_KEY, JSON.stringify(next));
-    return next;
-  }
+  const [ideas, commit] = usePersisted(K.ideas, loadIdeas, { readOnly, override });
   return {
     ideas,
     forPillar: pillarId => ideas[pillarId] || [],
@@ -5195,67 +5354,16 @@ function IdeasPanel({
       setSuggesting(false);
     }
   }
-  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-      style: PANEL_HEADER
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 10
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      "aria-hidden": "true",
-      style: {
-        width: 7,
-        alignSelf: "stretch",
-        minHeight: 30,
-        background: pillar.color,
-        flexShrink: 0
-      }
-    }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 10,
-        fontWeight: 600,
-        letterSpacing: "0.1em",
-        textTransform: "uppercase",
-        color: pillar.color,
-        marginBottom: 2
-      }
-    }, "Ideas", !canEdit && /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: "#A79C88",
-        fontWeight: 500,
-        textTransform: "none",
-        letterSpacing: 0
-      }
-    }, " · read only")), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 700,
-        color: "#1C1917",
-        textTransform: "uppercase",
-        letterSpacing: "0.08em"
-      }
-    }, pillar.label), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: "#A79C88",
-        marginTop: 2
-      }
-    }, canEdit ? "Drag an idea onto the planner" : "Viewing " + viewerName.split(" · ")[0] + "'s ideas"))), /*#__PURE__*/React.createElement("button", {
-      onClick: onClose,
-      style: {
-        background: "none",
-        border: "none",
-        cursor: "pointer",
-        fontSize: 22,
-        color: "#BCB2A0",
-        padding: 0,
-        lineHeight: 1,
-        flexShrink: 0,
-        marginLeft: 8
-      }
-    }, "×")), /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PanelHeader, {
+      band: pillar.color,
+      eyebrow: "Ideas",
+      eyebrowColor: pillar.color,
+      readOnly: !canEdit,
+      title: pillar.label,
+      titleCaps: true,
+      subtitle: canEdit ? "Drag an idea onto the planner" : "Viewing " + viewerName.split(" · ")[0] + "'s ideas",
+      onClose: onClose
+    }), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         overflowY: "auto",
@@ -5279,7 +5387,7 @@ function IdeasPanel({
       style: {
         textAlign: "center",
         padding: "40px 0",
-        color: "#BCB2A0",
+        color: FAINT,
         fontSize: 13
       }
     }, "No ideas yet", canEdit ? " — add one below" : ""), ideas.map(idea => {
@@ -5325,7 +5433,7 @@ function IdeasPanel({
           padding: "4px 3px",
           margin: "-4px 0 -4px -3px",
           opacity: 0.4,
-          color: "#57534E"
+          color: INK_2
         }
       }, /*#__PURE__*/React.createElement(GripIcon, null)), isEditing ? /*#__PURE__*/React.createElement("input", {
         ref: inputRef,
@@ -5351,7 +5459,7 @@ function IdeasPanel({
           background: "transparent",
           fontSize: 12,
           fontFamily: "'DM Sans',sans-serif",
-          color: "#1C1917",
+          color: INK,
           padding: "1px 0",
           fontWeight: 400
         }
@@ -5365,13 +5473,13 @@ function IdeasPanel({
         style: {
           flex: 1,
           fontSize: 12,
-          color: "#1C1917",
+          color: INK,
           fontWeight: 400,
           lineHeight: 1.4,
           wordBreak: "break-word",
           cursor: canEdit ? "text" : "default"
         }
-      }, renderWithLinks(idea.text, "#1C1917")), canEdit && /*#__PURE__*/React.createElement("div", {
+      }, renderWithLinks(idea.text, INK)), canEdit && /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           gap: 4,
@@ -5404,7 +5512,7 @@ function IdeasPanel({
           border: "none",
           cursor: "pointer",
           fontSize: 16,
-          color: "#BCB2A0",
+          color: FAINT,
           padding: 0,
           lineHeight: 1
         }
@@ -5422,7 +5530,7 @@ function IdeasPanel({
         height: "10",
         viewBox: "0 0 24 24",
         fill: "none",
-        stroke: "#BCB2A0",
+        stroke: FAINT,
         strokeWidth: "2.5",
         strokeLinecap: "round",
         strokeLinejoin: "round",
@@ -5459,7 +5567,7 @@ function IdeasPanel({
           outline: "none",
           fontSize: 11,
           background: "transparent",
-          color: "#1C1917",
+          color: INK,
           fontFamily: "'DM Sans',sans-serif"
         }
       }), idea.text.match(/^\[([^\]]+)\]\(([^)]+)\)$/) && /*#__PURE__*/React.createElement("button", {
@@ -5481,7 +5589,7 @@ function IdeasPanel({
     })), canEdit && /*#__PURE__*/React.createElement("div", {
       style: {
         padding: "12px 14px",
-        borderTop: "1px solid #E7DECB",
+        borderTop: `1px solid ${HAIRLINE}`,
         flexShrink: 0,
         display: "flex",
         flexDirection: "column",
@@ -5490,7 +5598,7 @@ function IdeasPanel({
     }, suggestNote && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
-        color: "#A79C88",
+        color: MUTED,
         textAlign: "center"
       }
     }, suggestNote), /*#__PURE__*/React.createElement("button", {
@@ -5544,7 +5652,6 @@ function IdeasPanel({
 // funnels through here now.
 // ---------------------------------------------------------------------------
 
-const JOURNAL_STORAGE_KEY = "planner:journal";
 
 function makeJournalEntry(text = "", extra = {}) {
   return {
@@ -5602,14 +5709,9 @@ const journalOps = {
 // Owns journal state + persistence, and the brief "just added" highlight that
 // every entry-creating path wants.
 function useJournalStore() {
-  const [journal, setJournal] = useState({});
+  const [journal, commit, setJournal] = usePersisted(K.journal, {});
   const [newEntryId, setNewEntryId] = useState(null);
   const flashRef = useRef(null);
-  function commit(next) {
-    setJournal(next);
-    store.set(JOURNAL_STORAGE_KEY, JSON.stringify(next));
-    return next;
-  }
   // Highlights an entry briefly. Guarded by a ref so rapid successive
   // openings don't leave a stale timer clearing the newest highlight.
   function flash(entryId, ms = 400) {
@@ -5640,10 +5742,10 @@ function useJournalStore() {
     },
     findForItem: (weekStart, itemText, date) => journalOps.findForItem(journal, weekStart, itemText, date),
     findForDay: (weekStart, ds) => journalOps.findForDay(journal, weekStart, ds),
-    load(raw) {
-      try {
-        if (raw) setJournal(JSON.parse(raw));
-      } catch {}
+    // Catches state up with what storage already holds; deliberately does
+    // not write back.
+    load(stored) {
+      if (stored) setJournal(stored);
     },
     replaceAll: next => commit(next)
   };
@@ -5668,43 +5770,12 @@ function ReflectionsPanel({
 }) {
   const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
   const addEntry = (text = "", opts = {}) => journalStore.add(weekStart, text, opts);
-  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-      style: PANEL_HEADER
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 10,
-        fontWeight: 600,
-        letterSpacing: "0.1em",
-        textTransform: "uppercase",
-        color: "#78716C",
-        marginBottom: 2
-      }
-    }, "Reflections"), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 700,
-        color: "#1C1917"
-      }
-    }, weekLabelText), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: "#BCB2A0",
-        marginTop: 2
-      }
-    }, "How is your week going?")), /*#__PURE__*/React.createElement("button", {
-      onClick: onClose,
-      style: {
-        background: "none",
-        border: "none",
-        cursor: "pointer",
-        fontSize: 22,
-        color: "#BCB2A0",
-        padding: 0,
-        lineHeight: 1,
-        marginLeft: 8,
-        flexShrink: 0
-      }
-    }, "×")), /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PanelHeader, {
+      eyebrow: "Reflections",
+      title: weekLabelText,
+      subtitle: "How is your week going?",
+      onClose: onClose
+    }), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         overflowY: "auto",
@@ -5728,7 +5799,7 @@ function ReflectionsPanel({
         borderRadius: CHIP_RADIUS,
         padding: "5px 10px",
         fontSize: 11,
-        color: "#A79C88",
+        color: MUTED,
         cursor: "pointer",
         fontFamily: "inherit",
         fontWeight: 500,
@@ -5778,7 +5849,7 @@ function ReflectionsPanel({
       style: {
         textAlign: "center",
         padding: "24px 0",
-        color: "#BCB2A0",
+        color: FAINT,
         fontSize: 13
       }
     }, "No reflections this week yet"), (entries).map(entry => /*#__PURE__*/React.createElement(JournalEntry, {
@@ -5811,50 +5882,13 @@ function GoalsPanel({
   onClose
 }) {
   const [expanded, setExpanded] = useState(null);
-  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-      style: PANEL_HEADER
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 10,
-        fontWeight: 600,
-        letterSpacing: "0.1em",
-        textTransform: "uppercase",
-        color: "#78716C",
-        marginBottom: 2
-      }
-    }, "Intentions", !canEdit && /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: "#A79C88",
-        fontWeight: 500,
-        textTransform: "none",
-        letterSpacing: 0
-      }
-    }, " · read only")), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 700,
-        color: "#1C1917"
-      }
-    }, weekLabelText), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: "#BCB2A0",
-        marginTop: 2
-      }
-    }, "Set a weekly target for any pillar")), /*#__PURE__*/React.createElement("button", {
-      onClick: onClose,
-      style: {
-        background: "none",
-        border: "none",
-        cursor: "pointer",
-        fontSize: 22,
-        color: "#BCB2A0",
-        padding: 0,
-        lineHeight: 1,
-        flexShrink: 0,
-        marginLeft: 8
-      }
-    }, "×")), /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PanelHeader, {
+      eyebrow: "Intentions",
+      readOnly: !canEdit,
+      title: weekLabelText,
+      subtitle: "Set a weekly target for any pillar",
+      onClose: onClose
+    }), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         overflowY: "auto",
@@ -5863,7 +5897,7 @@ function GoalsPanel({
     }, noGoalCats.length === 0 && goalCats.length === 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12,
-        color: "#A79C88",
+        color: MUTED,
         lineHeight: 1.6
       }
     }, "No pillars yet."), /*#__PURE__*/React.createElement("div", {
@@ -5942,7 +5976,7 @@ function GoalsPanel({
           fontWeight: 700,
           letterSpacing: "0.07em",
           textTransform: "uppercase",
-          color: "#1C1917",
+          color: INK,
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap"
@@ -5990,10 +6024,10 @@ function GoalsPanel({
       }, `${plannedCount} planned`), /*#__PURE__*/React.createElement("span", {
         style: { color: NEUTRAL_OUTLINE }
       }, "\u00b7"), /*#__PURE__*/React.createElement("span", {
-        style: { color: "#A79C88" }
+        style: { color: MUTED }
       }, `${openSeg} open`), overPlanned > 0 && /*#__PURE__*/React.createElement("span", {
         title: `${overPlanned} more day${overPlanned === 1 ? "" : "s"} planned than the target`,
-        style: { color: "#A79C88" }
+        style: { color: MUTED }
       }, `(+${overPlanned})`))), isExpanded && /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
@@ -6027,7 +6061,7 @@ function GoalsPanel({
           border: "none",
           cursor: "pointer",
           fontSize: 10,
-          color: "#A79C88",
+          color: MUTED,
           padding: "0 0 10px",
           fontFamily: "inherit",
           textDecoration: "underline"
@@ -6039,7 +6073,7 @@ function GoalsPanel({
         fontWeight: 600,
         letterSpacing: "0.08em",
         textTransform: "uppercase",
-        color: "#A79C88",
+        color: MUTED,
         marginTop: goalCats.length > 0 ? 14 : 0,
         marginBottom: 6
       }
@@ -6087,7 +6121,7 @@ function GoalsPanel({
           fontWeight: 700,
           letterSpacing: "0.07em",
           textTransform: "uppercase",
-          color: "#1C1917",
+          color: INK,
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap"
@@ -6143,15 +6177,15 @@ function GoalsPanel({
 // silent until someone tries to restore.
 // ---------------------------------------------------------------------------
 
-const TRANSFER_SKIP_PREFIXES = ["planner:importedViews", "planner:userName"];
+const TRANSFER_SKIP_PREFIXES = [K.importedViews, K.userName];
 
 // Builds the export payload from a plain { key: value } snapshot of storage.
 function buildExportPayload(snapshot, { name, includeReflections = true, now = new Date() } = {}) {
   const out = { _meta: { exportedBy: name, exportedAt: now.toISOString() } };
   Object.keys(snapshot || {}).forEach(k => {
-    if (!k.startsWith("planner:")) return;
+    if (!k.startsWith(DB_PREFIX)) return;
     if (TRANSFER_SKIP_PREFIXES.some(p => k.startsWith(p))) return;
-    if (!includeReflections && k === JOURNAL_STORAGE_KEY) return;
+    if (!includeReflections && k === K.journal) return;
     out[k] = snapshot[k];
   });
   return out;
@@ -6166,10 +6200,10 @@ function exportFilename(name, includeReflections, now = new Date()) {
 // week still in the pre-v2 shape. Works the same whether the backup came from
 // an old or a current version of the planner.
 function collectImportedEntries(obj) {
-  const doneRaw = safeParse(obj["planner:done"], {});
+  const doneRaw = safeParse(obj[K.legacyDone], {});
   const all = {};
   Object.entries(obj || {}).forEach(([k, v]) => {
-    if (!k.startsWith("planner:week:")) return;
+    if (!k.startsWith(WEEK_PREFIX)) return;
     const parsed = safeParse(v, null);
     if (!parsed) return;
     const weekEntries = parsed.__v === 2 && parsed.entries
@@ -6198,7 +6232,7 @@ function initialsOf(name) {
 // letters in it is just a decorative dot — the thing this control had before
 // and didn't need. Same footprint either way, so nothing shifts when a name
 // finally arrives.
-const PLAN_OWN_AVATAR = "#A79C88";
+const PLAN_OWN_AVATAR = MUTED;
 function PlanAvatar({ size = 24, name, color = PLAN_OWN_AVATAR }) {
   const initials = initialsOf(name);
   const base = {
@@ -6214,7 +6248,7 @@ function PlanAvatar({ size = 24, name, color = PLAN_OWN_AVATAR }) {
   if (!initials) {
     const g = Math.round(size * 0.56);
     return /*#__PURE__*/React.createElement("div", {
-      style: { ...base, border: `1.5px solid ${NEUTRAL_OUTLINE}`, color: "#BCB2A0" }
+      style: { ...base, border: `1.5px solid ${NEUTRAL_OUTLINE}`, color: FAINT }
     }, /*#__PURE__*/React.createElement("svg", {
       width: g,
       height: g,
@@ -6251,40 +6285,20 @@ function buildImportedView(obj, { id, now = new Date() } = {}) {
   return {
     id: id || `view_${Date.now()}`,
     name: `${exName} · ${dateStr}`,
-    cats: migrateCatColors(safeParse(obj["planner:cats"], DEFAULT_CATS)),
-    ideas: safeParse(obj["planner:ideas"], {}),
-    goals: safeParse(obj["planner:goals"], {}),
+    cats: migrateCatColors(safeParse(obj[K.cats], DEFAULT_CATS)),
+    ideas: safeParse(obj[K.ideas], {}),
+    goals: safeParse(obj[K.goals], {}),
     entries: collectImportedEntries(obj),
-    ratings: safeParse(obj["planner:ratings"], {}),
+    ratings: safeParse(obj[K.ratings], {}),
     // Absent from share exports by design, so this is {} for those — which is
     // what makes a shared view show no reflections rather than falling back to
     // the viewer's own.
-    journal: safeParse(obj[JOURNAL_STORAGE_KEY], {})
+    journal: safeParse(obj[K.journal], {})
   };
 }
 
 // JSON.parse that yields a fallback instead of throwing, so one corrupt key in
 // an imported file can't take the whole import down.
-function safeParse(raw, fallback) {
-  if (raw == null) return fallback;
-  try {
-    const v = typeof raw === "string" ? JSON.parse(raw) : raw;
-    return v == null ? fallback : v;
-  } catch {
-    return fallback;
-  }
-}
-
-// A plain snapshot of every planner key currently in localStorage.
-function storageSnapshot() {
-  const out = {};
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (k && k.startsWith("planner:")) out[k] = localStorage.getItem(k);
-  }
-  return out;
-}
-
 // ---------------------------------------------------------------------------
 // Pillars
 //
@@ -6351,9 +6365,9 @@ const pillarOps = {
 // work planned in any week, not only the one on screen. Handles both the
 // current entry shape and the pre-v2 one.
 function pillarHasPlannedWork(id, snapshot) {
-  const snap = snapshot || storageSnapshot();
+  const snap = snapshot || db.snapshot();
   return Object.entries(snap).some(([k, v]) => {
-    if (!k.startsWith("planner:week:")) return false;
+    if (!k.startsWith(WEEK_PREFIX)) return false;
     const parsed = safeParse(v, null);
     if (!parsed) return false;
     if (parsed.__v === 2 && parsed.entries) {
@@ -6564,6 +6578,19 @@ const entryOps = {
     next[targetDs] = targetBucket;
     return next;
   },
+  // Cuts entries loose from their rule, in place. Dragging an occurrence onto
+  // a different day makes it an ordinary event, and this has to happen in the
+  // same write as the move: queued as a separate update it would read stale
+  // state and put the seriesId straight back.
+  detachSeries(entries, ds, entryIds) {
+    const bucket = entries[ds];
+    if (!bucket) return entries;
+    const ids = (Array.isArray(entryIds) ? entryIds : [entryIds]).filter(id => bucket[id]?.seriesId);
+    if (!ids.length) return entries;
+    const nextBucket = { ...bucket };
+    ids.forEach(id => { nextBucket[id] = { ...nextBucket[id], seriesId: null }; });
+    return { ...entries, [ds]: nextBucket };
+  },
   // Adds the destination pillar to an entry's tags on a move. Staying in the
   // same pillar leaves tags alone.
   retag(pillars, srcCatId, targetCatId) {
@@ -6582,7 +6609,7 @@ function useEntryStore({ readOnly, weekKey }) {
     setEntries(prev => {
       const next = fn(prev);
       if (next === prev) return prev;
-      store.set(weekKey, JSON.stringify(packWeekEntries(next)));
+      db.write(weekKey, packWeekEntries(next));
       return next;
     });
   }
@@ -6592,6 +6619,930 @@ function useEntryStore({ readOnly, weekKey }) {
     apply,
     get: (ds, entryId) => entryOps.get(entries, ds, entryId)
   };
+}
+
+// Minutes-from-midnight conversions for the event dialog's time fields. These
+// lived inside Planner; the dialog now spans three places (the hook that holds
+// the draft, the dialog itself, and Planner's save path), so they sit out here
+// where all three can reach them.
+//
+// Note the near-twin above: `tmToStr` is byte-identical to `minToTime`, and
+// `tmToMin` is a stricter `timeToMin` that returns null instead of NaN on bad
+// input. Deliberately left as two pairs — collapsing them would change what
+// the looser one does on malformed input, which is a behaviour change, not a
+// tidy-up.
+function timeToMin(str) {
+  const [h, m] = str.split(":").map(Number);
+  return h * 60 + m;
+}
+function minToTime(min) {
+  min = (min % 1440 + 1440) % 1440;
+  return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+}
+
+// ---------------------------------------------------------------------------
+// useEventDialog
+//
+// Everything the new/edit event dialog remembers while it is open: the name,
+// the pillars, the date and times, and the repeat settings. Eleven pieces of
+// state that exist for this one dialog and are read nowhere else, which until
+// now sat in the middle of Planner's other forty.
+//
+// The field names are deliberately unchanged. Both the dialog's markup and
+// Planner's save path read them by name, and keeping the names identical meant
+// neither had to be rewritten to move house.
+// ---------------------------------------------------------------------------
+function useEventDialog({ entries, rules }) {
+  const [editingItem, setEditingItem] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editPillarIds, setEditPillarIds] = useState([]);
+  const [editLinkUrl, setEditLinkUrl] = useState(null);
+  const [editUnscheduled, setEditUnscheduled] = useState(false);
+  const [editDate, setEditDate] = useState(null);
+  const [editStart, setEditStart] = useState("09:00");
+  const [editEnd, setEditEnd] = useState("10:00");
+  // Repeat settings for the open dialog. `editRepeatDays` always contains the
+  // weekday the event itself falls on — a series that doesn't include its own
+  // event has no coherent meaning, so that chip is locked on rather than
+  // being allowed into an impossible state.
+  const [editRepeat, setEditRepeat] = useState(REPEAT_NONE);
+  const [editRepeatDays, setEditRepeatDays] = useState([]);
+  const [editRepeatEnd, setEditRepeatEnd] = useState("");
+  // `forceUnscheduled`, when true, starts the "Day and time" toggle off
+  // regardless of whether the entry actually has a schedule. Used when
+  // opening the dialog from the planner grid, where items are organized
+  // by theme rather than time and scheduling is the exception, not the
+  // default the way it is in the calendar view.
+  function openEditById(ds, entryId, forceUnscheduled) {
+    const e = entries[ds]?.[entryId];
+    if (!e) return;
+    const m = e.text.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    setEditName(m ? m[1] : e.text);
+    setEditLinkUrl(m ? m[2] : null);
+    setEditPillarIds(pillarsOrDefault(e.pillars));
+    setEditDate(ds);
+    if (e.sched && !forceUnscheduled) {
+      setEditUnscheduled(false);
+      setEditStart(e.sched.start);
+      setEditEnd(minToTime(timeToMin(e.sched.start) + e.sched.duration));
+    } else {
+      setEditUnscheduled(true);
+      setEditStart("09:00");
+      setEditEnd("10:00");
+    }
+    const rule = e.seriesId ? rules[e.seriesId] : null;
+    setEditRepeat(rule ? rule.freq : REPEAT_NONE);
+    setEditRepeatDays(rule ? [...rule.byDay] : [dowOfDs(ds)]);
+    setEditRepeatEnd(rule?.endDs || "");
+    setEditingItem({ ds, entryId, seriesId: rule ? rule.id : null });
+  }
+  // `endMinutes` (minutes from midnight) is supplied when the user drew the
+  // block by dragging on the calendar grid; without it the dialog falls back
+  // to the default duration, which is what a plain click gives.
+  function openCreate(ds, hour, minute, presetPillars, endMinutes) {
+    setEditName("");
+    setEditLinkUrl(null);
+    setEditPillarIds(presetPillars || []);
+    setEditDate(ds);
+    if (hour != null) {
+      setEditUnscheduled(false);
+      const start = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+      setEditStart(start);
+      const startMin = timeToMin(start);
+      const endMin = endMinutes != null ? Math.max(startMin + CAL_MIN_DURATION, endMinutes) : startMin + CAL_DEFAULT_DURATION;
+      setEditEnd(minToTime(endMin));
+    } else {
+      setEditUnscheduled(true);
+      setEditStart("09:00");
+      setEditEnd("10:00");
+    }
+    setEditRepeat(REPEAT_NONE);
+    setEditRepeatDays([dowOfDs(ds)]);
+    setEditRepeatEnd("");
+    setEditingItem({ ds, isNew: true, seriesId: null });
+  }
+  function togglePillarForEdit(catId) {
+    setEditPillarIds(prev => prev.includes(catId) ? prev.filter(id => id !== catId) : [...prev, catId]);
+  }
+  // A repeat needs at least one day, but which days is the user's business —
+  // including the one this occurrence happens to fall on. Turning that day off
+  // is how you say "stop doing this on Wednesdays", and the sync that follows
+  // the save takes this occurrence and every later Wednesday out of the series
+  // while leaving the ones already behind you alone.
+  //
+  // This used to be a no-op, on the reasoning that a series should always
+  // contain its own event. True while you're creating one; wrong once it
+  // exists, because it left the Wednesday occurrence as the one place from
+  // which Wednesday could never be removed — and that is exactly where you go
+  // to remove it.
+  function toggleRepeatDay(dow) {
+    setEditRepeatDays(prev => {
+      if (!prev.includes(dow)) return [...prev, dow].sort((a, b) => a - b);
+      // The last day standing stays: a repeat with no days isn't a repeat, and
+      // the Repeat control above says that far more clearly than an empty row.
+      return prev.length === 1 ? prev : prev.filter(d => d !== dow);
+    });
+  }
+  // Moving an event to a new day *from inside this dialog* adds that weekday
+  // to the repeat, which is almost always what was meant.
+  //
+  // It must not fire on open, though. Dragging an occurrence to another day on
+  // the grid moves that one occurrence and leaves the series alone — but the
+  // dialog then opened on the new day and lit its chip, so the repeat appeared
+  // to have gained a day it had not, and no amount of waiting made it show up
+  // in later weeks. Comparing against the day the dialog opened on tells the
+  // two cases apart.
+  useEffect(() => {
+    if (!editingItem || editRepeat === REPEAT_NONE || !editDate) return;
+    if (editDate === editingItem.ds) return;
+    const dow = dowOfDs(editDate);
+    setEditRepeatDays(prev => prev.includes(dow) ? prev : [...prev, dow].sort((a, b) => a - b));
+  }, [editDate, editRepeat, editingItem]);
+  return {
+    editingItem, setEditingItem,
+    editName, setEditName,
+    editPillarIds, setEditPillarIds,
+    editLinkUrl, setEditLinkUrl,
+    editUnscheduled, setEditUnscheduled,
+    editDate, setEditDate,
+    editStart, setEditStart,
+    editEnd, setEditEnd,
+    editRepeat, setEditRepeat,
+    editRepeatDays, setEditRepeatDays,
+    editRepeatEnd, setEditRepeatEnd,
+    openEditById, openCreate, togglePillarForEdit, toggleRepeatDay
+  };
+}
+
+// ---------------------------------------------------------------------------
+// EventDialog
+//
+// The new/edit event sheet: name, pillar chips, the day-and-time toggle, and
+// the repeat controls. Roughly 350 lines that were previously spliced into the
+// middle of Planner's render.
+//
+// It owns no state of its own. `dlg` is whatever useEventDialog returned, and
+// `onSave` is Planner's save path, which stays in Planner because saving
+// reaches into entries, rules and series — none of which are this dialog's
+// business.
+// ---------------------------------------------------------------------------
+function EventDialog({ dlg, cats, onSave }) {
+  const {
+    editingItem, setEditingItem,
+    editName, setEditName,
+    editPillarIds,
+    editUnscheduled, setEditUnscheduled,
+    editDate, setEditDate,
+    editStart, setEditStart,
+    editEnd, setEditEnd,
+    editRepeat, setEditRepeat,
+    editRepeatDays,
+    editRepeatEnd, setEditRepeatEnd,
+    togglePillarForEdit, toggleRepeatDay
+  } = dlg;
+  const saveEdit = onSave;
+  // The time fields keep the native time control, with `step` set so its
+  // arrows, scroll wheel and picker list all move in 15-minute jumps.
+  // Browsers still accept an arbitrary typed minute, so the value is snapped
+  // on blur rather than on change -- snapping mid-keystroke would eat the
+  // first digit of a minute like ":45" before the second one arrives.
+  function snapToQuarter(str) {
+    if (!str) return str;
+    const min = timeToMin(str);
+    if (Number.isNaN(min)) return str;
+    return minToTime(Math.round(min / 15) * 15);
+  }
+  const timeInputStyle = {
+    border: `1px solid ${HAIRLINE}`,
+    borderRadius: 8,
+    padding: "7px 8px",
+    fontSize: 13,
+    fontFamily: "inherit",
+    outline: "none",
+    color: INK,
+    width: "100%",
+    boxSizing: "border-box"
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    onClick: () => setEditingItem(null),
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(28,25,23,0.4)",
+      zIndex: 1000,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      background: "#fff",
+      borderRadius: 14,
+      padding: 22,
+      width: 340,
+      maxWidth: "90vw",
+      boxShadow: "0 12px 40px rgba(0,0,0,0.22)",
+      display: "flex",
+      flexDirection: "column",
+      gap: 14,
+      fontFamily: "'DM Sans',sans-serif"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: INK
+    }
+  }, editingItem?.isNew ? "New event" : "Edit event"), /*#__PURE__*/React.createElement("input", {
+    value: editName,
+    onChange: e => setEditName(e.target.value),
+    onKeyDown: e => {
+      if (e.key === "Enter") saveEdit();
+      if (e.key === "Escape") setEditingItem(null);
+    },
+    autoFocus: true,
+    placeholder: "Event name",
+    style: {
+      border: `1px solid ${HAIRLINE}`,
+      borderRadius: 8,
+      padding: "9px 11px",
+      fontSize: 13,
+      fontFamily: "inherit",
+      outline: "none",
+      color: INK
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      color: MUTED,
+      fontWeight: 600
+    }
+  }, "Pillars"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6
+    }
+  }, cats.map(cat => {
+    const sel = editPillarIds.includes(cat.id);
+    return /*#__PURE__*/React.createElement("button", {
+      key: cat.id,
+      onClick: () => togglePillarForEdit(cat.id),
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: "0.07em",
+        textTransform: "uppercase",
+        fontFamily: "inherit",
+        cursor: "pointer",
+        padding: "4px 9px",
+        ...pillarChip(cat, sel)
+      }
+    }, sel && /*#__PURE__*/React.createElement("svg", {
+      width: "9",
+      height: "9",
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: "3",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }, /*#__PURE__*/React.createElement("polyline", {
+      points: "20 6 9 17 4 12"
+    })), cat.label);
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      color: MUTED,
+      fontWeight: 600
+    }
+  }, "Day and time"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    role: "switch",
+    "aria-checked": !editUnscheduled,
+    onClick: () => setEditUnscheduled(prev => !prev),
+    style: {
+      position: "relative",
+      width: 36,
+      height: 20,
+      borderRadius: 10,
+      border: "none",
+      cursor: "pointer",
+      background: editUnscheduled ? "#DCD2BF" : ACCENT,
+      transition: "background 0.15s ease",
+      padding: 0,
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      position: "absolute",
+      top: 2,
+      left: editUnscheduled ? 2 : 18,
+      width: 16,
+      height: 16,
+      borderRadius: "50%",
+      background: "#fff",
+      boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+      transition: "left 0.15s ease"
+    }
+  }))), !editUnscheduled && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+      padding: "2px 2px 0"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      fontSize: 10,
+      color: MUTED,
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.06em"
+    }
+  }, "Day", /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: editDate || "",
+    onChange: e => setEditDate(e.target.value),
+    style: {
+      border: `1px solid ${HAIRLINE}`,
+      borderRadius: 8,
+      padding: "7px 8px",
+      fontSize: 13,
+      fontFamily: "inherit",
+      outline: "none",
+      color: INK
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      fontSize: 10,
+      color: MUTED,
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.06em",
+      flex: 1
+    }
+  }, "Start", /*#__PURE__*/React.createElement(TimeField, {
+    value: editStart,
+    inputStyle: timeInputStyle,
+    onChange: (raw, isTyping) => {
+      if (!raw) {
+        setEditStart(raw);
+        return;
+      }
+      const nextStart = isTyping ? raw : snapToQuarter(raw);
+      const prevStart = timeToMin(editStart);
+      let prevEnd = timeToMin(editEnd);
+      if (prevEnd <= prevStart) prevEnd += 1440;
+      const dur = Math.max(CAL_MIN_DURATION, prevEnd - prevStart);
+      setEditStart(nextStart);
+      setEditEnd(minToTime(timeToMin(nextStart) + dur));
+    }
+  })), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      fontSize: 10,
+      color: MUTED,
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.06em",
+      flex: 1
+    }
+  }, "End", /*#__PURE__*/React.createElement(TimeField, {
+    value: editEnd,
+    inputStyle: timeInputStyle,
+    onChange: (raw, isTyping) => {
+      if (!raw) {
+        setEditEnd(raw);
+        return;
+      }
+      setEditEnd(isTyping ? raw : snapToQuarter(raw));
+    }
+  })))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+      paddingTop: 2
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      color: MUTED,
+      fontWeight: 600
+    }
+  }, "Repeat"), /*#__PURE__*/React.createElement("select", {
+    value: editRepeat,
+    onChange: e => setEditRepeat(e.target.value),
+    style: {
+      border: `1px solid ${HAIRLINE}`,
+      borderRadius: 8,
+      padding: "8px 9px",
+      fontSize: 13,
+      fontFamily: "inherit",
+      outline: "none",
+      color: INK,
+      background: "#fff",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("option", { value: REPEAT_NONE }, "Doesn't repeat"), /*#__PURE__*/React.createElement("option", { value: REPEAT_WEEKLY }, "Every week"), /*#__PURE__*/React.createElement("option", { value: REPEAT_BIWEEKLY }, "Every other week")),
+  // The day picker is what lets one control cover "every weekday", "Tue and
+  // Thu" and "just Mondays" without a menu of named presets for each. The
+  // event's own day is always lit and can't be turned off, so the setting
+  // can never describe a series the event itself isn't part of.
+  editRepeat !== REPEAT_NONE && /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", gap: 4 }
+  }, [1, 2, 3, 4, 5, 6, 0].map(dow => {
+    const on = editRepeatDays.includes(dow);
+    // The one chip that can't be turned off is the last one left on.
+    const locked = on && editRepeatDays.length === 1;
+    return /*#__PURE__*/React.createElement("button", {
+      key: dow,
+      type: "button",
+      onClick: () => toggleRepeatDay(dow),
+      title: locked ? `${DOW_SHORT[dow]} — a repeat needs at least one day` : DOW_SHORT[dow],
+      style: {
+        flex: 1,
+        height: 30,
+        borderRadius: 15,
+        border: `1px solid ${on ? ACCENT : HAIRLINE}`,
+        background: on ? ACCENT : "#fff",
+        color: on ? "#fff" : MUTED,
+        fontSize: 11,
+        fontWeight: 700,
+        fontFamily: "inherit",
+        cursor: locked ? "default" : "pointer",
+        padding: 0,
+        transition: "background 0.12s ease, color 0.12s ease"
+      }
+    }, DOW_INITIALS[dow]);
+  })), editRepeat !== REPEAT_NONE && /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      fontSize: 10,
+      color: MUTED,
+      fontWeight: 600,
+      textTransform: "uppercase",
+      letterSpacing: "0.06em"
+    }
+  }, "Ends", /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: editRepeatEnd,
+    onChange: e => setEditRepeatEnd(e.target.value),
+    style: {
+      border: `1px solid ${HAIRLINE}`,
+      borderRadius: 8,
+      padding: "6px 8px",
+      fontSize: 12,
+      fontFamily: "inherit",
+      outline: "none",
+      color: INK,
+      flex: 1
+    }
+  }), editRepeatEnd && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setEditRepeatEnd(""),
+    title: "No end date",
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 14,
+      color: FAINT,
+      padding: 0,
+      lineHeight: 1
+    }
+  }, "×")), editRepeat !== REPEAT_NONE && /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11, color: "#8A7F6B", lineHeight: 1.4 }
+  }, describeRule({ freq: editRepeat, byDay: editRepeatDays, endDs: editRepeatEnd || null }), !editRepeatEnd && " — no end date")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end",
+      gap: 8,
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setEditingItem(null),
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12,
+      color: INK_3,
+      fontFamily: "inherit",
+      padding: "7px 10px"
+    }
+  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+    onClick: saveEdit,
+    style: {
+      background: ACCENT,
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12,
+      fontWeight: 600,
+      color: "#fff",
+      fontFamily: "inherit",
+      padding: "7px 16px",
+      borderRadius: 8
+    }
+  }, "Save"))));
+}
+
+// ---------------------------------------------------------------------------
+// Modal
+//
+// The settings-family dialog shell: a dimmed backdrop that closes on click,
+// and a white card that swallows clicks so they never reach it. Four dialogs
+// spelled this out by hand, identically, including the shadow.
+//
+// Note that the event dialogs (new/edit event, and the repeat-scope question)
+// use a different, tighter shell. That difference is longstanding and looks
+// deliberate, so it is left alone rather than quietly unified here.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// RailButton
+//
+// One icon on the thin strip down the right edge. Each button toggles its own
+// panel: pressing it when that panel is already open closes it.
+//
+// Four of these were written out longhand, and adding a fifth — for progress
+// over time, say — meant copying forty lines of the same flexbox and the same
+// active/resting colour test. Now it is one call with an icon in it.
+// ---------------------------------------------------------------------------
+function RailButton({ tab, active, title, onToggle, activeColor = INK, activeBg = PAPER, column, dragProps, children }) {
+  return /*#__PURE__*/React.createElement("div", {
+    onClick: onToggle,
+    title: title,
+    ...(dragProps || null),
+    style: {
+      width: "100%",
+      height: 44,
+      display: "flex",
+      ...(column ? { flexDirection: "column", gap: 2 } : null),
+      alignItems: "center",
+      justifyContent: "center",
+      cursor: "pointer",
+      background: active ? activeBg : "transparent",
+      transition: "background 0.15s ease",
+      color: active ? activeColor : MUTED
+    }
+  }, children);
+}
+
+function Modal({ onClose, maxWidth = 400, padding = "28px 28px 24px", children }) {
+  return /*#__PURE__*/React.createElement("div", { onClick: onClose, style: MODAL_OVERLAY },
+    /*#__PURE__*/React.createElement("div", {
+      onClick: e => e.stopPropagation(),
+      style: {
+        background: "#fff",
+        borderRadius: 18,
+        border: `1px solid ${HAIRLINE}`,
+        boxShadow: "0 12px 48px rgba(0,0,0,0.18)",
+        padding: padding,
+        width: "100%",
+        maxWidth: maxWidth
+      }
+    }, children)
+  );
+}
+
+// The confirm step before wiping everything the app has stored.
+function StartFreshDialog({ onClose, onConfirm }) {
+  return /*#__PURE__*/React.createElement(Modal, { onClose: onClose }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      letterSpacing: "0.12em",
+      textTransform: "uppercase",
+      color: MUTED,
+      fontWeight: 600,
+      marginBottom: 6
+    }
+  }, "Start fresh"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: INK,
+      marginBottom: 4
+    }
+  }, "This can't be undone"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: INK_3,
+      marginBottom: 20,
+      lineHeight: 1.5
+    }
+  }, "Erases My Plan across all weeks \u2014 entries, ideas, reflections, intentions \u2014 and resets your pillars. Shared plans aren't affected. Back it up first if you want to keep any of it."), /*#__PURE__*/React.createElement("button", {
+    onClick: onConfirm,
+    style: {
+      width: "100%",
+      padding: "14px 16px",
+      borderRadius: 12,
+      border: "1.5px solid #FECACA",
+      background: "#FFF5F5",
+      cursor: "pointer",
+      textAlign: "left",
+      fontFamily: "inherit"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "#DC2626",
+      marginBottom: 3
+    }
+  }, "Yes, start fresh"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: INK_3,
+      lineHeight: 1.4
+    }
+  }, "You'll land on a blank week.")), /*#__PURE__*/React.createElement("button", {
+    onClick: () => onClose(),
+    style: {
+      marginTop: 16,
+      width: "100%",
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12,
+      color: MUTED,
+      fontFamily: "inherit",
+      padding: "4px 0"
+    }
+  }, "Cancel"));
+}
+
+// Asks how an imported file should land: merged in, or as a separate view.
+function ImportDialog({ pendingImport, onClose, doImport }) {
+  return /*#__PURE__*/React.createElement(Modal, { onClose: onClose }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      letterSpacing: "0.12em",
+      textTransform: "uppercase",
+      color: MUTED,
+      fontWeight: 600,
+      marginBottom: 6
+    }
+  }, "Open a shared plan"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: INK,
+      marginBottom: 4
+    }
+  }, pendingImport._meta?.exportedBy ? pendingImport._meta.exportedBy + "'s plan" : "A shared plan"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      height: 20
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => doImport("view"),
+    style: {
+      padding: "14px 16px",
+      borderRadius: 12,
+      border: `1.5px solid ${HAIRLINE}`,
+      background: "#FAFAF9",
+      cursor: "pointer",
+      textAlign: "left",
+      fontFamily: "inherit"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: INK,
+      marginBottom: 3
+    }
+  }, "Open alongside mine"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: INK_3,
+      lineHeight: 1.4
+    }
+  }, "Read-only. My Plan stays untouched.")), /*#__PURE__*/React.createElement("button", {
+    onClick: () => doImport("replace"),
+    style: {
+      padding: "14px 16px",
+      borderRadius: 12,
+      border: "1.5px solid #FECACA",
+      background: "#FFF5F5",
+      cursor: "pointer",
+      textAlign: "left",
+      fontFamily: "inherit"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "#DC2626",
+      marginBottom: 3
+    }
+  }, "Replace My Plan"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: INK_3,
+      lineHeight: 1.4
+    }
+  }, "Overwrites everything. Back mine up first."))), /*#__PURE__*/React.createElement("button", {
+    onClick: () => onClose(),
+    style: {
+      marginTop: 16,
+      width: "100%",
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12,
+      color: MUTED,
+      fontFamily: "inherit",
+      padding: "4px 0"
+    }
+  }, "Cancel"));
+}
+
+// Asks who you are before a plan leaves the app carrying your name.
+function NamePromptDialog({ namePromptVal, setNamePromptVal, namePromptNext, onClose, saveUserName }) {
+  return /*#__PURE__*/React.createElement(Modal, { onClose: onClose, maxWidth: 360 }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      letterSpacing: "0.12em",
+      textTransform: "uppercase",
+      color: MUTED,
+      fontWeight: 600,
+      marginBottom: 6
+    }
+  }, namePromptNext === "export" ? "Before you export" : "Your plan"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: INK,
+      marginBottom: 4
+    }
+  }, "What's your name?"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: INK_3,
+      marginBottom: 20,
+      lineHeight: 1.5
+    }
+  }, namePromptNext === "export" ? "We'll use your name in the export file name, so you can find the data backup and share it with friends." : "We'll show your initials on your plan, and use your name to label any plan you share with someone."), /*#__PURE__*/React.createElement("input", {
+    autoFocus: true,
+    value: namePromptVal,
+    onChange: e => setNamePromptVal(e.target.value),
+    onKeyDown: e => {
+      if (e.key === "Enter") saveUserName();
+      if (e.key === "Escape") onClose();
+    },
+    placeholder: "Your name",
+    style: {
+      width: "100%",
+      padding: "10px 12px",
+      borderRadius: 9,
+      border: `1.5px solid ${HAIRLINE}`,
+      outline: "none",
+      fontSize: 14,
+      fontFamily: "'DM Sans',sans-serif",
+      color: INK,
+      boxSizing: "border-box",
+      marginBottom: 12
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: saveUserName,
+    style: {
+      width: "100%",
+      padding: "11px",
+      borderRadius: 9,
+      background: INK,
+      border: "none",
+      cursor: "pointer",
+      fontSize: 13,
+      color: "#fff",
+      fontWeight: 600,
+      fontFamily: "inherit",
+      opacity: namePromptVal.trim() ? 1 : 0.4
+    }
+  }, namePromptNext === "export" ? "Save & Export" : "Save"));
+}
+
+// Chooses what goes into an export — chiefly whether reflections travel with it.
+function ExportDialog({ pendingExportName, exportIncludeReflections, setExportIncludeReflections, onClose, doExport }) {
+  return /*#__PURE__*/React.createElement(Modal, { onClose: onClose, maxWidth: 320, padding: "24px 24px 20px" }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      letterSpacing: "0.12em",
+      textTransform: "uppercase",
+      color: MUTED,
+      fontWeight: 600,
+      marginBottom: 16
+    }
+  }, "Share or back up"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 16,
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      color: INK
+    }
+  }, "Include reflections"),
+  // Which entries a reflection covers isn't obvious from the toggle alone,
+  // and it's the one setting here you'd regret getting wrong when the file
+  // is going to another person.
+  /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: MUTED,
+      marginTop: 2,
+      lineHeight: 1.4
+    }
+  }, "Your private journal. Leave off when sharing.")), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setExportIncludeReflections(v => !v),
+    style: {
+      width: 42,
+      height: 24,
+      borderRadius: 12,
+      border: "none",
+      cursor: "pointer",
+      padding: 0,
+      background: exportIncludeReflections ? REFLECT : "#D1CCCA",
+      transition: "background 0.2s ease",
+      position: "relative",
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 18,
+      height: 18,
+      borderRadius: "50%",
+      background: "#fff",
+      position: "absolute",
+      top: 3,
+      left: exportIncludeReflections ? 21 : 3,
+      transition: "left 0.2s ease",
+      boxShadow: "0 1px 3px rgba(0,0,0,0.2)"
+    }
+  }))), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      onClose();
+      doExport(pendingExportName, exportIncludeReflections);
+    },
+    style: {
+      width: "100%",
+      padding: "11px",
+      borderRadius: 9,
+      background: INK,
+      border: "none",
+      cursor: "pointer",
+      fontSize: 13,
+      color: "#fff",
+      fontWeight: 600,
+      fontFamily: "inherit"
+    }
+  }, "Download"));
 }
 
 function Planner() {
@@ -6682,22 +7633,7 @@ function Planner() {
   const setEntries = entryStore.setEntries;
   useEffect(() => {
     try {
-      const r = store.get(key);
-      const raw = r ? JSON.parse(r.value) : null;
-      let doneBlob = {}, timesBlob = {};
-      if (!(raw && raw.__v === 2)) {
-        // Legacy week: pull the old global done blob and this week's old
-        // times blob once, purely to seed the one-time migration below.
-        try {
-          const dr = store.get("planner:done");
-          doneBlob = dr ? JSON.parse(dr.value) : {};
-        } catch {}
-        try {
-          const tr = store.get(timesKey);
-          timesBlob = tr ? JSON.parse(tr.value) : {};
-        } catch {}
-      }
-      const loadedWeek = loadWeekEntries(raw, doneBlob, timesBlob);
+      const { raw, entries: loadedWeek } = readWeekForLoad(key);
       // Recover anything previously misfiled into this week's file by a move
       // to a different week, sending each entry on to where it belongs.
       const { kept, strays, hasStrays } = extractStrayEntries(loadedWeek, dates);
@@ -6715,7 +7651,7 @@ function Planner() {
         // Persist the migrated/healed shape immediately — covers both a
         // legacy week being upgraded and an already-v2 week whose schedule
         // needed repairing, so the fix sticks in storage, not just this render.
-        store.set(key, JSON.stringify(packWeekEntries(weekEntries)));
+        db.write(key, packWeekEntries(weekEntries));
       }
     } catch {
       setEntries({});
@@ -6734,28 +7670,17 @@ function Planner() {
     setEntries(next);
   }, [rules, key, isOwnView]);
   useEffect(() => {
-    try {
-      const r = store.get("planner:cats");
-      if (r) setCats(migrateCatColors(JSON.parse(r.value)));
-    } catch {}
-    try {
-      const r = store.get("planner:goals");
-      if (r) setGoals(JSON.parse(r.value));
-    } catch {}
-    try {
-      const r = store.get("planner:importedViews");
-      if (r) setImportedViews(JSON.parse(r.value));
-    } catch {}
-    try {
-      const r = store.get("planner:userName");
-      if (r) setUserName(r.value);
-    } catch {}
-    try {
-      const r = store.get("planner:ratings");
-      if (r) setRatings(JSON.parse(r.value));
-    } catch {}
-    const j = store.get(JOURNAL_STORAGE_KEY);
-    journalStore.load(j ? j.value : null);
+    const storedCats = db.read(K.cats);
+    if (storedCats) setCats(migrateCatColors(storedCats));
+    const storedGoals = db.read(K.goals);
+    if (storedGoals) setGoals(storedGoals);
+    const storedViews = db.read(K.importedViews);
+    if (storedViews) setImportedViews(storedViews);
+    const storedName = db.readRaw(K.userName);
+    if (storedName) setUserName(storedName);
+    const storedRatings = db.read(K.ratings);
+    if (storedRatings) setRatings(storedRatings);
+    journalStore.load(db.read(K.journal, {}));
   }, []);
   useEffect(() => {
     if (renamingId && renameRef.current) renameRef.current.focus();
@@ -6839,7 +7764,7 @@ function Planner() {
   function saveGoals(ng) {
     if (!isOwnView) return;
     setGoals(ng);
-    store.set("planner:goals", JSON.stringify(ng));
+    db.write(K.goals, ng);
   }
   function removeGoal(catId) {
     const ng = {
@@ -6887,8 +7812,11 @@ function Planner() {
       return;
     }
     const insertInfo = insertInfoFromHover(targetDs, targetCatId);
-    noteOccurrenceMoved(dc.ds, targetDs, entriesForCell(entries, dc.ds, dc.catId).map(e => e.id));
-    entryStore.apply(prev => entryOps.moveCell(prev, dc.ds, dc.catId, targetDs, targetCatId, insertInfo));
+    const cellIds = entriesForCell(entries, dc.ds, dc.catId).map(e => e.id);
+    requestOccurrenceMove(dc.ds, targetDs, cellIds, detach => entryStore.apply(prev => {
+      const moved = entryOps.moveCell(prev, dc.ds, dc.catId, targetDs, targetCatId, insertInfo);
+      return detach ? entryOps.detachSeries(moved, targetDs, cellIds) : moved;
+    }));
     setDraggingCell(null);
     setCrossCellHover(null);
   }
@@ -7034,7 +7962,7 @@ function Planner() {
   function saveCats(nc) {
     if (!isOwnView) return;
     setCats(nc);
-    store.set("planner:cats", JSON.stringify(nc));
+    db.write(K.cats, nc);
   }
   function saveRating(ds, val) {
     if (!isOwnView) return;
@@ -7043,7 +7971,7 @@ function Planner() {
     };
     if (next[ds] === val) delete next[ds];else next[ds] = val;
     setRatings(next);
-    store.set("planner:ratings", JSON.stringify(next));
+    db.write(K.ratings, next);
   }
   function cycleRating(ds) {
     if (!isOwnView) return;
@@ -7053,7 +7981,7 @@ function Planner() {
     const cur = next[ds];
     if (!cur) next[ds] = 1;else if (cur >= 3) delete next[ds];else next[ds] = cur + 1;
     setRatings(next);
-    store.set("planner:ratings", JSON.stringify(next));
+    db.write(K.ratings, next);
   }
   function exportData() {
     if (!userName) {
@@ -7074,7 +8002,7 @@ function Planner() {
     const n = namePromptVal.trim();
     if (!n) return;
     setUserName(n);
-    store.set("planner:userName", n);
+    db.writeRaw(K.userName, n);
     setShowNamePrompt(false);
     if (namePromptNext === "export") {
       setPendingExportName(n);
@@ -7083,7 +8011,7 @@ function Planner() {
   }
   function doExport(name, includeReflections = true) {
     const now = new Date();
-    const out = buildExportPayload(storageSnapshot(), { name, includeReflections, now });
+    const out = buildExportPayload(db.snapshot(), { name, includeReflections, now });
     const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -7109,38 +8037,21 @@ function Planner() {
     const obj = pendingImport;
     if (mode === "replace") {
       Object.entries(obj).forEach(([k, v]) => {
-        if (k !== "_meta") localStorage.setItem(k, v);
+        if (k !== "_meta") db.writeRaw(k, v);
       });
-      const cr = store.get("planner:cats");
-      if (cr) setCats(migrateCatColors(safeParse(cr.value, DEFAULT_CATS)));
-      const gr = store.get("planner:goals");
-      if (gr) setGoals(safeParse(gr.value, {}));
-      const rr = store.get("planner:ratings");
-      setRatings(safeParse(rr && rr.value, {}));
-      const j = store.get(JOURNAL_STORAGE_KEY);
-      journalStore.replaceAll(safeParse(j && j.value, {}));
+      if (db.readRaw(K.cats)) setCats(migrateCatColors(db.read(K.cats, DEFAULT_CATS)));
+      if (db.readRaw(K.goals)) setGoals(db.read(K.goals, {}));
+      setRatings(db.read(K.ratings, {}));
+      journalStore.replaceAll(db.read(K.journal, {}));
       // The restored file carries its own series, so the in-memory rules have
       // to be replaced rather than left pointing at the old ones.
       const restoredRules = loadRules();
       rulesRef.current = restoredRules;
       setRules(restoredRules);
       try {
-        const r = store.get(key);
-        const raw = r ? JSON.parse(r.value) : null;
-        let doneBlob = {}, timesBlob = {};
-        if (!(raw && raw.__v === 2)) {
-          try {
-            const dr = store.get("planner:done");
-            doneBlob = dr ? JSON.parse(dr.value) : {};
-          } catch {}
-          try {
-            const tr = store.get(timesKey);
-            timesBlob = tr ? JSON.parse(tr.value) : {};
-          } catch {}
-        }
-        const loaded = loadWeekEntries(raw, doneBlob, timesBlob);
+        const { raw, entries: loaded } = readWeekForLoad(key);
         setEntries(loaded);
-        if (raw) store.set(key, JSON.stringify(packWeekEntries(loaded)));
+        if (raw) db.write(key, packWeekEntries(loaded));
       } catch {
         setEntries({});
       }
@@ -7155,7 +8066,7 @@ function Planner() {
       const newView = buildImportedView(obj, { id: `view_${Date.now()}` });
       const updated = [...importedViews, newView];
       setImportedViews(updated);
-      store.set("planner:importedViews", JSON.stringify(updated));
+      db.write(K.importedViews, updated);
       setActiveViewId(newView.id);
       setPendingImport(null);
       setImportConfirm({
@@ -7168,16 +8079,13 @@ function Planner() {
   function removeImportedView(id) {
     const updated = importedViews.filter(v => v.id !== id);
     setImportedViews(updated);
-    store.set("planner:importedViews", JSON.stringify(updated));
+    db.write(K.importedViews, updated);
     if (activeViewId === id) setActiveViewId("own");
   }
   function startFresh() {
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith("planner:") && k !== "planner:importedViews") {
-        localStorage.removeItem(k);
-      }
-    }
+    db.keys().forEach(k => {
+      if (k !== K.importedViews) db.remove(k);
+    });
     setEntries({});
     setCats(DEFAULT_CATS);
     // Rules are held in state as well as storage, so clearing the keys isn't
@@ -7219,9 +8127,9 @@ function Planner() {
   // pillar holds that has no other home, and an accidental delete shouldn't
   // be the thing that loses a list someone has been building for months.
   function untagPillarEverywhere(id) {
-    const snap = storageSnapshot();
+    const snap = db.snapshot();
     Object.keys(snap).forEach(k => {
-      if (!k.startsWith("planner:week:")) return;
+      if (!k.startsWith(WEEK_PREFIX)) return;
       // readStoredWeek normalises the pre-v2 shapes on the way in, so weeks
       // saved before the entry model landed get untagged correctly too.
       const week = readStoredWeek(k);
@@ -7315,7 +8223,7 @@ function Planner() {
     const text = (e.dataTransfer.getData("text/plain") || "").trim();
     const src = externalItemDrag;
     const c = cats.find(c => c.id === src?.catId);
-    openReflectWithItem(text, c?.label || "", c?.color || "#7C3AED", src?.ds || null);
+    openReflectWithItem(text, c?.label || "", c?.color || REFLECT, src?.ds || null);
     clearItemDrags();
   }
   function clearItemDrags() {
@@ -7357,8 +8265,10 @@ function Planner() {
     const { ds: srcDs, catId: srcCatId, entryId } = draggingLine;
     if (srcDs === targetDs && srcCatId === targetCatId) return;
     const insertInfo = insertInfoFromHover(targetDs, targetCatId, entryId);
-    noteOccurrenceMoved(srcDs, targetDs, entryId);
-    entryStore.apply(prev => entryOps.moveEntry(prev, srcDs, srcCatId, entryId, targetDs, targetCatId, insertInfo));
+    requestOccurrenceMove(srcDs, targetDs, entryId, detach => entryStore.apply(prev => {
+      const moved = entryOps.moveEntry(prev, srcDs, srcCatId, entryId, targetDs, targetCatId, insertInfo);
+      return detach ? entryOps.detachSeries(moved, targetDs, entryId) : moved;
+    }));
     setDraggingLine(null);
     setCrossCellHover(null);
   }
@@ -7368,8 +8278,10 @@ function Planner() {
     const e = entryStore.get(srcDs, entryId);
     if (!e) return;
     const sched = resolveSchedInput(timeStr, e.sched?.duration);
-    noteOccurrenceMoved(srcDs, targetDs, entryId);
-    entryStore.apply(prev => entryOps.schedule(prev, srcDs, entryId, targetDs, sched, insertInfo));
+    requestOccurrenceMove(srcDs, targetDs, entryId, detach => entryStore.apply(prev => {
+      const moved = entryOps.schedule(prev, srcDs, entryId, targetDs, sched, insertInfo);
+      return detach ? entryOps.detachSeries(moved, targetDs, entryId) : moved;
+    }), sched);
   }
   function resizeItem(ds, entryId, newDuration) {
     entryStore.apply(prev => entryOps.resize(prev, ds, entryId, newDuration));
@@ -7403,15 +8315,59 @@ function Planner() {
   // event would grow back on the day it was moved off and the user would end
   // up with two. Skipping the source date is what makes a moved occurrence
   // read as moved rather than copied.
+  // Called at the moment an occurrence is dragged onto a different day. It
+  // holds the move and asks the scope question instead of guessing: dropping a
+  // Monday onto a Tuesday could mean "not this week" or "Tuesdays from now on",
+  // and silently picking one was abrupt — the event either quietly left its
+  // series or quietly dragged the series with it.
+  //
+  // `apply(detach)` is the caller's own move, handed over unrun so the answer
+  // decides both when it happens and whether the entry keeps its series.
+  // Nothing moves until the question is answered; Cancel leaves everything
+  // where it was.
+  function requestOccurrenceMove(srcDs, targetDs, entryIds, apply, sched) {
+    const ids = Array.isArray(entryIds) ? entryIds : [entryIds];
+    const occurrences = ids.filter(id => {
+      const e = entryStore.get(srcDs, id);
+      return e?.seriesId && rules[e.seriesId];
+    });
+    // Same-day moves aren't occurrence moves, and a plain event has no series
+    // to have an opinion about. Both just go.
+    if (srcDs === targetDs || !occurrences.length) {
+      apply(false);
+      return;
+    }
+    setSeriesScope({
+      kind: "move",
+      ds: srcDs,
+      targetDs,
+      entryIds: occurrences,
+      ruleId: entryStore.get(srcDs, occurrences[0]).seriesId,
+      // Set when the drag also changed the time, so "from now on" can carry
+      // the new time onto the rule rather than leaving it at the old one.
+      sched: sched || null,
+      apply
+    });
+  }
+  // Tells the series machinery that entries have moved off `srcDs`, and hands
+  // back the ids that were series occurrences so the caller can cut them loose
+  // in the same write.
+  //
+  // Same-day moves — reordering a row, changing its pillar, changing its time —
+  // are not occurrence moves and return nothing.
   function noteOccurrenceMoved(srcDs, targetDs, entryIds) {
-    if (srcDs === targetDs) return;
+    if (srcDs === targetDs) return [];
     const ids = Array.isArray(entryIds) ? entryIds : [entryIds];
     const skipped = new Set();
+    const wereOccurrences = [];
     ids.forEach(entryId => {
       const e = entryStore.get(srcDs, entryId);
-      if (e?.seriesId && rules[e.seriesId]) skipped.add(e.seriesId);
+      if (e?.seriesId && rules[e.seriesId]) {
+        skipped.add(e.seriesId);
+        wereOccurrences.push(entryId);
+      }
     });
-    if (!skipped.size) return;
+    if (!skipped.size) return [];
     const next = { ...rules };
     skipped.forEach(sid => {
       const rule = next[sid];
@@ -7419,6 +8375,7 @@ function Planner() {
       next[sid] = { ...rule, skip: [...(rule.skip || []), srcDs] };
     });
     commitRules(next);
+    return wereOccurrences;
   }
   function deleteEntryTagById(ds, catId, entryId) {
     const e = entryStore.get(ds, entryId);
@@ -7499,121 +8456,15 @@ function Planner() {
     });
     return set;
   }, [displayJournal, weekStart]);
-  // --- Item edit/create dialog (shared by calendar view and planner grid) ---
-  const [editingItem, setEditingItem] = useState(null);
-  const [editName, setEditName] = useState("");
-  const [editPillarIds, setEditPillarIds] = useState([]);
-  const [editLinkUrl, setEditLinkUrl] = useState(null);
-  const [editUnscheduled, setEditUnscheduled] = useState(false);
-  const [editDate, setEditDate] = useState(null);
-  const [editStart, setEditStart] = useState("09:00");
-  const [editEnd, setEditEnd] = useState("10:00");
-  // Repeat settings for the open dialog. `editRepeatDays` always contains the
-  // weekday the event itself falls on — a series that doesn't include its own
-  // event has no coherent meaning, so that chip is locked on rather than
-  // being allowed into an impossible state.
-  const [editRepeat, setEditRepeat] = useState(REPEAT_NONE);
-  const [editRepeatDays, setEditRepeatDays] = useState([]);
-  const [editRepeatEnd, setEditRepeatEnd] = useState("");
-  function timeToMin(str) {
-    const [h, m] = str.split(":").map(Number);
-    return h * 60 + m;
-  }
-  function minToTime(min) {
-    min = (min % 1440 + 1440) % 1440;
-    return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
-  }
-  // The time fields keep the native time control, with `step` set so its
-  // arrows, scroll wheel and picker list all move in 15-minute jumps.
-  // Browsers still accept an arbitrary typed minute, so the value is snapped
-  // on blur rather than on change -- snapping mid-keystroke would eat the
-  // first digit of a minute like ":45" before the second one arrives.
-  function snapToQuarter(str) {
-    if (!str) return str;
-    const min = timeToMin(str);
-    if (Number.isNaN(min)) return str;
-    return minToTime(Math.round(min / 15) * 15);
-  }
-  const timeInputStyle = {
-    border: "1px solid #E7DECB",
-    borderRadius: 8,
-    padding: "7px 8px",
-    fontSize: 13,
-    fontFamily: "inherit",
-    outline: "none",
-    color: "#1C1917",
-    width: "100%",
-    boxSizing: "border-box"
-  };
-  // `forceUnscheduled`, when true, starts the "Day and time" toggle off
-  // regardless of whether the entry actually has a schedule. Used when
-  // opening the dialog from the planner grid, where items are organized
-  // by theme rather than time and scheduling is the exception, not the
-  // default the way it is in the calendar view.
-  function openEditById(ds, entryId, forceUnscheduled) {
-    const e = entries[ds]?.[entryId];
-    if (!e) return;
-    const m = e.text.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-    setEditName(m ? m[1] : e.text);
-    setEditLinkUrl(m ? m[2] : null);
-    setEditPillarIds(pillarsOrDefault(e.pillars));
-    setEditDate(ds);
-    if (e.sched && !forceUnscheduled) {
-      setEditUnscheduled(false);
-      setEditStart(e.sched.start);
-      setEditEnd(minToTime(timeToMin(e.sched.start) + e.sched.duration));
-    } else {
-      setEditUnscheduled(true);
-      setEditStart("09:00");
-      setEditEnd("10:00");
-    }
-    const rule = e.seriesId ? rules[e.seriesId] : null;
-    setEditRepeat(rule ? rule.freq : REPEAT_NONE);
-    setEditRepeatDays(rule ? [...rule.byDay] : [dowOfDs(ds)]);
-    setEditRepeatEnd(rule?.endDs || "");
-    setEditingItem({ ds, entryId, seriesId: rule ? rule.id : null });
-  }
-  // `endMinutes` (minutes from midnight) is supplied when the user drew the
-  // block by dragging on the calendar grid; without it the dialog falls back
-  // to the default duration, which is what a plain click gives.
-  function openCreate(ds, hour, minute, presetPillars, endMinutes) {
-    setEditName("");
-    setEditLinkUrl(null);
-    setEditPillarIds(presetPillars || []);
-    setEditDate(ds);
-    if (hour != null) {
-      setEditUnscheduled(false);
-      const start = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-      setEditStart(start);
-      const startMin = timeToMin(start);
-      const endMin = endMinutes != null ? Math.max(startMin + CAL_MIN_DURATION, endMinutes) : startMin + CAL_DEFAULT_DURATION;
-      setEditEnd(minToTime(endMin));
-    } else {
-      setEditUnscheduled(true);
-      setEditStart("09:00");
-      setEditEnd("10:00");
-    }
-    setEditRepeat(REPEAT_NONE);
-    setEditRepeatDays([dowOfDs(ds)]);
-    setEditRepeatEnd("");
-    setEditingItem({ ds, isNew: true, seriesId: null });
-  }
-  function togglePillarForEdit(catId) {
-    setEditPillarIds(prev => prev.includes(catId) ? prev.filter(id => id !== catId) : [...prev, catId]);
-  }
-  // The event's own weekday can't be switched off, so toggling it is a no-op
-  // rather than something that silently produces a series the event isn't in.
-  function toggleRepeatDay(dow) {
-    if (editDate && dow === dowOfDs(editDate)) return;
-    setEditRepeatDays(prev => prev.includes(dow) ? prev.filter(d => d !== dow) : [...prev, dow].sort((a, b) => a - b));
-  }
-  // Keeps that invariant true when the user changes the event's date while
-  // the repeat control is open.
-  useEffect(() => {
-    if (!editingItem || editRepeat === REPEAT_NONE || !editDate) return;
-    const dow = dowOfDs(editDate);
-    setEditRepeatDays(prev => prev.includes(dow) ? prev : [...prev, dow].sort((a, b) => a - b));
-  }, [editDate, editRepeat, editingItem]);
+  // Draft state for the new/edit event dialog. Eleven values, one dialog:
+  // they live in their own hook now rather than among Planner's own state.
+  const dlg = useEventDialog({ entries, rules });
+  const {
+    editingItem, setEditingItem, editName, editPillarIds, editLinkUrl,
+    editUnscheduled, editDate, editStart, editEnd,
+    editRepeat, editRepeatDays, editRepeatEnd,
+    openEditById, openCreate
+  } = dlg;
   function saveEdit() {
     if (!editName.trim()) {
       setEditingItem(null);
@@ -7709,6 +8560,28 @@ function Planner() {
       reloadWeekFromStore();
       return;
     }
+    if (s.kind === "move") {
+      if (scope === "only") {
+        // Just this week: the rule is told to skip the day the event left, and
+        // the event itself becomes an ordinary one so a later edit to the
+        // series doesn't reach across and rewrite it.
+        noteOccurrenceMoved(s.ds, s.targetDs, s.entryIds);
+        s.apply(true);
+        return;
+      }
+      // From now on: the series changes which weekday it lands on. The old day
+      // drops out of the rule, the new one joins, and the occurrence stays a
+      // member. Weeks already behind you keep the shape they had.
+      const srcDow = dowOfDs(s.ds);
+      const tgtDow = dowOfDs(s.targetDs);
+      const byDay = [...new Set(rule.byDay.filter(dow => dow !== srcDow).concat(tgtDow))].sort((a, b) => a - b);
+      const movedRule = { ...rule, byDay, sched: s.sched ? sanitizeSched(s.sched) : rule.sched };
+      s.apply(false);
+      commitRules({ ...rules, [s.ruleId]: movedRule });
+      syncSeriesInstances(movedRule, s.ds);
+      reloadWeekFromStore();
+      return;
+    }
     const d = s.draft;
     if (scope === "only") {
       // Detached: the edit lands on this occurrence, it leaves the series,
@@ -7795,14 +8668,14 @@ function Planner() {
       justifyContent: "space-between",
       gap: "8px 16px",
       padding: "10px 14px",
-      borderBottom: "1px solid #E7DECB",
+      borderBottom: `1px solid ${HAIRLINE}`,
       background: PLAN_BG
     }
   }, /*#__PURE__*/React.createElement("div", {
     key: "mode",
     style: {
       display: "flex",
-      background: "#E7DECB",
+      background: HAIRLINE,
       borderRadius: 8,
       padding: 2,
       flexShrink: 0
@@ -7820,7 +8693,7 @@ function Planner() {
       fontWeight: 600,
       fontFamily: "inherit",
       whiteSpace: "nowrap",
-      color: viewMode === mode ? "#1C1917" : "#8A7F6C",
+      color: viewMode === mode ? INK : "#8A7F6C",
       boxShadow: viewMode === mode ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
       transition: "all 0.15s ease"
     }
@@ -7846,7 +8719,7 @@ function Planner() {
       fontWeight: 600,
       letterSpacing: "0.1em",
       textTransform: "uppercase",
-      color: "#A79C88",
+      color: MUTED,
       flexShrink: 0
     }
   }, "Focus"), displayCats.map(cat => {
@@ -7880,7 +8753,7 @@ return /*#__PURE__*/React.createElement("div", {
       paddingBottom: 40,
       paddingLeft: 20,
       paddingRight: sidebarOpen ? 320 : 48,
-      color: "#1C1917",
+      color: INK,
       transition: "padding-right 0.2s ease"
     }
   }, /*#__PURE__*/React.createElement("div", {
@@ -7913,7 +8786,7 @@ return /*#__PURE__*/React.createElement("div", {
       marginTop: 8,
       padding: "3px 9px",
       borderRadius: 999,
-      background: "#F2ECE0",
+      background: WASH,
       fontSize: 10,
       fontWeight: 600,
       letterSpacing: "0.06em",
@@ -7960,7 +8833,7 @@ return /*#__PURE__*/React.createElement("div", {
       minWidth: 210,
       textAlign: "center",
       letterSpacing: "0.01em",
-      color: "#57534E",
+      color: INK_2,
       fontWeight: 500
     }
   }, weekLabel(dates)), /*#__PURE__*/React.createElement("button", {
@@ -7978,7 +8851,7 @@ return /*#__PURE__*/React.createElement("div", {
       fontSize: 12,
       padding: "5px 14px",
       letterSpacing: "0.06em",
-      color: "#C4622F",
+      color: ACCENT,
       borderColor: "#FDBA74",
       fontWeight: 600
     }
@@ -8009,7 +8882,7 @@ return /*#__PURE__*/React.createElement("div", {
   }), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 12,
-      color: "#78716C",
+      color: INK_3,
       fontWeight: 600
     }
   }, isOwnView ? "My Plan" : splitViewName(activeView.name).who), /*#__PURE__*/React.createElement("svg", {
@@ -8024,7 +8897,7 @@ return /*#__PURE__*/React.createElement("div", {
     }
   }, /*#__PURE__*/React.createElement("path", {
     d: "M2 3.5L5 6.5L8 3.5",
-    stroke: "#A79C88",
+    stroke: MUTED,
     strokeWidth: "1.5",
     strokeLinecap: "round",
     strokeLinejoin: "round"
@@ -8034,7 +8907,7 @@ return /*#__PURE__*/React.createElement("div", {
       top: "calc(100% + 6px)",
       left: 0,
       background: "#fff",
-      border: "1px solid #E7DECB",
+      border: `1px solid ${HAIRLINE}`,
       borderRadius: 10,
       boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
       minWidth: 250,
@@ -8063,7 +8936,7 @@ return /*#__PURE__*/React.createElement("div", {
       fontFamily: "inherit",
       fontSize: 12,
       fontWeight: 600,
-      color: "#1C1917",
+      color: INK,
       textAlign: "left"
     }
   }, /*#__PURE__*/React.createElement(PlanAvatar, {
@@ -8087,9 +8960,9 @@ return /*#__PURE__*/React.createElement("div", {
       fontWeight: 500,
       marginTop: 1,
       cursor: "pointer",
-      color: userName ? "#BCB2A0" : "#C4622F",
+      color: userName ? FAINT : ACCENT,
       textDecoration: "underline",
-      textDecorationColor: userName ? "#E7DECB" : "#FDBA74",
+      textDecorationColor: userName ? HAIRLINE : "#FDBA74",
       textUnderlineOffset: 2,
       overflow: "hidden",
       textOverflow: "ellipsis",
@@ -8100,7 +8973,7 @@ return /*#__PURE__*/React.createElement("div", {
     height: "12",
     viewBox: "0 0 24 24",
     fill: "none",
-    stroke: "#1C1917",
+    stroke: INK,
     strokeWidth: "2.5",
     strokeLinecap: "round",
     style: {
@@ -8115,14 +8988,14 @@ return /*#__PURE__*/React.createElement("div", {
       fontWeight: 600,
       letterSpacing: "0.1em",
       textTransform: "uppercase",
-      color: "#BCB2A0",
+      color: FAINT,
       padding: "10px 14px 4px",
-      borderTop: "1px solid #F2ECE0"
+      borderTop: `1px solid ${WASH}`
     }
   }, "Shared with you"), importedViews.map(v => {
     const active = activeViewId === v.id;
     const { who, when } = splitViewName(v.name);
-    const dotColor = v.cats?.[0]?.color || "#A79C88";
+    const dotColor = v.cats?.[0]?.color || MUTED;
     return /*#__PURE__*/React.createElement("div", {
       key: v.id,
       style: {
@@ -8160,7 +9033,7 @@ return /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12,
         fontWeight: 600,
-        color: "#1C1917",
+        color: INK,
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap"
@@ -8168,7 +9041,7 @@ return /*#__PURE__*/React.createElement("div", {
     }, who), when && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
-        color: "#BCB2A0",
+        color: FAINT,
         marginTop: 1
       }
     }, "Shared " + when)), active && /*#__PURE__*/React.createElement("svg", {
@@ -8176,7 +9049,7 @@ return /*#__PURE__*/React.createElement("div", {
       height: "12",
       viewBox: "0 0 24 24",
       fill: "none",
-      stroke: "#1C1917",
+      stroke: INK,
       strokeWidth: "2.5",
       strokeLinecap: "round",
       style: {
@@ -8191,18 +9064,18 @@ return /*#__PURE__*/React.createElement("div", {
       style: {
         background: "none",
         border: "none",
-        borderLeft: "1px solid #F2ECE0",
+        borderLeft: `1px solid ${WASH}`,
         cursor: "pointer",
         padding: "10px 12px",
         fontSize: 14,
-        color: "#BCB2A0",
+        color: FAINT,
         lineHeight: 1,
         flexShrink: 0
       }
     }, "\u00d7"));
   }), /*#__PURE__*/React.createElement("div", {
     style: {
-      borderTop: "1px solid #E7DECB"
+      borderTop: `1px solid ${HAIRLINE}`
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => {
@@ -8221,7 +9094,7 @@ return /*#__PURE__*/React.createElement("div", {
       fontFamily: "inherit",
       fontSize: 12,
       fontWeight: 500,
-      color: "#78716C",
+      color: INK_3,
       textAlign: "left"
     }
   }, /*#__PURE__*/React.createElement("svg", {
@@ -8260,7 +9133,7 @@ return /*#__PURE__*/React.createElement("div", {
       fontFamily: "inherit",
       fontSize: 12,
       fontWeight: 500,
-      color: "#78716C",
+      color: INK_3,
       textAlign: "left"
     }
   }, /*#__PURE__*/React.createElement("svg", {
@@ -8284,7 +9157,7 @@ return /*#__PURE__*/React.createElement("div", {
     y2: "3"
   })), "Share or back up my plan\u2026")), /*#__PURE__*/React.createElement("div", {
     style: {
-      borderTop: "1px solid #E7DECB"
+      borderTop: `1px solid ${HAIRLINE}`
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => {
@@ -8346,7 +9219,7 @@ return /*#__PURE__*/React.createElement("div", {
     onCreateItem: isOwnView ? createCalendarItem : null,
     toolbar: toolbar,
     isDimmed: isDimmedByFocus,
-    onReflectDay: isOwnView ? (ds, weekday) => openReflectWithItem("", weekday, "#7C3AED", ds) : null,
+    onReflectDay: isOwnView ? (ds, weekday) => openReflectWithItem("", weekday, REFLECT, ds) : null,
     onOpenDayReflection: isOwnView ? ds => openDayReflection(ds) : null,
     dayReflectionDates: isOwnView ? dayReflectionDates : null,
     openEdit: isOwnView ? openEditById : null,
@@ -8366,7 +9239,7 @@ return /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: colTemplate,
-      borderBottom: "1px solid #BCB2A0"
+      borderBottom: `1px solid ${FAINT}`
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -8380,7 +9253,7 @@ return /*#__PURE__*/React.createElement("div", {
       fontSize: 10,
       letterSpacing: "0.1em",
       textTransform: "uppercase",
-      color: "#78716C",
+      color: INK_3,
       fontWeight: 600
     }
   }, "Pillars")), dates.map((d, i) => {
@@ -8397,8 +9270,8 @@ return /*#__PURE__*/React.createElement("div", {
         position: "relative",
         textAlign: "center",
         padding: "10px 4px 8px",
-        borderLeft: "1px solid #E7DECB",
-        background: isFuture && !isFutureWeek ? "#F2ECE0" : "#fff"
+        borderLeft: `1px solid ${HAIRLINE}`,
+        background: isFuture && !isFutureWeek ? WASH : "#fff"
       }
     }, isDayHovered && /*#__PURE__*/React.createElement("button", {
       onClick: e => {
@@ -8406,7 +9279,7 @@ return /*#__PURE__*/React.createElement("div", {
         if (hasDayReflection) {
           openDayReflection(ds);
         } else {
-          openReflectWithItem("", d.toLocaleDateString("en-US", { weekday: "long" }), "#7C3AED", ds);
+          openReflectWithItem("", d.toLocaleDateString("en-US", { weekday: "long" }), REFLECT, ds);
         }
       },
       title: hasDayReflection ? "View / edit reflection" : "Reflect on this day",
@@ -8421,49 +9294,28 @@ return /*#__PURE__*/React.createElement("div", {
         padding: "3px 4px",
         display: "flex",
         alignItems: "center",
-        color: "#7C3AED",
+        color: REFLECT,
         boxShadow: "0 1px 5px rgba(0,0,0,0.16)",
         zIndex: 6
       }
-    }, /*#__PURE__*/React.createElement("svg", {
-      width: "11",
-      height: "11",
-      viewBox: "0 0 24 24",
-      fill: hasDayReflection ? "#7C3AED" : "none",
-      stroke: "currentColor",
-      strokeWidth: "1.7",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "6.5",
-      cy: "21",
-      r: "2.2",
-      fill: hasDayReflection ? "#7C3AED" : "none"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "3.5",
-      cy: "24",
-      r: "1.4",
-      fill: hasDayReflection ? "#7C3AED" : "none"
-    }))), /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement(ReflectBubble, { fill: hasDayReflection ? REFLECT : "none" })), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         letterSpacing: "0.1em",
         textTransform: "uppercase",
         marginBottom: 4,
-        color: isFuture ? "#A79C88" : "#78716C",
+        color: isFuture ? MUTED : INK_3,
         fontWeight: 600
       }
     }, DAY_ABB[i]), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 16,
         fontWeight: isToday ? 700 : 500,
-        color: isToday ? "#fff" : isFuture ? "#A79C88" : "#1C1917",
+        color: isToday ? "#fff" : isFuture ? MUTED : INK,
         width: 28,
         height: 28,
         borderRadius: "50%",
-        background: isToday ? "#C4622F" : "transparent",
+        background: isToday ? ACCENT : "transparent",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -8482,7 +9334,7 @@ return /*#__PURE__*/React.createElement("div", {
     const dropLine = /*#__PURE__*/React.createElement("div", {
       style: {
         height: 2,
-        background: "#C4622F",
+        background: ACCENT,
         borderRadius: 1,
         margin: "0 2px",
         gridColumn: "1/-1"
@@ -8496,7 +9348,7 @@ return /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: colTemplate,
-        borderBottom: ci < displayCats.length - 1 ? "1px solid #E7DECB" : "none",
+        borderBottom: ci < displayCats.length - 1 ? `1px solid ${HAIRLINE}` : "none",
         opacity: isDragging ? 0.35 : focusRowOpacity(cat.id),
         transition: "opacity 0.15s ease"
       }
@@ -8510,7 +9362,7 @@ return /*#__PURE__*/React.createElement("div", {
       },
       style: {
         background: rowLit ? (cat.bg || PLAN_BG) : TILE_PLAN_FILL,
-        borderRight: "1px solid #E7DECB",
+        borderRight: `1px solid ${HAIRLINE}`,
         position: "relative",
         userSelect: "none",
         cursor: "pointer",
@@ -8570,7 +9422,7 @@ return /*#__PURE__*/React.createElement("div", {
         outline: "none",
         background: "transparent",
         fontFamily: "'DM Sans',sans-serif",
-        color: "#1C1917",
+        color: INK,
         padding: "1px 0",
         userSelect: "text",
         cursor: "text",
@@ -8590,7 +9442,7 @@ return /*#__PURE__*/React.createElement("div", {
         fontSize: 11,
         fontWeight: 700,
         letterSpacing: "0.07em",
-        color: "#1C1917",
+        color: INK,
         textTransform: "uppercase",
         flex: 1,
         minWidth: 0,
@@ -8611,30 +9463,11 @@ return /*#__PURE__*/React.createElement("div", {
         padding: 0,
         flexShrink: 0,
         opacity: 0.8,
-        color: "#7C3AED",
+        color: REFLECT,
         display: "flex",
         alignItems: "center"
       }
-    }, /*#__PURE__*/React.createElement("svg", {
-      width: "11",
-      height: "11",
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: "currentColor",
-      strokeWidth: "1.7",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "6.5",
-      cy: "21",
-      r: "2.2"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "3.5",
-      cy: "24",
-      r: "1.4"
-    }))), /*#__PURE__*/React.createElement("button", {
+    }, /*#__PURE__*/React.createElement(ReflectBubble, null)), /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
         deleteCat(cat.id);
@@ -8646,7 +9479,7 @@ return /*#__PURE__*/React.createElement("div", {
         cursor: "pointer",
         fontSize: 15,
         lineHeight: 1,
-        color: "#BCB2A0",
+        color: FAINT,
         padding: 0,
         flexShrink: 0
       }
@@ -8660,7 +9493,7 @@ return /*#__PURE__*/React.createElement("div", {
       return /*#__PURE__*/React.createElement("div", {
         key: ds,
         style: {
-          borderLeft: "1px solid #E7DECB",
+          borderLeft: `1px solid ${HAIRLINE}`,
           display: "flex",
           flexDirection: "column",
           boxShadow: isDropTarget ? cellRows.length ? "none" : `inset 0 0 0 2px ${cat.color}` : "none",
@@ -8735,7 +9568,7 @@ return /*#__PURE__*/React.createElement("div", {
     })), isTarget && dragPos === "below" && dropLine);
   }), isOwnView && /*#__PURE__*/React.createElement("div", {
     style: {
-      borderTop: "1px dashed #E7DECB",
+      borderTop: `1px dashed ${HAIRLINE}`,
       padding: "8px 14px"
     }
   }, /*#__PURE__*/React.createElement("button", {
@@ -8746,7 +9579,7 @@ return /*#__PURE__*/React.createElement("div", {
       cursor: "pointer",
       fontSize: 13,
       letterSpacing: "0.04em",
-      color: "#A79C88",
+      color: MUTED,
       fontFamily: "inherit",
       padding: "2px 0",
       fontWeight: 500
@@ -8772,23 +9605,23 @@ return /*#__PURE__*/React.createElement("div", {
       border: "none",
       cursor: "pointer",
       fontSize: 11,
-      color: "#78716C",
+      color: INK_3,
       fontFamily: "'DM Sans',sans-serif",
       fontWeight: 500,
       letterSpacing: "0.04em",
       padding: 0,
       textAlign: "left",
       textDecoration: "underline",
-      textDecorationColor: "#BCB2A0",
+      textDecorationColor: FAINT,
       textUnderlineOffset: 3
     },
     onMouseEnter: e => {
-      e.currentTarget.style.color = "#C4622F";
+      e.currentTarget.style.color = ACCENT;
       e.currentTarget.style.textDecorationColor = "#FDBA74";
     },
     onMouseLeave: e => {
-      e.currentTarget.style.color = "#78716C";
-      e.currentTarget.style.textDecorationColor = "#BCB2A0";
+      e.currentTarget.style.color = INK_3;
+      e.currentTarget.style.textDecorationColor = FAINT;
     }
   }, "The science behind I Love Mondays ↗"), /*#__PURE__*/React.createElement("input", {
     ref: importRef,
@@ -8810,11 +9643,11 @@ return /*#__PURE__*/React.createElement("div", {
   }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
-      color: "#BCB2A0",
+      color: FAINT,
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v8.9.3")), (() => {
+  }, "v8.9.12")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -8896,43 +9729,20 @@ return /*#__PURE__*/React.createElement("div", {
       .map(s => ({ ...s, key: s.label, label: suggestionNames[s.label] ?? s.label }))
       .filter(s => !cats.some(c => c.label.toLowerCase() === s.label.toLowerCase()));
     return /*#__PURE__*/React.createElement(React.Fragment, null,
-    /*#__PURE__*/React.createElement("div", {
-    style: PANEL_HEADER
-  }, /*#__PURE__*/React.createElement("div", {
-    style: { display: "flex", alignItems: "center", gap: 10 }
-  },
-  // The other sidebars head themselves with a single squared band in their
-  // pillar's colour. This panel belongs to no one pillar, so its band is the
-  // whole set stacked — the palette currently in play, growing by a segment
-  // every time a pillar is added below.
-  /*#__PURE__*/React.createElement("div", {
-    "aria-hidden": "true",
-    style: {
-      width: 7,
-      alignSelf: "stretch",
-      minHeight: 30,
-      flexShrink: 0,
-      display: "flex",
-      flexDirection: "column",
-      background: NEUTRAL_OUTLINE
-    }
-  }, cats.slice(0, 12).map(c => /*#__PURE__*/React.createElement("i", {
-    key: c.id,
-    style: { flex: "1 1 0", minHeight: 2, background: c.color }
-  }))), /*#__PURE__*/React.createElement("div", null,
-    /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: PLAN_MUTED, marginBottom: 2 }
-    }, "Pillars"),
-    // The count is the title. "Pillars / 8 Pillars" said the word twice; the
+    /*#__PURE__*/React.createElement(PanelHeader, {
+    // This panel belongs to no one pillar, so its band is the whole set
+    // stacked — the palette currently in play, growing by a segment every
+    // time a pillar is added below.
+    band: cats.map(c => c.color),
+    eyebrow: "Pillars",
+    eyebrowColor: PLAN_MUTED,
+    // The count is the title. Pillars over 8 Pillars said the word twice; the
     // eyebrow already names the panel, so the title's job is the one number
     // nothing else in the app says out loud.
-    /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 13, fontWeight: 700, color: "#1C1917", textTransform: "uppercase", letterSpacing: "0.08em" }
-    }, cats.length, " Active")
-  )), /*#__PURE__*/React.createElement("button", {
-    onClick: () => { setCatTyping(false); setCatCustomInput(""); setSuggestionNames({}); closeSidebar(); },
-    style: { background: "none", border: "none", cursor: "pointer", fontSize: 22, color: "#BCB2A0", padding: 0, lineHeight: 1, flexShrink: 0, marginLeft: 8 }
-  }, "\u00d7")),
+    title: cats.length + " Active",
+    titleCaps: true,
+    onClose: () => { setCatTyping(false); setCatCustomInput(""); setSuggestionNames({}); closeSidebar(); }
+  }),
   /*#__PURE__*/React.createElement("div", {
     style: { flex: 1, overflowY: "auto", padding: "12px 14px" }
   },
@@ -8947,7 +9757,7 @@ return /*#__PURE__*/React.createElement("div", {
       const isDragging = dragScope === "sidebar" && draggedId === cat.id;
       const isTarget = dragScope === "sidebar" && dragOverId === cat.id && !isDragging;
       const dropLine = /*#__PURE__*/React.createElement("div", {
-        style: { height: 2, background: "#C4622F", borderRadius: 1, margin: "0 0 4px" }
+        style: { height: 2, background: ACCENT, borderRadius: 1, margin: "0 0 4px" }
       });
       return /*#__PURE__*/React.createElement(React.Fragment, {
         key: cat.id
@@ -8993,7 +9803,7 @@ return /*#__PURE__*/React.createElement("div", {
       accentColor: cat.color,
       editTitle: "Rename pillar",
       onCommit: label => saveCats(pillarOps.rename(cats, cat.id, label)),
-      textStyle: { fontSize: 13, color: "#1C1917", fontWeight: 500 }
+      textStyle: { fontSize: 13, color: INK, fontWeight: 500 }
     }),
     // Sits left of the delete ×, so the row reads name → learn → remove and
     // the destructive control keeps the end position it already had.
@@ -9036,7 +9846,7 @@ return /*#__PURE__*/React.createElement("div", {
     }))
   ),
   /*#__PURE__*/React.createElement("div", {
-    style: { padding: "12px 14px", borderTop: "1px solid #E7DECB", flexShrink: 0 }
+    style: { padding: "12px 14px", borderTop: `1px solid ${HAIRLINE}`, flexShrink: 0 }
   }, catTyping ? /*#__PURE__*/React.createElement("input", {
     autoFocus: true,
     value: catCustomInput,
@@ -9060,7 +9870,7 @@ return /*#__PURE__*/React.createElement("div", {
       background: TILE_PLAN_FILL,
       outline: "none",
       fontSize: 13,
-      color: "#1C1917",
+      color: INK,
       fontFamily: "'DM Sans',sans-serif",
       boxSizing: "border-box",
       fontWeight: 500
@@ -9085,7 +9895,7 @@ return /*#__PURE__*/React.createElement("div", {
       style: {
         width: 28,
         background: PLAN_BG,
-        borderLeft: "1px solid #E7DECB",
+        borderLeft: `1px solid ${HAIRLINE}`,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -9093,20 +9903,10 @@ return /*#__PURE__*/React.createElement("div", {
         gap: 6,
         flexShrink: 0
       }
-    }, /*#__PURE__*/React.createElement("div", {
-      onClick: () => sidebarOpen && sidebarTab === 'ideas' ? closeSidebar() : openIdeasSidebar(lastIdeaCatId || displayCats[0]?.id),
+    }, /*#__PURE__*/React.createElement(RailButton, {
       title: "Ideas",
-      style: {
-        width: "100%",
-        height: 44,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: "pointer",
-        background: sidebarOpen && sidebarTab === 'ideas' ? PAPER : "transparent",
-        transition: "background 0.15s ease",
-        color: sidebarOpen && sidebarTab === 'ideas' ? "#1C1917" : "#A79C88"
-      }
+      active: sidebarOpen && sidebarTab === 'ideas',
+      onToggle: () => sidebarOpen && sidebarTab === 'ideas' ? closeSidebar() : openIdeasSidebar(lastIdeaCatId || displayCats[0]?.id)
     }, /*#__PURE__*/React.createElement("svg", {
       width: "18",
       height: "18",
@@ -9122,72 +9922,36 @@ return /*#__PURE__*/React.createElement("div", {
       d: "M10 22h4"
     }), /*#__PURE__*/React.createElement("path", {
       d: "M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17H8v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7z"
-    }))), /*#__PURE__*/React.createElement("div", {
-      onClick: () => sidebarOpen && sidebarTab === 'reflections' ? closeSidebar() : openReflectionSidebar(),
+    }))), /*#__PURE__*/React.createElement(RailButton, {
       title: isOwnView && externalItemDrag ? "Drop to reflect" : "Reflections",
-      onDragOver: isOwnView && externalItemDrag ? e => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-      } : undefined,
-      onDrop: isOwnView && externalItemDrag ? e => {
-        e.preventDefault();
-        reflectOnDraggedItem(e);
-      } : undefined,
-      style: {
-        width: "100%",
-        height: 44,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: "pointer",
-        background: isOwnView && externalItemDrag ? "#EDE9FE" : sidebarOpen && sidebarTab === 'reflections' ? PAPER : "transparent",
-        transition: "background 0.15s ease",
-        color: isOwnView && externalItemDrag ? "#7C3AED" : sidebarOpen && sidebarTab === 'reflections' ? "#7C3AED" : "#A79C88",
-        gap: 2
-      }
-    }, /*#__PURE__*/React.createElement("svg", {
-      width: "17",
-      height: "17",
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: "currentColor",
-      strokeWidth: "1.4",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "6.5",
-      cy: "21",
-      r: "2.2"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "3.5",
-      cy: "24",
-      r: "1.4"
-    })), isOwnView && externalItemDrag && /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 7,
-        fontWeight: 700,
-        letterSpacing: "0.04em",
-        color: "#7C3AED",
-        opacity: 0.8,
-        lineHeight: 1
-      }
-    }, "REFLECT")), /*#__PURE__*/React.createElement("div", {
-      onClick: () => sidebarOpen && sidebarTab === 'goals' ? closeSidebar() : openGoalsSidebar(),
+      onToggle: () => sidebarOpen && sidebarTab === 'reflections' ? closeSidebar() : openReflectionSidebar(),
+      // The only rail button that is also a drop target: dragging an item onto
+      // it opens a reflection about that item.
+      dragProps: isOwnView && externalItemDrag ? {
+        onDragOver: e => {
+          e.preventDefault();
+          // Every item drag starts with effectAllowed "move". Answering "copy"
+          // is an incompatible pair, so the browser refused the drop and drew
+          // the 🚫 over a target that in fact worked perfectly well.
+          e.dataTransfer.dropEffect = "move";
+        },
+        onDrop: e => {
+          e.preventDefault();
+          reflectOnDraggedItem(e);
+        }
+      } : null,
+      active: (isOwnView && externalItemDrag) || (sidebarOpen && sidebarTab === 'reflections'),
+      activeBg: isOwnView && externalItemDrag ? REFLECT_BG : PAPER,
+      // Open is black here, the same as Ideas, Intentions and Pillars: an open
+      // panel is an open panel, and this one had no reason to announce itself
+      // differently. The purple is kept for the drag alone, where it isn't
+      // saying "this is open" but "you can let go here" — and with the caption
+      // gone it's now the only thing saying it.
+      activeColor: isOwnView && externalItemDrag ? REFLECT : INK
+    }, /*#__PURE__*/React.createElement(ReflectBubble, { size: 17, weight: 1.6 })), /*#__PURE__*/React.createElement(RailButton, {
       title: "Intentions",
-      style: {
-        width: "100%",
-        height: 44,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: "pointer",
-        background: sidebarOpen && sidebarTab === 'goals' ? PAPER : "transparent",
-        transition: "background 0.15s ease",
-        color: sidebarOpen && sidebarTab === 'goals' ? "#1C1917" : "#A79C88"
-      }
+      active: sidebarOpen && sidebarTab === 'goals',
+      onToggle: () => sidebarOpen && sidebarTab === 'goals' ? closeSidebar() : openGoalsSidebar()
     }, /*#__PURE__*/React.createElement("svg", {
       width: "18",
       height: "18",
@@ -9209,20 +9973,10 @@ return /*#__PURE__*/React.createElement("div", {
       d: "M12 13c-1.3-1.8-5.5-1.8-5.5 0.8c0 1.8 1.8 3.5 5.5 1.7"
     }), /*#__PURE__*/React.createElement("path", {
       d: "M12 13c1.3-1.8 5.5-1.8 5.5 0.8c0 1.8-1.8 3.5-5.5 1.7"
-    })))), isOwnView && /*#__PURE__*/React.createElement("div", {
-      onClick: () => sidebarOpen && sidebarTab === 'pillars' ? closeSidebar() : openPillarsSidebar(),
+    })))), isOwnView && /*#__PURE__*/React.createElement(RailButton, {
       title: "Pillars",
-      style: {
-        width: "100%",
-        height: 44,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: "pointer",
-        background: sidebarOpen && sidebarTab === 'pillars' ? PAPER : "transparent",
-        transition: "background 0.15s ease",
-        color: sidebarOpen && sidebarTab === 'pillars' ? "#1C1917" : "#A79C88"
-      }
+      active: sidebarOpen && sidebarTab === 'pillars',
+      onToggle: () => sidebarOpen && sidebarTab === 'pillars' ? closeSidebar() : openPillarsSidebar()
     },
     // Three squared bars of uneven height: the same left-edge band the pillar
     // rows and the tiles are built from, stood upright. Every other icon on
@@ -9239,358 +9993,33 @@ return /*#__PURE__*/React.createElement("div", {
     }), /*#__PURE__*/React.createElement("rect", {
       x: "16.5", y: "13", width: "4.5", height: "8"
     })))));
-  })(), showStartFreshConfirm && /*#__PURE__*/React.createElement("div", {
-    onClick: () => setShowStartFreshConfirm(false),
-    style: MODAL_OVERLAY
-  }, /*#__PURE__*/React.createElement("div", {
-    onClick: e => e.stopPropagation(),
-    style: {
-      background: "#fff",
-      borderRadius: 18,
-      border: "1px solid #E7DECB",
-      boxShadow: "0 12px 48px rgba(0,0,0,0.18)",
-      padding: "28px 28px 24px",
-      width: "100%",
-      maxWidth: 400
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      letterSpacing: "0.12em",
-      textTransform: "uppercase",
-      color: "#A79C88",
-      fontWeight: 600,
-      marginBottom: 6
-    }
-  }, "Start fresh"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 16,
-      fontWeight: 700,
-      color: "#1C1917",
-      marginBottom: 4
-    }
-  }, "This can't be undone"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      color: "#78716C",
-      marginBottom: 20,
-      lineHeight: 1.5
-    }
-  }, "Erases My Plan across all weeks \u2014 entries, ideas, reflections, intentions \u2014 and resets your pillars. Shared plans aren't affected. Back it up first if you want to keep any of it."), /*#__PURE__*/React.createElement("button", {
-    onClick: startFresh,
-    style: {
-      width: "100%",
-      padding: "14px 16px",
-      borderRadius: 12,
-      border: "1.5px solid #FECACA",
-      background: "#FFF5F5",
-      cursor: "pointer",
-      textAlign: "left",
-      fontFamily: "inherit"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 700,
-      color: "#DC2626",
-      marginBottom: 3
-    }
-  }, "Yes, start fresh"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: "#78716C",
-      lineHeight: 1.4
-    }
-  }, "You'll land on a blank week.")), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setShowStartFreshConfirm(false),
-    style: {
-      marginTop: 16,
-      width: "100%",
-      background: "none",
-      border: "none",
-      cursor: "pointer",
-      fontSize: 12,
-      color: "#A79C88",
-      fontFamily: "inherit",
-      padding: "4px 0"
-    }
-  }, "Cancel"))), pendingImport && /*#__PURE__*/React.createElement("div", {
-    onClick: () => setPendingImport(null),
-    style: MODAL_OVERLAY
-  }, /*#__PURE__*/React.createElement("div", {
-    onClick: e => e.stopPropagation(),
-    style: {
-      background: "#fff",
-      borderRadius: 18,
-      border: "1px solid #E7DECB",
-      boxShadow: "0 12px 48px rgba(0,0,0,0.18)",
-      padding: "28px 28px 24px",
-      width: "100%",
-      maxWidth: 400
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      letterSpacing: "0.12em",
-      textTransform: "uppercase",
-      color: "#A79C88",
-      fontWeight: 600,
-      marginBottom: 6
-    }
-  }, "Open a shared plan"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 16,
-      fontWeight: 700,
-      color: "#1C1917",
-      marginBottom: 4
-    }
-  }, pendingImport._meta?.exportedBy ? pendingImport._meta.exportedBy + "'s plan" : "A shared plan"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      height: 20
-    }
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 10
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => doImport("view"),
-    style: {
-      padding: "14px 16px",
-      borderRadius: 12,
-      border: "1.5px solid #E7DECB",
-      background: "#FAFAF9",
-      cursor: "pointer",
-      textAlign: "left",
-      fontFamily: "inherit"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 700,
-      color: "#1C1917",
-      marginBottom: 3
-    }
-  }, "Open alongside mine"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: "#78716C",
-      lineHeight: 1.4
-    }
-  }, "Read-only. My Plan stays untouched.")), /*#__PURE__*/React.createElement("button", {
-    onClick: () => doImport("replace"),
-    style: {
-      padding: "14px 16px",
-      borderRadius: 12,
-      border: "1.5px solid #FECACA",
-      background: "#FFF5F5",
-      cursor: "pointer",
-      textAlign: "left",
-      fontFamily: "inherit"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      fontWeight: 700,
-      color: "#DC2626",
-      marginBottom: 3
-    }
-  }, "Replace My Plan"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: "#78716C",
-      lineHeight: 1.4
-    }
-  }, "Overwrites everything. Back mine up first."))), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setPendingImport(null),
-    style: {
-      marginTop: 16,
-      width: "100%",
-      background: "none",
-      border: "none",
-      cursor: "pointer",
-      fontSize: 12,
-      color: "#A79C88",
-      fontFamily: "inherit",
-      padding: "4px 0"
-    }
-  }, "Cancel"))), showNamePrompt && /*#__PURE__*/React.createElement("div", {
-    onClick: () => setShowNamePrompt(false),
-    style: MODAL_OVERLAY
-  }, /*#__PURE__*/React.createElement("div", {
-    onClick: e => e.stopPropagation(),
-    style: {
-      background: "#fff",
-      borderRadius: 18,
-      border: "1px solid #E7DECB",
-      boxShadow: "0 12px 48px rgba(0,0,0,0.18)",
-      padding: "28px 28px 24px",
-      width: "100%",
-      maxWidth: 360
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      letterSpacing: "0.12em",
-      textTransform: "uppercase",
-      color: "#A79C88",
-      fontWeight: 600,
-      marginBottom: 6
-    }
-  }, namePromptNext === "export" ? "Before you export" : "Your plan"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 16,
-      fontWeight: 700,
-      color: "#1C1917",
-      marginBottom: 4
-    }
-  }, "What's your name?"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      color: "#78716C",
-      marginBottom: 20,
-      lineHeight: 1.5
-    }
-  }, namePromptNext === "export" ? "We'll use your name in the export file name, so you can find the data backup and share it with friends." : "We'll show your initials on your plan, and use your name to label any plan you share with someone."), /*#__PURE__*/React.createElement("input", {
-    autoFocus: true,
-    value: namePromptVal,
-    onChange: e => setNamePromptVal(e.target.value),
-    onKeyDown: e => {
-      if (e.key === "Enter") saveUserName();
-      if (e.key === "Escape") setShowNamePrompt(false);
-    },
-    placeholder: "Your name",
-    style: {
-      width: "100%",
-      padding: "10px 12px",
-      borderRadius: 9,
-      border: "1.5px solid #E7DECB",
-      outline: "none",
-      fontSize: 14,
-      fontFamily: "'DM Sans',sans-serif",
-      color: "#1C1917",
-      boxSizing: "border-box",
-      marginBottom: 12
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: saveUserName,
-    style: {
-      width: "100%",
-      padding: "11px",
-      borderRadius: 9,
-      background: "#1C1917",
-      border: "none",
-      cursor: "pointer",
-      fontSize: 13,
-      color: "#fff",
-      fontWeight: 600,
-      fontFamily: "inherit",
-      opacity: namePromptVal.trim() ? 1 : 0.4
-    }
-  }, namePromptNext === "export" ? "Save & Export" : "Save"))), showExportOptions && /*#__PURE__*/React.createElement("div", {
-    onClick: () => setShowExportOptions(false),
-    style: MODAL_OVERLAY
-  }, /*#__PURE__*/React.createElement("div", {
-    onClick: e => e.stopPropagation(),
-    style: {
-      background: "#fff",
-      borderRadius: 18,
-      border: "1px solid #E7DECB",
-      boxShadow: "0 12px 48px rgba(0,0,0,0.18)",
-      padding: "24px 24px 20px",
-      width: "100%",
-      maxWidth: 320
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      letterSpacing: "0.12em",
-      textTransform: "uppercase",
-      color: "#A79C88",
-      fontWeight: 600,
-      marginBottom: 16
-    }
-  }, "Share or back up"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 16,
-      marginBottom: 20
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      minWidth: 0
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 14,
-      fontWeight: 600,
-      color: "#1C1917"
-    }
-  }, "Include reflections"),
-  // Which entries a reflection covers isn't obvious from the toggle alone,
-  // and it's the one setting here you'd regret getting wrong when the file
-  // is going to another person.
-  /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: "#A79C88",
-      marginTop: 2,
-      lineHeight: 1.4
-    }
-  }, "Your private journal. Leave off when sharing.")), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setExportIncludeReflections(v => !v),
-    style: {
-      width: 42,
-      height: 24,
-      borderRadius: 12,
-      border: "none",
-      cursor: "pointer",
-      padding: 0,
-      background: exportIncludeReflections ? "#7C3AED" : "#D1CCCA",
-      transition: "background 0.2s ease",
-      position: "relative",
-      flexShrink: 0
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 18,
-      height: 18,
-      borderRadius: "50%",
-      background: "#fff",
-      position: "absolute",
-      top: 3,
-      left: exportIncludeReflections ? 21 : 3,
-      transition: "left 0.2s ease",
-      boxShadow: "0 1px 3px rgba(0,0,0,0.2)"
-    }
-  }))), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      setShowExportOptions(false);
-      doExport(pendingExportName, exportIncludeReflections);
-    },
-    style: {
-      width: "100%",
-      padding: "11px",
-      borderRadius: 9,
-      background: "#1C1917",
-      border: "none",
-      cursor: "pointer",
-      fontSize: 13,
-      color: "#fff",
-      fontWeight: 600,
-      fontFamily: "inherit"
-    }
-  }, "Download"))), importConfirm && /*#__PURE__*/React.createElement("div", {
+  })(), showStartFreshConfirm && /*#__PURE__*/React.createElement(StartFreshDialog, {
+    onClose: () => setShowStartFreshConfirm(false),
+    onConfirm: startFresh
+  }), pendingImport && /*#__PURE__*/React.createElement(ImportDialog, {
+    pendingImport: pendingImport,
+    onClose: () => setPendingImport(null),
+    doImport: doImport
+  }), showNamePrompt && /*#__PURE__*/React.createElement(NamePromptDialog, {
+    namePromptVal: namePromptVal,
+    setNamePromptVal: setNamePromptVal,
+    namePromptNext: namePromptNext,
+    onClose: () => setShowNamePrompt(false),
+    saveUserName: saveUserName
+  }), showExportOptions && /*#__PURE__*/React.createElement(ExportDialog, {
+    pendingExportName: pendingExportName,
+    exportIncludeReflections: exportIncludeReflections,
+    setExportIncludeReflections: setExportIncludeReflections,
+    onClose: () => setShowExportOptions(false),
+    doExport: doExport
+  }), importConfirm && /*#__PURE__*/React.createElement("div", {
     style: {
       position: "fixed",
       bottom: 28,
       left: "50%",
       transform: "translateX(-50%)",
       zIndex: 400,
-      background: "#1C1917",
+      background: INK,
       color: "#fff",
       borderRadius: 12,
       padding: "12px 20px",
@@ -9624,366 +10053,18 @@ return /*#__PURE__*/React.createElement("div", {
       background: "none",
       border: "none",
       cursor: "pointer",
-      color: "#78716C",
+      color: INK_3,
       fontSize: 16,
       lineHeight: 1,
       padding: 0,
       marginLeft: 4,
       flexShrink: 0
     }
-  }, "×")), editingItem && /*#__PURE__*/React.createElement("div", {
-    onClick: () => setEditingItem(null),
-    style: {
-      position: "fixed",
-      inset: 0,
-      background: "rgba(28,25,23,0.4)",
-      zIndex: 1000,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    onClick: e => e.stopPropagation(),
-    style: {
-      background: "#fff",
-      borderRadius: 14,
-      padding: 22,
-      width: 340,
-      maxWidth: "90vw",
-      boxShadow: "0 12px 40px rgba(0,0,0,0.22)",
-      display: "flex",
-      flexDirection: "column",
-      gap: 14,
-      fontFamily: "'DM Sans',sans-serif"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 15,
-      fontWeight: 700,
-      color: "#1C1917"
-    }
-  }, editingItem?.isNew ? "New event" : "Edit event"), /*#__PURE__*/React.createElement("input", {
-    value: editName,
-    onChange: e => setEditName(e.target.value),
-    onKeyDown: e => {
-      if (e.key === "Enter") saveEdit();
-      if (e.key === "Escape") setEditingItem(null);
-    },
-    autoFocus: true,
-    placeholder: "Event name",
-    style: {
-      border: "1px solid #E7DECB",
-      borderRadius: 8,
-      padding: "9px 11px",
-      fontSize: 13,
-      fontFamily: "inherit",
-      outline: "none",
-      color: "#1C1917"
-    }
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      color: "#A79C88",
-      fontWeight: 600
-    }
-  }, "Pillars"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexWrap: "wrap",
-      gap: 6
-    }
-  }, cats.map(cat => {
-    const sel = editPillarIds.includes(cat.id);
-    return /*#__PURE__*/React.createElement("button", {
-      key: cat.id,
-      onClick: () => togglePillarForEdit(cat.id),
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 5,
-        fontSize: 10,
-        fontWeight: 700,
-        letterSpacing: "0.07em",
-        textTransform: "uppercase",
-        fontFamily: "inherit",
-        cursor: "pointer",
-        padding: "4px 9px",
-        ...pillarChip(cat, sel)
-      }
-    }, sel && /*#__PURE__*/React.createElement("svg", {
-      width: "9",
-      height: "9",
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: "currentColor",
-      strokeWidth: "3",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("polyline", {
-      points: "20 6 9 17 4 12"
-    })), cat.label);
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between"
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 10,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      color: "#A79C88",
-      fontWeight: 600
-    }
-  }, "Day and time"), /*#__PURE__*/React.createElement("button", {
-    type: "button",
-    role: "switch",
-    "aria-checked": !editUnscheduled,
-    onClick: () => setEditUnscheduled(prev => !prev),
-    style: {
-      position: "relative",
-      width: 36,
-      height: 20,
-      borderRadius: 10,
-      border: "none",
-      cursor: "pointer",
-      background: editUnscheduled ? "#DCD2BF" : "#C4622F",
-      transition: "background 0.15s ease",
-      padding: 0,
-      flexShrink: 0
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      position: "absolute",
-      top: 2,
-      left: editUnscheduled ? 2 : 18,
-      width: 16,
-      height: 16,
-      borderRadius: "50%",
-      background: "#fff",
-      boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
-      transition: "left 0.15s ease"
-    }
-  }))), !editUnscheduled && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 8,
-      padding: "2px 2px 0"
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 4,
-      fontSize: 10,
-      color: "#A79C88",
-      fontWeight: 600,
-      textTransform: "uppercase",
-      letterSpacing: "0.06em"
-    }
-  }, "Day", /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: editDate || "",
-    onChange: e => setEditDate(e.target.value),
-    style: {
-      border: "1px solid #E7DECB",
-      borderRadius: 8,
-      padding: "7px 8px",
-      fontSize: 13,
-      fontFamily: "inherit",
-      outline: "none",
-      color: "#1C1917"
-    }
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 10
-    }
-  }, /*#__PURE__*/React.createElement("label", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 4,
-      fontSize: 10,
-      color: "#A79C88",
-      fontWeight: 600,
-      textTransform: "uppercase",
-      letterSpacing: "0.06em",
-      flex: 1
-    }
-  }, "Start", /*#__PURE__*/React.createElement(TimeField, {
-    value: editStart,
-    inputStyle: timeInputStyle,
-    onChange: (raw, isTyping) => {
-      if (!raw) {
-        setEditStart(raw);
-        return;
-      }
-      const nextStart = isTyping ? raw : snapToQuarter(raw);
-      const prevStart = timeToMin(editStart);
-      let prevEnd = timeToMin(editEnd);
-      if (prevEnd <= prevStart) prevEnd += 1440;
-      const dur = Math.max(CAL_MIN_DURATION, prevEnd - prevStart);
-      setEditStart(nextStart);
-      setEditEnd(minToTime(timeToMin(nextStart) + dur));
-    }
-  })), /*#__PURE__*/React.createElement("label", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 4,
-      fontSize: 10,
-      color: "#A79C88",
-      fontWeight: 600,
-      textTransform: "uppercase",
-      letterSpacing: "0.06em",
-      flex: 1
-    }
-  }, "End", /*#__PURE__*/React.createElement(TimeField, {
-    value: editEnd,
-    inputStyle: timeInputStyle,
-    onChange: (raw, isTyping) => {
-      if (!raw) {
-        setEditEnd(raw);
-        return;
-      }
-      setEditEnd(isTyping ? raw : snapToQuarter(raw));
-    }
-  })))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 8,
-      paddingTop: 2
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      color: "#A79C88",
-      fontWeight: 600
-    }
-  }, "Repeat"), /*#__PURE__*/React.createElement("select", {
-    value: editRepeat,
-    onChange: e => setEditRepeat(e.target.value),
-    style: {
-      border: "1px solid #E7DECB",
-      borderRadius: 8,
-      padding: "8px 9px",
-      fontSize: 13,
-      fontFamily: "inherit",
-      outline: "none",
-      color: "#1C1917",
-      background: "#fff",
-      cursor: "pointer"
-    }
-  }, /*#__PURE__*/React.createElement("option", { value: REPEAT_NONE }, "Doesn't repeat"), /*#__PURE__*/React.createElement("option", { value: REPEAT_WEEKLY }, "Every week"), /*#__PURE__*/React.createElement("option", { value: REPEAT_BIWEEKLY }, "Every other week")),
-  // The day picker is what lets one control cover "every weekday", "Tue and
-  // Thu" and "just Mondays" without a menu of named presets for each. The
-  // event's own day is always lit and can't be turned off, so the setting
-  // can never describe a series the event itself isn't part of.
-  editRepeat !== REPEAT_NONE && /*#__PURE__*/React.createElement("div", {
-    style: { display: "flex", gap: 4 }
-  }, [1, 2, 3, 4, 5, 6, 0].map(dow => {
-    const on = editRepeatDays.includes(dow);
-    const locked = editDate && dow === dowOfDs(editDate);
-    return /*#__PURE__*/React.createElement("button", {
-      key: dow,
-      type: "button",
-      onClick: () => toggleRepeatDay(dow),
-      title: locked ? `${DOW_SHORT[dow]} — this event's own day` : DOW_SHORT[dow],
-      style: {
-        flex: 1,
-        height: 30,
-        borderRadius: 15,
-        border: `1px solid ${on ? "#C4622F" : "#E7DECB"}`,
-        background: on ? "#C4622F" : "#fff",
-        color: on ? "#fff" : "#A79C88",
-        fontSize: 11,
-        fontWeight: 700,
-        fontFamily: "inherit",
-        cursor: locked ? "default" : "pointer",
-        padding: 0,
-        transition: "background 0.12s ease, color 0.12s ease"
-      }
-    }, DOW_INITIALS[dow]);
-  })), editRepeat !== REPEAT_NONE && /*#__PURE__*/React.createElement("label", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      fontSize: 10,
-      color: "#A79C88",
-      fontWeight: 600,
-      textTransform: "uppercase",
-      letterSpacing: "0.06em"
-    }
-  }, "Ends", /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: editRepeatEnd,
-    onChange: e => setEditRepeatEnd(e.target.value),
-    style: {
-      border: "1px solid #E7DECB",
-      borderRadius: 8,
-      padding: "6px 8px",
-      fontSize: 12,
-      fontFamily: "inherit",
-      outline: "none",
-      color: "#1C1917",
-      flex: 1
-    }
-  }), editRepeatEnd && /*#__PURE__*/React.createElement("button", {
-    type: "button",
-    onClick: () => setEditRepeatEnd(""),
-    title: "No end date",
-    style: {
-      background: "none",
-      border: "none",
-      cursor: "pointer",
-      fontSize: 14,
-      color: "#BCB2A0",
-      padding: 0,
-      lineHeight: 1
-    }
-  }, "×")), editRepeat !== REPEAT_NONE && /*#__PURE__*/React.createElement("div", {
-    style: { fontSize: 11, color: "#8A7F6B", lineHeight: 1.4 }
-  }, describeRule({ freq: editRepeat, byDay: editRepeatDays, endDs: editRepeatEnd || null }), !editRepeatEnd && " — no end date")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "flex-end",
-      gap: 8,
-      marginTop: 4
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setEditingItem(null),
-    style: {
-      background: "none",
-      border: "none",
-      cursor: "pointer",
-      fontSize: 12,
-      color: "#78716C",
-      fontFamily: "inherit",
-      padding: "7px 10px"
-    }
-  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
-    onClick: saveEdit,
-    style: {
-      background: "#C4622F",
-      border: "none",
-      cursor: "pointer",
-      fontSize: 12,
-      fontWeight: 600,
-      color: "#fff",
-      fontFamily: "inherit",
-      padding: "7px 16px",
-      borderRadius: 8
-    }
-  }, "Save")))), seriesScope && /*#__PURE__*/React.createElement("div", {
+  }, "×")), editingItem && /*#__PURE__*/React.createElement(EventDialog, {
+    dlg: dlg,
+    cats: cats,
+    onSave: saveEdit
+  }), seriesScope && /*#__PURE__*/React.createElement("div", {
     onClick: () => setSeriesScope(null),
     style: {
       position: "fixed",
@@ -10012,25 +10093,20 @@ return /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 15,
       fontWeight: 700,
-      color: "#1C1917"
+      color: INK
     }
-  }, seriesScope.kind === "delete" ? "Delete a repeating event" : "Edit a repeating event"),
+  }, SERIES_SCOPE_TITLE[seriesScope.kind] || SERIES_SCOPE_TITLE.edit),
   // The labels carry the whole explanation, so there's nothing left for a
   // description line to add. "From this day forward" says where the cut
   // falls without needing a sentence about what survives it, and it stays
   // true whichever side of today the occurrence sits on.
-  [
-    ["only", seriesScope.kind === "delete" ? "Delete only this event" : "Edit only this event"],
-    ["future", seriesScope.kind === "delete"
-      ? "Delete the repeating event from this day forward"
-      : "Edit the repeating event from this day forward"]
-  ].map(([scope, label]) => /*#__PURE__*/React.createElement("button", {
+  (SERIES_SCOPE_CHOICES[seriesScope.kind] || SERIES_SCOPE_CHOICES.edit).map(([scope, label]) => /*#__PURE__*/React.createElement("button", {
     key: scope,
     onClick: () => resolveSeriesScope(scope),
     style: {
       textAlign: "left",
       background: "#FBFAF9",
-      border: "1px solid #E7DECB",
+      border: `1px solid ${HAIRLINE}`,
       borderRadius: 10,
       padding: "11px 12px",
       cursor: "pointer",
@@ -10039,7 +10115,7 @@ return /*#__PURE__*/React.createElement("div", {
       fontSize: 13,
       fontWeight: 600,
       lineHeight: 1.35,
-      color: seriesScope.kind === "delete" && scope === "future" ? "#B91C1C" : "#1C1917"
+      color: seriesScope.kind === "delete" && scope === "future" ? "#B91C1C" : INK
     }
   }, label)), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -10053,7 +10129,7 @@ return /*#__PURE__*/React.createElement("div", {
       border: "none",
       cursor: "pointer",
       fontSize: 12,
-      color: "#78716C",
+      color: INK_3,
       fontFamily: "inherit",
       padding: "7px 10px"
     }
