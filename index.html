@@ -544,6 +544,157 @@ const UNTAGGED_CAT = {
   deep: "#948972",
   ink: "#5E5546"
 };
+// ---------------------------------------------------------------------------
+// Tend
+//
+// The row that isn't a pillar. Finances, a second opinion on a knee, the
+// profile that needs updating — these aren't what a week is *for*, but they
+// are what stands between you and the things it is for. A knee you haven't
+// had looked at is a Move pillar you can't reach. So they get a row, because
+// hiding them somewhere else pretends they aren't part of the week.
+//
+// What keeps it from becoming a to-do list is everything it doesn't get:
+// no pigment, no weekly target, no place in the count, no drag handle, no
+// delete. It sits last, always, and it is the one row where finishing
+// everything is the point rather than a sign you aimed too low.
+//
+// The band renders unfilled — the same way a pillar that's only a suggestion
+// draws before it has claimed a colour. That idiom already means "shaped like
+// a pillar, isn't one" in this app, which is exactly what needs saying here.
+const TEND_ID = "tend";
+const TEND_CAT = {
+  id: TEND_ID,
+  label: "Tend",
+  // Neutral throughout: near-hairline for edges, a greige "deep" for the few
+  // places that ask for a stronger version of a pillar's colour. Nothing here
+  // is drawn from COLOR_PALETTE, so Tend can never collide with a real pillar
+  // and never consumes a slot.
+  color: "#DED6C6",
+  bg: "#F6F2E9",
+  deep: "#B5AB99",
+  ink: "#6E6657"
+};
+// Where Tend's bench stops being a staging area and starts being a to-do
+// list. Advisory only — nothing is ever refused.
+const TEND_SOFT_CAP = 7;
+function isTend(id) {
+  return id === TEND_ID;
+}
+// Tend is pinned last. Sorting on read rather than trusting stored order means
+// a planner that has been reordered, imported, or hand-edited still puts it in
+// the right place.
+function orderCats(cats) {
+  const list = Array.isArray(cats) ? cats : [];
+  const real = list.filter(c => c && !isTend(c.id));
+  const tend = list.filter(c => c && isTend(c.id));
+  return [...real, ...tend];
+}
+// Adds Tend to a set that predates it. Everyone gets the row, including
+// planners created before it existed — it's a default, not an opt-in.
+function withTend(cats) {
+  const list = Array.isArray(cats) ? cats : [];
+  if (list.some(c => c && isTend(c.id))) return orderCats(list);
+  return orderCats([...list, { ...TEND_CAT }]);
+}
+// One-time repair for planners that predate Tend.
+//
+// Retiring a pillar used to strand its ideas. `dropPillar` existed but nothing
+// ever called it, so the bucket stayed in storage under an id no pillar
+// claimed — invisible, unreachable, and still taking up space in the export.
+// Anyone who has ever removed a pillar is carrying a pocket of ideas they
+// can't see. This finds those pockets and moves what the user actually wrote
+// into Tend, which is where most of them belonged in the first place.
+//
+// Two rules keep the rescue honest. Only ideas the user touched survive: a
+// starter suggestion from a pillar they abandoned is noise, not a loss. And
+// anything whose text already exists in a live bucket is dropped rather than
+// duplicated, because folding one pillar into another usually meant copying
+// its ideas across first.
+//
+// Runs against storage rather than React state so it lands before anything
+// reads, and it is idempotent — after the first pass there are no orphans
+// left to find.
+function migrateTendStorage() {
+  const rawCats = db.read(K.cats);
+  // A planner can have ideas in storage without cats — a partial restore, a
+  // cleared pillar list, a file opened somewhere the two didn't travel
+  // together. The pillars on screen are then the defaults, so those are the
+  // ones the seeding repair below has to reason about.
+  const hasStoredCats = Array.isArray(rawCats) && rawCats.length > 0;
+  const cats = hasStoredCats ? withTend(migrateCatColors(rawCats)) : DEFAULT_CATS;
+  const known = new Set(cats.map(c => c.id));
+  const stored = db.read(K.ideas);
+  if (stored && typeof stored === "object") {
+    const next = { ...stored };
+    let touched = false;
+    // The rescue only runs against a real stored pillar list. Without one,
+    // every bucket looks orphaned — and emptying a whole planner's benches
+    // into Tend because its cats didn't load would turn "Morning walk" into
+    // an errand. Those buckets are left exactly where they are instead:
+    // invisible for now, and still intact if the pillars come back.
+    const orphanIds = hasStoredCats
+      ? Object.keys(next).filter(id => !known.has(id) && id !== UNTAGGED_CAT.id)
+      : [];
+    if (orphanIds.length) {
+      const orphaned = new Set(orphanIds);
+      const taken = new Set();
+      Object.entries(next).forEach(([id, list]) => {
+        if (orphaned.has(id)) return;
+        (list || []).forEach(i => taken.add(plainIdeaText(i.text)));
+      });
+      const rescued = [];
+      orphanIds.forEach(id => {
+        (next[id] || []).forEach(i => {
+          if (i.seeded) return;
+          const key = plainIdeaText(i.text);
+          if (!key || taken.has(key)) return;
+          taken.add(key);
+          rescued.push({ ...i, seeded: false });
+        });
+        delete next[id];
+      });
+      if (rescued.length) next[TEND_ID] = [...(next[TEND_ID] || []), ...rescued];
+      touched = true;
+    }
+    // Second repair: benches that were never seeded at all.
+    //
+    // loadIdeas is all-or-nothing. The moment any ideas object exists in
+    // storage it is returned whole, so no pillar gets a starter set — and a
+    // pillar whose id isn't a key in that object shows an empty bench
+    // forever, with "Suggest ideas" as the only way to fill it. That is less
+    // exotic than it sounds: the hardcoded defaults are keyed by library id,
+    // so any planner whose ideas and pillars disagree about ids — restored
+    // from a file, rebuilt after a reset, carried across a rename — lands
+    // here with every bench blank and the defaults sitting right there unused.
+    //
+    // Missing means missing. A bucket that exists but is empty is a bench
+    // somebody cleared on purpose, and re-seeding it would be the app
+    // arguing with them.
+    cats.forEach(cat => {
+      if (next[cat.id] !== undefined) return;
+      const seeds = pillarOps.seedIdeasFor(cat);
+      if (!seeds || !seeds.length) return;
+      next[cat.id] = seeds.map(makeSeedIdea);
+      touched = true;
+    });
+    if (touched) db.write(K.ideas, next);
+  }
+  // A retired pillar's weekly target outlives it the same way, and shows up as
+  // a phantom row in the intentions panel. Drop targets whose pillar is gone,
+  // and never let Tend hold one — a row that doesn't count can't have a goal.
+  const goals = db.read(K.goals);
+  if (hasStoredCats && goals && typeof goals === "object") {
+    const ng = {};
+    Object.keys(goals).forEach(id => {
+      if (known.has(id) && !isTend(id)) ng[id] = goals[id];
+    });
+    if (Object.keys(ng).length !== Object.keys(goals).length) db.write(K.goals, ng);
+  }
+  if (!hasStoredCats) return;
+  const moved = rawCats.length !== cats.length ||
+    rawCats.some((c, i) => !cats[i] || c.id !== cats[i].id);
+  if (moved) db.write(K.cats, cats);
+}
 // Legacy pillars were saved with the old jewel-tone hexes baked in. Map those
 // onto the new watercolour palette on load so existing weeks pick up the new
 // look without the user having to re-pick colours.
@@ -609,6 +760,9 @@ function migrateCatColors(cats) {
   if (!Array.isArray(cats)) return cats;
   return cats.map(c => {
     if (!c || typeof c !== "object") return c;
+    // Tend is deliberately outside the palette. Re-deriving it from a slot
+    // would hand it a pigment and undo the whole point of the row.
+    if (isTend(c.id)) return { ...c, ...TEND_CAT };
     const byColor = slotForColor(c.color);
     const slot = byColor != null ? byColor : (typeof c.slot === "number" ? c.slot : null);
     if (slot == null) {
@@ -1135,7 +1289,13 @@ const PILLAR_LIBRARY = [{
   ...COLOR_PALETTE[7]
 }];
 const DEFAULT_ACTIVE = ["move", "connect", "serve", "expand", "rest"];
-const DEFAULT_CATS = PILLAR_LIBRARY.filter(p => DEFAULT_ACTIVE.includes(p.id));
+// Tend ships with every planner, appended after the five. It isn't in
+// PILLAR_LIBRARY and never appears among the suggestions, because it isn't a
+// pillar you choose — it's the row underneath the ones you chose.
+const DEFAULT_CATS = [
+  ...PILLAR_LIBRARY.filter(p => DEFAULT_ACTIVE.includes(p.id)),
+  { ...TEND_CAT }
+];
 // Which pillars the science page can be jumped to for. The library is the
 // right list to derive this from rather than a second one written by hand:
 // the page holds itself to offering a section for everything the app offers
@@ -1225,6 +1385,11 @@ const DEFAULT_IDEAS = {
   make: ["Draw", "Sew", "Woodwork", "Bake something", "Cook a new recipe", "Mosaic"],
   play: ["Board games", "Shoot hoops", "Karaoke", "Mini golf", "Frisbee in the park"],
   outside: ["Walk", "Hike", "Garden", "Picnic", "Sit in the sun"],
+  // Tend's bench is deliberately about the blocked thing rather than the
+  // tidy one. "Clear a drawer" is housekeeping; "book that appointment" is a
+  // pillar you can't reach yet. The old GSD seeds below are the former, which
+  // is why that pillar read as a chore list and this row shouldn't.
+  tend: ["Book that appointment", "Review finances", "Renew what's expiring", "Fix what's broken", "Make the call you're avoiding"],
   // Kept for planners created before these pillars were folded away.
   learn: ["Journal", "Read", "Podcast", "Online course", "Gratitude list"],
   explore: ["Museum", "Day trip", "New restaurant", "New neighborhood"],
@@ -2994,9 +3159,9 @@ function SciencePage({
     label: "Completion",
     headline: "Unfinished tasks quietly drain your energy — until you close them.",
     body: "Zeigarnik showed in 1927 that the brain keeps incomplete tasks in active memory, looping back to them disproportionately. Masicampo and Baumeister confirmed in 2011 why this matters: unfinished goals don't just sit there — they actively interfere with performance on unrelated tasks, creating a persistent cognitive drag. The antidote isn't finishing everything. Making a concrete plan for an unfinished task — even if you don't do it yet — is enough to release the mental hold.",
-    connection: "This is why errands belong on the calendar but not in a pillar. Writing down when you'll deal with something closes the loop; giving chores their own pillar just turns a week meant for living into a to-do list.",
-    bar: "Give it a time, not a pillar",
-    barLabel: "Drop tasks straight onto the calendar and leave them untagged. The plan is what quiets them — the tag adds nothing.",
+    connection: "This is what Tend is for, and why it isn't a pillar. Deciding when you'll deal with something is the thing that closes the loop \u2014 so the errands that block everything else get a row and a day. What they don't get is a colour, a weekly target, or a place in the count. A chore you can score is how a week meant for living quietly becomes a to-do list.",
+    bar: "Give it a day, not a goal",
+    barLabel: "Park it in Tend, then put it on a day. The plan is what quiets it; a target would only make it louder.",
     chips: [{
       text: "Masicampo & Baumeister · Consider It Done (APA)",
       url: "https://psycnet.apa.org/record/2011-11349-001"
@@ -5113,6 +5278,23 @@ function useIdeasStore({ readOnly, override }) {
       delete next[pillarId];
       commit(next);
     },
+    // Retires a pillar's bench into Tend, keeping only what the user wrote and
+    // skipping anything Tend already holds. The pillar's own bucket goes away
+    // in the same commit, so nothing is left stranded under a dead id.
+    moveToTend(pillarId, keep) {
+      const next = { ...ideas };
+      const held = new Set((next[TEND_ID] || []).map(i => plainIdeaText(i.text)));
+      const carried = [];
+      (keep || []).forEach(i => {
+        const key = plainIdeaText(i.text);
+        if (!key || held.has(key)) return;
+        held.add(key);
+        carried.push({ ...i, seeded: false });
+      });
+      delete next[pillarId];
+      if (carried.length) next[TEND_ID] = [...(next[TEND_ID] || []), ...carried];
+      commit(next);
+    },
     replaceAll: next => commit(next)
   };
 }
@@ -5354,16 +5536,37 @@ function IdeasPanel({
       setSuggesting(false);
     }
   }
+  // Tend's bench is the one place in the app where a long list is a bad sign.
+  // The rule it's holding to is Zeigarnik's: what quiets an open loop is
+  // deciding when you'll deal with it, not writing it down again. Past a
+  // handful, the list has stopped being a staging area and started being a
+  // to-do app — so it says so, once, quietly, and never blocks the add. A
+  // hard cap would just teach people to keep the overflow somewhere else.
+  const tendBench = isTend(pillar.id);
+  const overFull = tendBench && ideas.length > TEND_SOFT_CAP;
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PanelHeader, {
       band: pillar.color,
-      eyebrow: "Ideas",
+      eyebrow: tendBench ? "Clears the way" : "Ideas",
       eyebrowColor: pillar.color,
       readOnly: !canEdit,
       title: pillar.label,
       titleCaps: true,
-      subtitle: canEdit ? "Drag an idea onto the planner" : "Viewing " + viewerName.split(" · ")[0] + "'s ideas",
+      subtitle: !canEdit ? "Viewing " + viewerName.split(" · ")[0] + "'s ideas"
+        : tendBench ? "Drop one on a day to quiet it"
+        : "Drag an idea onto the planner",
       onClose: onClose
-    }), /*#__PURE__*/React.createElement("div", {
+    }), canEdit && overFull && /*#__PURE__*/React.createElement("div", {
+      style: {
+        margin: "10px 14px 0",
+        padding: "7px 9px",
+        background: TEND_CAT.bg,
+        border: `1px solid ${TEND_CAT.color}`,
+        borderRadius: TILE_RADIUS,
+        fontSize: 11,
+        lineHeight: 1.45,
+        color: TEND_CAT.ink
+      }
+    }, "That's a lot to carry. Give a few of these a day — that's what quiets them."), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         overflowY: "auto",
@@ -6285,7 +6488,10 @@ function buildImportedView(obj, { id, now = new Date() } = {}) {
   return {
     id: id || `view_${Date.now()}`,
     name: `${exName} · ${dateStr}`,
-    cats: migrateCatColors(safeParse(obj[K.cats], DEFAULT_CATS)),
+    // A shared view shows the sender's set as it actually is — Tend is not
+    // forced in here. If they exported before the row existed, an empty Tend
+    // in their week would be this reader's assumption, not their plan.
+    cats: orderCats(migrateCatColors(safeParse(obj[K.cats], DEFAULT_CATS))),
     ideas: safeParse(obj[K.ideas], {}),
     goals: safeParse(obj[K.goals], {}),
     entries: collectImportedEntries(obj),
@@ -6316,12 +6522,17 @@ const pillarOps = {
     return cats.map(c => c.id === id ? { ...c, label: clean } : c);
   },
   remove(cats, id) {
-    // Never leave the planner with no pillars at all.
-    if (cats.length <= 1) return cats;
+    // Never leave the planner with no pillars at all. Tend doesn't count
+    // towards that floor — a planner holding nothing but errands is exactly
+    // the state this guard exists to prevent.
+    if (isTend(id)) return cats;
+    if (cats.filter(c => !isTend(c.id)).length <= 1) return cats;
     return cats.filter(c => c.id !== id);
   },
-  // Moves one pillar above or below another.
+  // Moves one pillar above or below another. Tend is not a participant in
+  // either role — it can't be dragged, and nothing can be parked beneath it.
   reorder(cats, dragId, targetId, pos) {
+    if (isTend(dragId) || isTend(targetId)) return cats;
     if (!dragId || !targetId || dragId === targetId) return cats;
     const next = [...cats];
     const from = next.findIndex(c => c.id === dragId);
@@ -7671,7 +7882,7 @@ function Planner() {
   }, [rules, key, isOwnView]);
   useEffect(() => {
     const storedCats = db.read(K.cats);
-    if (storedCats) setCats(migrateCatColors(storedCats));
+    if (storedCats) setCats(withTend(migrateCatColors(storedCats)));
     const storedGoals = db.read(K.goals);
     if (storedGoals) setGoals(storedGoals);
     const storedViews = db.read(K.importedViews);
@@ -7759,6 +7970,9 @@ function Planner() {
     });
   }
   function getGoal(catId) {
+    // Tend never carries a target. A weekly number turns errands into a quota,
+    // and the whole reason this row exists is that it doesn't keep score.
+    if (isTend(catId)) return null;
     return displayGoals[catId] ?? null;
   }
   function saveGoals(ng) {
@@ -7961,8 +8175,11 @@ function Planner() {
   }
   function saveCats(nc) {
     if (!isOwnView) return;
-    setCats(nc);
-    db.write(K.cats, nc);
+    // Every write goes through here, so pinning Tend last once at this choke
+    // point is enough — no caller has to remember to keep it in place.
+    const ordered = orderCats(nc);
+    setCats(ordered);
+    db.write(K.cats, ordered);
   }
   function saveRating(ds, val) {
     if (!isOwnView) return;
@@ -8039,7 +8256,7 @@ function Planner() {
       Object.entries(obj).forEach(([k, v]) => {
         if (k !== "_meta") db.writeRaw(k, v);
       });
-      if (db.readRaw(K.cats)) setCats(migrateCatColors(db.read(K.cats, DEFAULT_CATS)));
+      if (db.readRaw(K.cats)) setCats(withTend(migrateCatColors(db.read(K.cats, DEFAULT_CATS))));
       if (db.readRaw(K.goals)) setGoals(db.read(K.goals, {}));
       setRatings(db.read(K.ratings, {}));
       journalStore.replaceAll(db.read(K.journal, {}));
@@ -8151,14 +8368,33 @@ function Planner() {
     // The week on screen was just rewritten underneath us; reload it.
     setEntries(readStoredWeek(weekKeyForDate(weekStart)));
   }
+  // Tend is not a pillar you chose, so it isn't one you can remove. Everything
+  // else here is unchanged.
   function deleteCat(id) {
-    if (cats.length <= 1) return;
+    if (cats.filter(c => !isTend(c.id)).length <= 1) return;
+    if (isTend(id)) return;
     const cat = cats.find(c => c.id === id);
     if (!cat) return;
-    if (pillarHasPlannedWork(id)) {
-      if (!window.confirm(`Remove "${cat.label}"? Anything you planned under it stays in your calendar, just untagged.`)) return;
+    // What the user wrote on this pillar's bench, as opposed to what we
+    // suggested — the only part worth carrying anywhere.
+    const ownIdeas = (ideasStore.forPillar(id) || []).filter(i => !i.seeded);
+    const planned = pillarHasPlannedWork(id);
+    if (planned || ownIdeas.length) {
+      const parts = [`Remove "${cat.label}"?`];
+      if (planned) parts.push("Anything you planned under it stays in your calendar, just untagged.");
+      if (ownIdeas.length) {
+        parts.push(`Its ${ownIdeas.length} idea${ownIdeas.length === 1 ? "" : "s"} move${ownIdeas.length === 1 ? "s" : ""} to Tend.`);
+      }
+      if (!window.confirm(parts.join(" "))) return;
     }
     untagPillarEverywhere(id);
+    // The bug this fixes: dropPillar was written and never called, so a
+    // removed pillar's ideas sat in storage under a dead id forever. Now the
+    // ones the user invested in land somewhere they can see, and the starter
+    // suggestions go with the pillar that offered them.
+    if (ownIdeas.length) ideasStore.moveToTend(id, ownIdeas);
+    else ideasStore.dropPillar(id);
+    removeGoal(id);
     saveCats(pillarOps.remove(cats, id));
   }
   function openPillarsSidebar({ adding = false } = {}) {
@@ -8175,6 +8411,13 @@ function Planner() {
     openPillarsSidebar({ adding: true });
   }
   function addCatFromSuggestion(label) {
+    // "Tend" is spoken for. Letting someone add a pillar by that name would
+    // put two rows with one label in the grid, only one of which behaves.
+    if (String(label || "").trim().toLowerCase() === TEND_CAT.label.toLowerCase()) {
+      setCatTyping(false);
+      setCatCustomInput("");
+      return;
+    }
     const { next, pillar } = pillarOps.add(cats, label);
     if (pillar) {
       saveCats(next);
@@ -8430,7 +8673,9 @@ function Planner() {
     const text = linkUrl ? `[${name}](${linkUrl})` : name;
     entryStore.apply(prev => entryOps.create(prev, ds, { text, pillars, sched, insertInfo }).next);
   }
-  const totalFilled = displayCats.reduce((s, cat) => s + dates.filter(d => entriesForCell(displayEntries, ymd(d), cat.id).length > 0).length, 0);
+  // Tend is excluded: a week spent entirely on errands should not read as a
+  // full one. The count is meant to describe the life, not the maintenance.
+  const totalFilled = displayCats.reduce((s, cat) => isTend(cat.id) ? s : s + dates.filter(d => entriesForCell(displayEntries, ymd(d), cat.id).length > 0).length, 0);
   const colTemplate = `${LABEL_W}px repeat(7,1fr)`;
   const weekStart = ymd(dates[0]);
   const reflectedItemTexts = React.useMemo(() => {
@@ -9331,6 +9576,11 @@ return /*#__PURE__*/React.createElement("div", {
     // rest quiet, its ideas open alongside. Two doors into the same room that
     // behaved differently was the odd part, not the coupling.
     const rowLit = panelOpen || selectedPillar === cat.id;
+    // The row that isn't a pillar. It keeps the pillars' geometry — same
+    // height, same seven cells, same click-to-focus — and loses their
+    // pigment, their handle and their delete. It also sits above a heavier
+    // divider, so the eye reads the set as "five, then this".
+    const isTendRow = isTend(cat.id);
     const dropLine = /*#__PURE__*/React.createElement("div", {
       style: {
         height: 2,
@@ -9343,12 +9593,14 @@ return /*#__PURE__*/React.createElement("div", {
     return /*#__PURE__*/React.createElement(React.Fragment, {
       key: cat.id
     }, isTarget && dragPos === "above" && dropLine, /*#__PURE__*/React.createElement("div", {
-      onDragOver: isOwnView ? e => handleRowDragOver(e, cat.id) : undefined,
-      onDrop: isOwnView ? e => handleRowDrop(e, cat.id) : undefined,
+      onDragOver: isOwnView && !isTendRow ? e => handleRowDragOver(e, cat.id) : undefined,
+      onDrop: isOwnView && !isTendRow ? e => handleRowDrop(e, cat.id) : undefined,
       style: {
         display: "grid",
         gridTemplateColumns: colTemplate,
         borderBottom: ci < displayCats.length - 1 ? `1px solid ${HAIRLINE}` : "none",
+        // The separation between the pillars and the row that isn't one.
+        borderTop: isTendRow ? `1px solid ${PLAN_RING}` : "none",
         opacity: isDragging ? 0.35 : focusRowOpacity(cat.id),
         transition: "opacity 0.15s ease"
       }
@@ -9376,7 +9628,12 @@ return /*#__PURE__*/React.createElement("div", {
         top: 0,
         bottom: 0,
         width: rowLit ? 14 : 7,
-        background: cat.color,
+        // Tend's band is drawn, not filled: the same outline a pillar wears
+        // while it is still only a suggestion. That shape already means
+        // "pillar-shaped, not a pillar" everywhere else in the app, so it
+        // needs no explaining here.
+        background: isTendRow ? "transparent" : cat.color,
+        boxShadow: isTendRow ? `inset 0 0 0 1px ${cat.color}` : "none",
         pointerEvents: "none",
         transition: "width 0.15s ease"
       }
@@ -9388,7 +9645,7 @@ return /*#__PURE__*/React.createElement("div", {
         padding: "0 8px 0 20px",
         minHeight: 50
       }
-    }, isOwnView && /*#__PURE__*/React.createElement("div", {
+    }, isOwnView && !isTendRow && /*#__PURE__*/React.createElement("div", {
       draggable: true,
       onDragStart: e => handleRowDragStart(e, cat.id, "grid"),
       onDragEnd: resetRowDrag,
@@ -9399,7 +9656,12 @@ return /*#__PURE__*/React.createElement("div", {
         alignItems: "center",
         flexShrink: 0
       }
-    }, /*#__PURE__*/React.createElement(GripIcon, null)), isOwnView && renamingId === cat.id ? /*#__PURE__*/React.createElement("input", {
+    }, /*#__PURE__*/React.createElement(GripIcon, null)), isTendRow && /*#__PURE__*/React.createElement("span", {
+      // Holds the space the grip would occupy, so Tend's label lines up with
+      // every pillar above it instead of sliding left and looking broken.
+      "aria-hidden": "true",
+      style: { width: 10, flexShrink: 0 }
+    }), isOwnView && renamingId === cat.id ? /*#__PURE__*/React.createElement("input", {
       ref: renameRef,
       value: renameVal,
       onChange: e => setRenameVal(e.target.value),
@@ -9430,14 +9692,17 @@ return /*#__PURE__*/React.createElement("div", {
         fontWeight: 700
       }
     }) : /*#__PURE__*/React.createElement("span", {
-      onDoubleClick: isOwnView ? e => {
+      // Tend keeps its name. It is a fixed part of the app's vocabulary
+      // rather than one of the five things this particular person picked.
+      onDoubleClick: isOwnView && !isTendRow ? e => {
         e.stopPropagation();
         closeSidebar();
             setCatTyping(false);
         setCatCustomInput("");
         startRename(cat);
       } : undefined,
-      title: isOwnView ? "Double-click to rename" : undefined,
+      title: isOwnView && !isTendRow ? "Double-click to rename"
+        : isTendRow ? "The things that clear the way for the rest" : undefined,
       style: {
         fontSize: 11,
         fontWeight: 700,
@@ -9450,7 +9715,7 @@ return /*#__PURE__*/React.createElement("div", {
         textOverflow: "ellipsis",
         whiteSpace: "nowrap"
       }
-    }, cat.label), isOwnView && isHovered && renamingId !== cat.id && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    }, cat.label), isOwnView && isHovered && renamingId !== cat.id && !isTendRow && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
         openReflectWithItem("", cat.label, cat.color);
@@ -9647,12 +9912,14 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v8.9.12")), (() => {
+  }, "v8.17.2")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
-    const goalCats = displayCats.filter(c => getGoal(c.id) != null);
-    const noGoalCats = displayCats.filter(c => getGoal(c.id) == null);
+    // Tend is absent from the intentions panel entirely — not listed as a
+    // pillar without a target yet, because there is no target to set.
+    const goalCats = displayCats.filter(c => !isTend(c.id) && getGoal(c.id) != null);
+    const noGoalCats = displayCats.filter(c => !isTend(c.id) && getGoal(c.id) == null);
     return /*#__PURE__*/React.createElement("div", {
       style: {
         position: "fixed",
@@ -9716,6 +9983,11 @@ return /*#__PURE__*/React.createElement("div", {
       weekLabelText: weekLabel(dates),
       onClose: closeSidebar
     }), sidebarTab === 'pillars' && isOwnView && (() => {
+    // Tend is absent from this panel entirely. It can't be renamed, reordered
+    // or removed, so there is nothing here to manage — and listing it would
+    // make it look like a sixth pillar, which is the one thing the row is
+    // designed not to be. It also stays out of the count and the stacked band.
+    const managedCats = cats.filter(c => !isTend(c.id));
     const suggLabels = new Set(CAT_SUGGESTIONS.map(s => s.label.toLowerCase()));
     const newSuggestions = [
       ...CAT_SUGGESTIONS,
@@ -9727,19 +9999,19 @@ return /*#__PURE__*/React.createElement("div", {
       // `key` is the suggestion's original label (stable identity for the
       // edit map); `label` is what the user actually sees and will add.
       .map(s => ({ ...s, key: s.label, label: suggestionNames[s.label] ?? s.label }))
-      .filter(s => !cats.some(c => c.label.toLowerCase() === s.label.toLowerCase()));
+      .filter(s => !managedCats.some(c => c.label.toLowerCase() === s.label.toLowerCase()));
     return /*#__PURE__*/React.createElement(React.Fragment, null,
     /*#__PURE__*/React.createElement(PanelHeader, {
     // This panel belongs to no one pillar, so its band is the whole set
     // stacked — the palette currently in play, growing by a segment every
     // time a pillar is added below.
-    band: cats.map(c => c.color),
+    band: managedCats.map(c => c.color),
     eyebrow: "Pillars",
     eyebrowColor: PLAN_MUTED,
     // The count is the title. Pillars over 8 Pillars said the word twice; the
     // eyebrow already names the panel, so the title's job is the one number
     // nothing else in the app says out loud.
-    title: cats.length + " Active",
+    title: managedCats.length + " Active",
     titleCaps: true,
     onClose: () => { setCatTyping(false); setCatCustomInput(""); setSuggestionNames({}); closeSidebar(); }
   }),
@@ -9753,7 +10025,7 @@ return /*#__PURE__*/React.createElement("div", {
     // the left. The band is one fixed width here rather than the planner's
     // varied one — a management list is read as a column of like things, and
     // ragged bands make it look like the rows mean different amounts.
-    cats.map(cat => {
+    managedCats.map(cat => {
       const isDragging = dragScope === "sidebar" && draggedId === cat.id;
       const isTarget = dragScope === "sidebar" && dragOverId === cat.id && !isDragging;
       const dropLine = /*#__PURE__*/React.createElement("div", {
@@ -10158,6 +10430,11 @@ function Root() {
     plannerHref: plannerHref()
   });
 }
+// Storage repairs run before the first render, not in an effect. The ideas
+// store seeds its state from localStorage during that render, so a migration
+// that fires afterwards would be invisible to React — and worse, the next
+// write would flush the stale in-memory map back over the repair.
+migrateTendStorage();
 ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(Root, null));
 </script>
 </body>
