@@ -6072,6 +6072,16 @@ function ReflectionsPanel({
 // The sidebar's intentions tab: how many days a week the user means to touch
 // each pillar, and how they're tracking against it. Pillars with an intention
 // set are listed first; the rest are offered below.
+//
+// The panel also drives the week's focus. Reviewing an intention is a question
+// about the week — five of seven, so which five, and what was on the two that
+// got away — and that answer lives in the grid, not in this list. Tapping a
+// pillar here lights it in the week behind the panel and dims the rest, and
+// the panel stays put: the counts and the days they came from are readable at
+// the same time. Going out to the toolbar's focus chips answered the same
+// question but swapped the sidebar for that pillar's ideas on the way, which
+// meant losing the numbers you were reading in order to see what produced
+// them.
 // ---------------------------------------------------------------------------
 function GoalsPanel({
   goalCats,
@@ -6082,16 +6092,67 @@ function GoalsPanel({
   onRemoveGoal,
   canEdit,
   weekLabelText,
+  selectedPillar,
+  onFocusPillar,
   onClose
 }) {
   const [expanded, setExpanded] = useState(null);
+  const focusedCat = [...goalCats, ...noGoalCats].find(c => c.id === selectedPillar) || null;
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PanelHeader, {
       eyebrow: "Intentions",
       readOnly: !canEdit,
       title: weekLabelText,
-      subtitle: "Set a weekly target for any pillar",
+      subtitle: "Tap a pillar to light it in the week",
       onClose: onClose
-    }), /*#__PURE__*/React.createElement("div", {
+    }),
+    // The focus is set from the rows but cleared from here. Once a pillar is
+    // lit every other row is dimmed, which makes the lit one the last place
+    // you'd look for the way out — and tapping a dimmed row switches focus
+    // rather than releasing it. One always-placed line, above the list, is
+    // the only spot that reads as "off" no matter which row is on.
+    focusedCat && /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "7px 16px",
+        borderBottom: `1px solid ${HAIRLINE}`,
+        background: PLAN_BG
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      "aria-hidden": "true",
+      style: {
+        width: 9,
+        height: 9,
+        flexShrink: 0,
+        borderRadius: 2,
+        background: catDeep(focusedCat)
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        flex: 1,
+        minWidth: 0,
+        fontSize: 10,
+        color: MUTED,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      }
+    }, `${focusedCat.label} is lit in the week`), /*#__PURE__*/React.createElement("button", {
+      onClick: () => onFocusPillar && onFocusPillar(focusedCat.id),
+      style: {
+        background: "none",
+        border: "none",
+        cursor: "pointer",
+        fontSize: 10,
+        fontWeight: 600,
+        color: catInk(focusedCat),
+        fontFamily: "inherit",
+        padding: 0,
+        flexShrink: 0,
+        textDecoration: "underline"
+      }
+    }, "Clear")), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         overflowY: "auto",
@@ -6132,6 +6193,14 @@ function GoalsPanel({
       // open. A ring could only ever be a dashboard; this is the thing being
       // filled in.
       const deep = catDeep(cat);
+      // Two gestures, two targets. The body of the row asks the week a
+      // question — light this pillar, dim the others — and the count asks the
+      // intention one: seven, or was five always the honest number? They used
+      // to share a single click, which was fine when the row only did one
+      // thing and impossible once it did two. The count carries the target it
+      // edits, so it edits in place rather than through a pencil.
+      const isLit = selectedPillar === cat.id;
+      const dimmed = selectedPillar != null && !isLit;
       const cells = Array.from({ length: goal }, (_, i) => {
         const lived = i < doneSeg;
         const planned = !lived && i < doneSeg + plannedSeg;
@@ -6152,17 +6221,21 @@ function GoalsPanel({
         key: cat.id,
         style: {
           marginBottom: 4,
-          background: TILE_PLAN_FILL,
-          border: `${PLAN_BORDER_W}px solid ${cat.color}`,
+          background: isLit ? (cat.bg || PLAN_BG) : TILE_PLAN_FILL,
+          border: `${isLit ? DONE_BORDER_W + 0.5 : PLAN_BORDER_W}px solid ${isLit ? deep : cat.color}`,
           borderRadius: TILE_RADIUS,
-          padding: "0 10px"
+          padding: "0 10px",
+          opacity: dimmed ? 0.42 : 1,
+          transition: "opacity 0.12s ease, background 0.12s ease"
         }
       }, /*#__PURE__*/React.createElement("div", {
-        onClick: () => canEdit && setExpanded(isExpanded ? null : cat.id),
-        title: breakdown,
+        onClick: () => onFocusPillar && onFocusPillar(cat.id),
+        title: isLit
+          ? `${breakdown} \u00b7 Tap to clear the focus`
+          : `${breakdown} \u00b7 Tap to light ${cat.label} in the week`,
         style: {
           padding: "9px 0",
-          cursor: canEdit ? "pointer" : "default"
+          cursor: onFocusPillar ? "pointer" : "default"
         }
       }, /*#__PURE__*/React.createElement("div", {
         style: {
@@ -6184,7 +6257,27 @@ function GoalsPanel({
           textOverflow: "ellipsis",
           whiteSpace: "nowrap"
         }
-      }, cat.label), /*#__PURE__*/React.createElement("span", {
+      }, cat.label), canEdit ? /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          setExpanded(isExpanded ? null : cat.id);
+        },
+        title: `Weekly target: ${goal} day${goal === 1 ? "" : "s"} \u00b7 Tap to change`,
+        style: {
+          fontSize: 11,
+          fontWeight: 700,
+          color: catInk(cat),
+          flexShrink: 0,
+          cursor: "pointer",
+          fontFamily: "inherit",
+          padding: "1px 6px",
+          lineHeight: 1.35,
+          alignSelf: "center",
+          ...pillarChip(cat, false),
+          ...(isExpanded ? { background: cat.bg || PLAN_BG } : null),
+          color: catInk(cat)
+        }
+      }, `${doneCount}/${goal}`) : /*#__PURE__*/React.createElement("span", {
         style: {
           fontSize: 11,
           fontWeight: 700,
@@ -6270,7 +6363,13 @@ function GoalsPanel({
           textDecoration: "underline"
         }
       }, "Remove intention"));
-    })), canEdit && noGoalCats.length > 0 && /*#__PURE__*/React.createElement("div", {
+    })),
+    // While a pillar is lit, this block recedes with everything else. It isn't
+    // focusable — a pillar with no intention has nothing here to review, and
+    // its one control already means "pick a target" — but leaving it at full
+    // strength would make it the brightest thing on a panel that is supposed
+    // to be showing you one pillar.
+    canEdit && noGoalCats.length > 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         fontWeight: 600,
@@ -6278,13 +6377,17 @@ function GoalsPanel({
         textTransform: "uppercase",
         color: MUTED,
         marginTop: goalCats.length > 0 ? 14 : 0,
-        marginBottom: 6
+        marginBottom: 6,
+        opacity: selectedPillar != null ? 0.42 : 1,
+        transition: "opacity 0.12s ease"
       }
     }, "Set an intention"), canEdit && noGoalCats.length > 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexDirection: "column",
-        gap: 4
+        gap: 4,
+        opacity: selectedPillar != null ? 0.42 : 1,
+        transition: "opacity 0.12s ease"
       }
     }, noGoalCats.map(cat => {
       const isExpanded = expanded === cat.id;
@@ -8877,10 +8980,24 @@ function Planner() {
   // dims everything else instead of removing it: the week keeps its shape, so
   // you can see what you're setting aside as well as what you're focusing on.
   const [selectedPillar, setSelectedPillar] = useState(null);
+  // The focus itself, with nothing attached. Both doors go through here so
+  // there is one definition of what "lit" means.
+  function setPillarFocus(catId) {
+    setSelectedPillar(selectedPillar === catId ? null : catId);
+  }
+  // The toolbar's door. Picking a pillar from the top of the week is a move
+  // toward doing something with it, so the ideas for it come along.
   function togglePillarFilter(catId) {
     const next = selectedPillar === catId ? null : catId;
     setSelectedPillar(next);
     if (next) openIdeasSidebar(catId);
+  }
+  // The intentions panel's door. Same focus, no cargo: the whole point of
+  // lighting a pillar from there is to keep reading the counts while the week
+  // answers for them, and swapping the panel out for ideas would take away the
+  // thing being explained.
+  function toggleFocusFromGoals(catId) {
+    setPillarFocus(catId);
   }
   // Takes the item's full list of tagged pillars, not just the single pillar
   // row it happened to render under. An item de-duped into one pillar's row is
@@ -9912,7 +10029,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v8.17.2")), (() => {
+  }, "v8.18.1")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -9981,6 +10098,8 @@ return /*#__PURE__*/React.createElement("div", {
       onRemoveGoal: removeGoal,
       canEdit: isOwnView,
       weekLabelText: weekLabel(dates),
+      selectedPillar: selectedPillar,
+      onFocusPillar: toggleFocusFromGoals,
       onClose: closeSidebar
     }), sidebarTab === 'pillars' && isOwnView && (() => {
     // Tend is absent from this panel entirely. It can't be renamed, reordered
