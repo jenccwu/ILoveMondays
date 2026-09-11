@@ -362,6 +362,16 @@ const K = {
   userName: "planner:userName",
   importedViews: "planner:importedViews",
   week: ds => WEEK_PREFIX + ds,
+  // The AI connection. All three share the `planner:ai` prefix so one entry in
+  // TRANSFER_SKIP_PREFIXES keeps the whole group — key included — out of every
+  // export. A credential must never ride along in a file meant for sharing.
+  aiProvider: "planner:aiProvider",
+  aiKey: "planner:aiKey",
+  aiModel: "planner:aiModel",
+  // Written by a pre-v9 settings panel that no longer exists in the code. The
+  // value outlived its UI and kept appearing in exports. Purged on load.
+  legacyApiKey: "planner:apiKey",
+  legacyApiProvider: "planner:apiProvider",
   // Pre-v8 shapes. Read only by the migration path that upgrades a legacy
   // week the first time it is opened; never written.
   legacyDone: "planner:done",
@@ -5399,6 +5409,217 @@ function activeSuggestionSource() {
 }
 
 // ---------------------------------------------------------------------------
+// AI providers
+//
+// One interface, two implementations, and the choice is a stored setting
+// rather than something baked into the code. That matters more than it looks:
+// this field moves fast enough that anything hardcoded today is wrong by
+// winter — Google shipped three Flash models between July and September 2026
+// and retired a whole API key format in the same stretch.
+//
+// Which is also why the model list is fetched rather than written down. Asking
+// the provider what this key can reach gives a list that is current by
+// construction and accurate to the user's own account, not to a docs page.
+// The cost is that the dropdown is empty until Test connection has run, which
+// reads honestly enough: nothing connected yet.
+//
+//   { id, label, keyHint, keyPattern,
+//     listModels(key) -> Promise<[{id, label}]>,
+//     complete({key, model, system, prompt, maxTokens}) -> Promise<string> }
+//
+// Parsing is split out of every network call below so the shapes can be
+// exercised against fixtures without a fetch.
+// ---------------------------------------------------------------------------
+
+// Gemini returns every model the key can see, including embedding and image
+// models that can't hold a conversation. `generateContent` in the supported
+// methods is what marks the ones that can.
+function parseGeminiModels(json) {
+  const raw = (json && json.models) || [];
+  return raw
+    .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+    .map(m => ({
+      id: String(m.name || "").replace(/^models\//, ""),
+      label: m.displayName || String(m.name || "").replace(/^models\//, "")
+    }))
+    .filter(m => m.id);
+}
+
+function parseAnthropicModels(json) {
+  const raw = (json && json.data) || [];
+  return raw
+    .map(m => ({ id: m.id, label: m.display_name || m.id }))
+    .filter(m => m.id);
+}
+
+// Both providers answer with a list of content blocks rather than a string,
+// and both can return a block with no text in it (a safety stop, a tool call).
+// Joining the text blocks and ignoring the rest is right for both shapes.
+function parseGeminiText(json) {
+  const parts = ((((json || {}).candidates || [])[0] || {}).content || {}).parts || [];
+  return parts.map(p => p.text || "").join("").trim();
+}
+
+function parseAnthropicText(json) {
+  const blocks = (json && json.content) || [];
+  return blocks.filter(b => b.type === "text").map(b => b.text || "").join("").trim();
+}
+
+// What went wrong, in words worth reading. The provider's own message is
+// usually either absent or written for somebody debugging their own service,
+// so the status code carries most of the meaning here.
+function describeConnectionError(status, body) {
+  const detail = (() => {
+    if (!body) return "";
+    const m = body.error && (body.error.message || body.error.status);
+    return typeof m === "string" ? m : "";
+  })();
+  if (status === 401 || status === 403) {
+    return "That key was rejected. Check it was copied whole, and that it's a key for the provider selected above.";
+  }
+  if (status === 429) {
+    return "The key works, but it's over its rate limit right now. Wait a minute and try again.";
+  }
+  if (status === 404) {
+    return "The provider didn't recognise that request. If this keeps happening the endpoint has probably moved.";
+  }
+  if (status === 0) {
+    return "Couldn't reach the provider. Check your connection.";
+  }
+  return detail ? `The provider said: ${detail}` : `The provider returned an error (${status}).`;
+}
+
+// Wraps fetch so every failure arrives as one kind of thing. A network error
+// and a 500 are the same event from the dialog's point of view: it didn't work,
+// and here's the sentence to show.
+async function aiFetch(url, options) {
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch {
+    throw new Error(describeConnectionError(0, null));
+  }
+  const text = await res.text();
+  const json = safeParse(text, null);
+  if (!res.ok) throw new Error(describeConnectionError(res.status, json));
+  return json || {};
+}
+
+const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
+
+const geminiProvider = {
+  id: "gemini",
+  label: "Google Gemini",
+  keyHint: "Starts with AQ.",
+  // Google moved from AIza keys to AQ. keys during 2026 and is retiring the old
+  // format. Both shapes are accepted here — the check is a nudge against a
+  // half-pasted key, not a gate.
+  keyPattern: /^(AQ\.|AIza)/,
+  async listModels(key) {
+    const json = await aiFetch(`${GEMINI_BASE}/models?pageSize=200`, {
+      headers: { "x-goog-api-key": key }
+    });
+    return parseGeminiModels(json);
+  },
+  // The key goes in a header, not the query string. Same authentication either
+  // way, but a URL is the part of a request that ends up in logs and history.
+  async complete({ key, model, system, prompt, maxTokens = 4096 }) {
+    const body = {
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: maxTokens }
+    };
+    if (system) body.systemInstruction = { parts: [{ text: system }] };
+    const json = await aiFetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
+      method: "POST",
+      headers: { "x-goog-api-key": key, "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    return parseGeminiText(json);
+  }
+};
+
+const ANTHROPIC_BASE = "https://api.anthropic.com/v1";
+
+// The dangerous-direct-browser-access header is the API's opt-in for being
+// called from a page. The warning in its name is about shipping *your* key
+// inside an app other people load. Here the key belongs to the person typing
+// it into their own browser, so there is nothing exposed to them that they
+// don't already own.
+const ANTHROPIC_HEADERS = key => ({
+  "x-api-key": key,
+  "anthropic-version": "2023-06-01",
+  "anthropic-dangerous-direct-browser-access": "true",
+  "content-type": "application/json"
+});
+
+const anthropicProvider = {
+  id: "anthropic",
+  label: "Anthropic Claude",
+  keyHint: "Starts with sk-ant-",
+  keyPattern: /^sk-ant-/,
+  async listModels(key) {
+    const json = await aiFetch(`${ANTHROPIC_BASE}/models?limit=100`, {
+      headers: ANTHROPIC_HEADERS(key)
+    });
+    return parseAnthropicModels(json);
+  },
+  async complete({ key, model, system, prompt, maxTokens = 4096 }) {
+    const body = {
+      model,
+      max_tokens: maxTokens,
+      messages: [{ role: "user", content: prompt }]
+    };
+    if (system) body.system = system;
+    const json = await aiFetch(`${ANTHROPIC_BASE}/messages`, {
+      method: "POST",
+      headers: ANTHROPIC_HEADERS(key),
+      body: JSON.stringify(body)
+    });
+    return parseAnthropicText(json);
+  }
+};
+
+const AI_PROVIDERS = [geminiProvider, anthropicProvider];
+
+function aiProviderById(id) {
+  return AI_PROVIDERS.find(p => p.id === id) || null;
+}
+
+// Reads the saved connection. `ready` is the question every AI-backed feature
+// actually wants answered: is there enough here to make a call?
+function readAIConnection() {
+  const providerId = db.readRaw(K.aiProvider) || AI_PROVIDERS[0].id;
+  const key = db.readRaw(K.aiKey) || "";
+  const model = db.readRaw(K.aiModel) || "";
+  return { providerId, key, model, ready: Boolean(key && model && aiProviderById(providerId)) };
+}
+
+function saveAIConnection({ providerId, key, model }) {
+  db.writeRaw(K.aiProvider, providerId || "");
+  db.writeRaw(K.aiKey, key || "");
+  db.writeRaw(K.aiModel, model || "");
+}
+
+function clearAIConnection() {
+  [K.aiProvider, K.aiKey, K.aiModel].forEach(k => db.remove(k));
+}
+
+// A key stored by a version whose settings UI was later removed sat in storage
+// for months, invisible and still being swept into every export. Anything
+// holding a credential gets removed on load rather than left for the next
+// export to find.
+function purgeLegacyCredentials() {
+  [K.legacyApiKey, K.legacyApiProvider].forEach(k => db.remove(k));
+}
+
+// Enough of the key to recognise which one it is, and not enough to use.
+function maskKey(key) {
+  if (!key) return "";
+  if (key.length <= 12) return "•".repeat(key.length);
+  return `${key.slice(0, 6)}${"•".repeat(10)}${key.slice(-4)}`;
+}
+
+// ---------------------------------------------------------------------------
 // IdeasPanel
 //
 // The sidebar's ideas tab. Owns only its own UI state (which idea is being
@@ -6483,7 +6704,15 @@ function GoalsPanel({
 // silent until someone tries to restore.
 // ---------------------------------------------------------------------------
 
-const TRANSFER_SKIP_PREFIXES = [K.importedViews, K.userName];
+// Never leaves this browser. `planner:ai` covers provider, key and model in one
+// prefix; the two legacy names are listed because old installs still hold them.
+const TRANSFER_SKIP_PREFIXES = [
+  K.importedViews,
+  K.userName,
+  "planner:ai",
+  K.legacyApiKey,
+  K.legacyApiProvider
+];
 
 // Builds the export payload from a plain { key: value } snapshot of storage.
 function buildExportPayload(snapshot, { name, includeReflections = true, now = new Date() } = {}) {
@@ -7859,6 +8088,210 @@ function ExportDialog({ pendingExportName, exportIncludeReflections, setExportIn
   }, "Download"));
 }
 
+const AI_FIELD_LABEL = {
+  fontSize: 11,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  color: INK_3,
+  fontWeight: 600,
+  marginBottom: 6
+};
+
+const AI_INPUT = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "9px 10px",
+  borderRadius: 9,
+  border: `1px solid ${HAIRLINE}`,
+  background: "#fff",
+  fontSize: 13,
+  fontFamily: "inherit",
+  color: INK,
+  outline: "none"
+};
+
+// Settings for the connection the AI-backed features run on.
+//
+// The shape of the thing is: pick a provider, paste a key, prove it works,
+// then choose from what that key can actually reach. Test connection is not
+// decoration — it is the step that populates the model list, so it sits in the
+// middle of the flow rather than off to one side as a reassurance button.
+function AIConnectionDialog({ onClose }) {
+  const saved = readAIConnection();
+  const [providerId, setProviderId] = useState(saved.providerId);
+  const [key, setKey] = useState(saved.key);
+  // A saved key renders masked until it's replaced. Showing it in full would
+  // put a credential on screen for no reason; showing nothing would make a
+  // configured connection look empty.
+  const [keyDirty, setKeyDirty] = useState(false);
+  const [model, setModel] = useState(saved.model);
+  const [models, setModels] = useState(saved.model ? [{ id: saved.model, label: saved.model }] : []);
+  const [status, setStatus] = useState("idle");
+  const [message, setMessage] = useState("");
+  const provider = aiProviderById(providerId) || AI_PROVIDERS[0];
+
+  function changeProvider(id) {
+    setProviderId(id);
+    // A key and a model list belong to one provider. Carrying either across
+    // would offer models this key can't reach.
+    setKey("");
+    setKeyDirty(true);
+    setModel("");
+    setModels([]);
+    setStatus("idle");
+    setMessage("");
+  }
+
+  async function test() {
+    if (!key.trim()) {
+      setStatus("error");
+      setMessage("Paste a key first.");
+      return;
+    }
+    setStatus("testing");
+    setMessage("");
+    try {
+      const found = await provider.listModels(key.trim());
+      if (!found.length) {
+        setStatus("error");
+        setMessage("The key works, but no usable models came back for it.");
+        return;
+      }
+      setModels(found);
+      // Keep the saved model if this key can still reach it. Otherwise the
+      // first one, so Save is reachable without a second decision.
+      const keep = found.find(m => m.id === model);
+      setModel(keep ? keep.id : found[0].id);
+      setStatus("ok");
+      setMessage(`Connected. ${found.length} model${found.length === 1 ? "" : "s"} available.`);
+    } catch (err) {
+      setStatus("error");
+      setMessage(err.message || "Something went wrong.");
+    }
+  }
+
+  function save() {
+    saveAIConnection({ providerId, key: key.trim(), model });
+    onClose();
+  }
+
+  function disconnect() {
+    clearAIConnection();
+    onClose();
+  }
+
+  const canSave = Boolean(key.trim() && model);
+  const statusColor = status === "ok" ? "#4E7A5E" : status === "error" ? "#A85448" : MUTED;
+
+  return /*#__PURE__*/React.createElement(Modal, { onClose: onClose, maxWidth: 380, padding: "24px 24px 20px" },
+    /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: MUTED, fontWeight: 600, marginBottom: 6 }
+    }, "AI connection"),
+    /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 12, color: INK_3, lineHeight: 1.5, marginBottom: 18 }
+    }, "Powers Threads and AI-generated ideas. Your key is stored in this browser and sent only to the provider you pick, only when you ask for one of those things."),
+
+    /*#__PURE__*/React.createElement("div", { style: { marginBottom: 14 } },
+      /*#__PURE__*/React.createElement("div", { style: AI_FIELD_LABEL }, "Provider"),
+      /*#__PURE__*/React.createElement("select", {
+        value: providerId,
+        onChange: e => changeProvider(e.target.value),
+        style: { ...AI_INPUT, cursor: "pointer" }
+      }, AI_PROVIDERS.map(p => /*#__PURE__*/React.createElement("option", { key: p.id, value: p.id }, p.label)))),
+
+    /*#__PURE__*/React.createElement("div", { style: { marginBottom: 14 } },
+      /*#__PURE__*/React.createElement("div", { style: AI_FIELD_LABEL }, "API key"),
+      /*#__PURE__*/React.createElement("input", {
+        type: "text",
+        value: keyDirty ? key : maskKey(key),
+        placeholder: provider.keyHint,
+        spellCheck: false,
+        autoComplete: "off",
+        onFocus: () => { if (!keyDirty) { setKey(""); setKeyDirty(true); } },
+        onChange: e => { setKey(e.target.value); setKeyDirty(true); setStatus("idle"); setMessage(""); },
+        style: AI_INPUT
+      }),
+      key.trim() && keyDirty && !provider.keyPattern.test(key.trim())
+        ? /*#__PURE__*/React.createElement("div", {
+            style: { fontSize: 11, color: MUTED, marginTop: 5, lineHeight: 1.4 }
+          }, `That doesn't look like a ${provider.label} key — ${provider.keyHint.toLowerCase()}. Test it anyway if you think it's right.`)
+        : null),
+
+    /*#__PURE__*/React.createElement("button", {
+      onClick: test,
+      disabled: status === "testing",
+      style: {
+        width: "100%",
+        padding: "9px",
+        borderRadius: 9,
+        background: "#fff",
+        border: `1px solid ${HAIRLINE}`,
+        cursor: status === "testing" ? "default" : "pointer",
+        fontSize: 13,
+        color: INK,
+        fontWeight: 600,
+        fontFamily: "inherit",
+        marginBottom: message ? 8 : 14
+      }
+    }, status === "testing" ? "Testing\u2026" : "Test connection"),
+
+    message
+      ? /*#__PURE__*/React.createElement("div", {
+          style: { fontSize: 12, color: statusColor, lineHeight: 1.45, marginBottom: 14 }
+        }, message)
+      : null,
+
+    /*#__PURE__*/React.createElement("div", { style: { marginBottom: 18 } },
+      /*#__PURE__*/React.createElement("div", { style: AI_FIELD_LABEL }, "Model"),
+      models.length
+        ? /*#__PURE__*/React.createElement("select", {
+            value: model,
+            onChange: e => setModel(e.target.value),
+            style: { ...AI_INPUT, cursor: "pointer" }
+          }, models.map(m => /*#__PURE__*/React.createElement("option", { key: m.id, value: m.id }, m.label)))
+        : /*#__PURE__*/React.createElement("div", {
+            style: { ...AI_INPUT, color: FAINT, background: "#FBF9F4" }
+          }, "Test the connection to load models"),
+      /*#__PURE__*/React.createElement("div", {
+        style: { fontSize: 11, color: MUTED, marginTop: 6, lineHeight: 1.45 }
+      }, "If results come back thin, try a larger model before deciding the feature doesn't work.")),
+
+    /*#__PURE__*/React.createElement("button", {
+      onClick: save,
+      disabled: !canSave,
+      style: {
+        width: "100%",
+        padding: "11px",
+        borderRadius: 9,
+        background: canSave ? INK : "#D1CCCA",
+        border: "none",
+        cursor: canSave ? "pointer" : "default",
+        fontSize: 13,
+        color: "#fff",
+        fontWeight: 600,
+        fontFamily: "inherit"
+      }
+    }, "Save"),
+
+    saved.key
+      ? /*#__PURE__*/React.createElement("button", {
+          onClick: disconnect,
+          style: {
+            width: "100%",
+            padding: "9px",
+            marginTop: 8,
+            borderRadius: 9,
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            fontSize: 12,
+            color: MUTED,
+            fontFamily: "inherit"
+          }
+        }, "Remove key from this browser")
+      : null);
+}
+
 function Planner() {
   const [offset, setOffset] = useState(0);
   const [cats, setCats] = useState(DEFAULT_CATS);
@@ -7907,6 +8340,7 @@ function Planner() {
   const [importConfirm, setImportConfirm] = useState(null);
   const [showViewDropdown, setShowViewDropdown] = useState(false);
   const [showStartFreshConfirm, setShowStartFreshConfirm] = useState(false);
+  const [showAIConnection, setShowAIConnection] = useState(false);
   const viewDropdownRef = useRef(null);
   const [ratings, setRatings] = useState({});
   const journalStore = useJournalStore();
@@ -7995,6 +8429,7 @@ function Planner() {
     const storedRatings = db.read(K.ratings);
     if (storedRatings) setRatings(storedRatings);
     journalStore.load(db.read(K.journal, {}));
+    purgeLegacyCredentials();
   }, []);
   useEffect(() => {
     if (renamingId && renameRef.current) renameRef.current.focus();
@@ -9517,7 +9952,41 @@ return /*#__PURE__*/React.createElement("div", {
     y1: "15",
     x2: "12",
     y2: "3"
-  })), "Share or back up my plan\u2026")), /*#__PURE__*/React.createElement("div", {
+  })), "Share or back up my plan\u2026"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setShowViewDropdown(false);
+      setShowAIConnection(true);
+    },
+    style: {
+      width: "100%",
+      display: "flex",
+      alignItems: "center",
+      gap: 9,
+      padding: "9px 14px",
+      background: "#fff",
+      border: "none",
+      cursor: "pointer",
+      fontFamily: "inherit",
+      fontSize: 12,
+      fontWeight: 500,
+      color: INK_3,
+      textAlign: "left"
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "13",
+    height: "13",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2",
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    style: { flexShrink: 0 }
+  }, /*#__PURE__*/React.createElement("circle", {
+    cx: "12", cy: "12", r: "3.2"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"
+  })), "AI connection\u2026")), /*#__PURE__*/React.createElement("div", {
     style: {
       borderTop: `1px solid ${HAIRLINE}`
     }
@@ -10029,7 +10498,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v8.18.1")), (() => {
+  }, "v9.11.1")), (() => {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -10384,7 +10853,9 @@ return /*#__PURE__*/React.createElement("div", {
     }), /*#__PURE__*/React.createElement("rect", {
       x: "16.5", y: "13", width: "4.5", height: "8"
     })))));
-  })(), showStartFreshConfirm && /*#__PURE__*/React.createElement(StartFreshDialog, {
+  })(), showAIConnection && /*#__PURE__*/React.createElement(AIConnectionDialog, {
+    onClose: () => setShowAIConnection(false)
+  }), showStartFreshConfirm && /*#__PURE__*/React.createElement(StartFreshDialog, {
     onClose: () => setShowStartFreshConfirm(false),
     onConfirm: startFresh
   }), pendingImport && /*#__PURE__*/React.createElement(ImportDialog, {
