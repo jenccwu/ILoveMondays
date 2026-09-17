@@ -320,6 +320,9 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       55%  { background: rgba(255,214,160,0.45); }
       100% { background: rgba(255,214,160,0); }
     }
+    /* A season's evidence tile answers the pointer, so it reads as something
+       to open rather than a caption. The band darkens; nothing moves. */
+    .season-evidence:focus-visible { outline: 2px solid #C4622F; outline-offset: 2px; }
     @media (prefers-reduced-motion: reduce) {
       @keyframes sciLand { 0%, 100% { background: rgba(255,214,160,0); } }
     }
@@ -359,6 +362,8 @@ const K = {
   goals: "planner:goals",
   ratings: "planner:ratings",
   rules: "planner:recurring",
+  // One entry per season that has been read.
+  seasons: "planner:seasons",
   userName: "planner:userName",
   importedViews: "planner:importedViews",
   week: ds => WEEK_PREFIX + ds,
@@ -487,6 +492,13 @@ const FAINT = "#BCB2A0";      // faintest text, resting icons, placeholders
 const HAIRLINE = "#E7DECB";   // borders and dividers
 const WASH = "#F2ECE0";       // recessed fill: empty tiles, inset panels
 const ACCENT = "#C4622F";     // the single action accent
+// A wash of the accent, for the one place evidence is gathered up. The season
+// has no pillar of its own, so its proof is tinted in the app's own colour
+// rather than any one pillar's — which also keeps cross-pillar entries honest.
+const ACCENT_WASH = "#F6E4D6";
+// Where a season's own words are gathered. A step deeper than WASH so the
+// block reads as a container without taking any colour of its own.
+const EVIDENCE_WASH = "#EDE5D6";
 // The reflections family. Journalling is the one place the app leaves its
 // paper palette, and it does so on purpose — a reflection is a different kind
 // of act from a plan, and reads as one.
@@ -5445,6 +5457,41 @@ function parseGeminiModels(json) {
     .filter(m => m.id);
 }
 
+// Providers name their tiers rather than publishing them as a field, and the
+// names follow a stable convention even as the models behind them churn
+// weekly: a "lite"/"mini"/"haiku" is the cheap end, a "pro"/"opus"/"ultra" is
+// the capable end, and everything else sits between. Reading the tier off the
+// name keeps the list ordered without a hardcoded table that would be wrong
+// by winter — the same reason the list is fetched rather than written down.
+//
+// This ranks; it does not filter. A model that looks light is still offered,
+// because the person whose key it is knows things this heuristic does not.
+function modelTier(id) {
+  const s = String(id || "").toLowerCase();
+  if (/\b(lite|mini|nano|haiku|small|8b|4b)\b/.test(s) || /-lite|-mini|-nano/.test(s)) return 2;
+  if (/\b(pro|opus|ultra|max)\b/.test(s) || /-pro|-opus|-ultra/.test(s)) return 0;
+  return 1;
+}
+
+const MODEL_TIER_NOTE = ["most capable", "balanced", "fastest, least depth"];
+
+// The version number inside the id, so 3.8 sorts ahead of 3.5 and 10 ahead
+// of 9. Absent a number, sorts last within its tier rather than first.
+function modelVersion(id) {
+  const m = /(\d+(?:\.\d+)?)/.exec(String(id || ""));
+  return m ? parseFloat(m[1]) : -1;
+}
+
+function rankModels(models) {
+  return (models || []).slice().sort((a, b) => {
+    const ta = modelTier(a.id), tb = modelTier(b.id);
+    if (ta !== tb) return ta - tb;
+    const va = modelVersion(a.id), vb = modelVersion(b.id);
+    if (va !== vb) return vb - va;
+    return String(a.id).localeCompare(String(b.id));
+  });
+}
+
 function parseAnthropicModels(json) {
   const raw = (json && json.data) || [];
   return raw
@@ -5460,6 +5507,32 @@ function parseGeminiText(json) {
   return parts.map(p => p.text || "").join("").trim();
 }
 
+// A response can fail in two ways that both arrive as unreadable text, and
+// they need different advice. Hitting the output ceiling is the app's fault
+// and fixable by raising it; coming back empty usually means the model
+// stopped for a reason of its own. Reasoning models make the first one much
+// more likely, because their thinking is billed against the same ceiling as
+// their answer — a model can think for 4,000 tokens and have nothing left to
+// write with.
+const TRUNCATED_REASONS = ["MAX_TOKENS", "max_tokens", "length"];
+
+// allowTruncated is for the pre-flight check, where the question is only
+// whether this key can reach this model at all. A reasoning model asked for
+// one word will still think first, and its thinking is charged against the
+// same tiny ceiling — so it truncates every time, having answered perfectly
+// well. Treating that as a failure would rule out the most capable models on
+// the list, which is the opposite of what the check is for.
+function assertComplete(finishReason, text, { allowTruncated = false } = {}) {
+  if (!allowTruncated && TRUNCATED_REASONS.indexOf(finishReason) !== -1) {
+    throw new Error("The model ran out of room before it finished \u2014 it hit the response limit. Try again, or use a model that spends less on thinking.");
+  }
+  // A truncated reply has no text to show for itself, and that is expected
+  // when it was cut off mid-thought rather than mid-sentence.
+  if (!String(text || "").trim() && !(allowTruncated && TRUNCATED_REASONS.indexOf(finishReason) !== -1)) {
+    throw new Error(`The model returned nothing${finishReason ? ` (stopped: ${finishReason})` : ""}. Try again, or pick a different model.`);
+  }
+}
+
 function parseAnthropicText(json) {
   const blocks = (json && json.content) || [];
   return blocks.filter(b => b.type === "text").map(b => b.text || "").join("").trim();
@@ -5468,7 +5541,7 @@ function parseAnthropicText(json) {
 // What went wrong, in words worth reading. The provider's own message is
 // usually either absent or written for somebody debugging their own service,
 // so the status code carries most of the meaning here.
-function describeConnectionError(status, body) {
+function describeConnectionError(status, body, { retried = false } = {}) {
   const detail = (() => {
     if (!body) return "";
     const m = body.error && (body.error.message || body.error.status);
@@ -5481,28 +5554,53 @@ function describeConnectionError(status, body) {
     return "The key works, but it's over its rate limit right now. Wait a minute and try again.";
   }
   if (status === 404) {
-    return "The provider didn't recognise that request. If this keeps happening the endpoint has probably moved.";
+    // A 404 here is almost always a model the account can't use, and the
+    // provider says which one. Swallowing that in favour of a tidy sentence
+    // left the one person who could act on it with nothing to go on.
+    return detail
+      ? `The provider rejected that request: ${detail} \u2014 usually this means the selected model isn't available to your key. Try another model.`
+      : "The provider didn't recognise that request \u2014 usually the selected model isn't available to your key. Try another model.";
+  }
+  if (status === 503 || status === 529) {
+    return retried
+      ? "The provider is overloaded right now \u2014 waited and tried again, still busy. This one is on their end; try again in a few minutes."
+      : "The provider is overloaded right now. Try again in a few minutes.";
   }
   if (status === 0) {
     return "Couldn't reach the provider. Check your connection.";
   }
-  return detail ? `The provider said: ${detail}` : `The provider returned an error (${status}).`;
+  return detail ? `The provider said: ${detail} (${status})` : `The provider returned an error (${status}).`;
 }
 
 // Wraps fetch so every failure arrives as one kind of thing. A network error
 // and a 500 are the same event from the dialog's point of view: it didn't work,
 // and here's the sentence to show.
-async function aiFetch(url, options) {
-  let res;
-  try {
-    res = await fetch(url, options);
-  } catch {
-    throw new Error(describeConnectionError(0, null));
+// Providers shed load under demand spikes, and a season reading is three
+// months of text in a single request — the most expensive call this app makes
+// and the worst one to lose to a transient 503. Overload is waited out rather
+// than reported. Rejections that won't change on a retry (a bad key, an
+// unavailable model, a rate limit the user has to sit out) fail immediately.
+const AI_OVERLOAD_STATUSES = [503, 529];
+const AI_RETRY_DELAYS_MS = [2000, 6000];
+
+async function aiFetch(url, options, { onRetry } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(url, options);
+    } catch {
+      throw new Error(describeConnectionError(0, null));
+    }
+    const text = await res.text();
+    const json = safeParse(text, null);
+    if (res.ok) return json || {};
+    const retryable = AI_OVERLOAD_STATUSES.indexOf(res.status) !== -1;
+    if (!retryable || attempt >= AI_RETRY_DELAYS_MS.length) {
+      throw new Error(describeConnectionError(res.status, json, { retried: retryable }));
+    }
+    if (onRetry) onRetry(attempt + 1, AI_RETRY_DELAYS_MS.length + 1);
+    await new Promise(r => setTimeout(r, AI_RETRY_DELAYS_MS[attempt]));
   }
-  const text = await res.text();
-  const json = safeParse(text, null);
-  if (!res.ok) throw new Error(describeConnectionError(res.status, json));
-  return json || {};
 }
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
@@ -5523,18 +5621,23 @@ const geminiProvider = {
   },
   // The key goes in a header, not the query string. Same authentication either
   // way, but a URL is the part of a request that ends up in logs and history.
-  async complete({ key, model, system, prompt, maxTokens = 4096 }) {
+  // `json` asks the provider for JSON natively rather than trusting a prompt
+  // to suppress prose and code fences. Left off for the model check, which
+  // wants one word back.
+  async complete({ key, model, system, prompt, maxTokens = 4096, json: wantJson = false, allowTruncated = false }) {
     const body = {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: { maxOutputTokens: maxTokens }
     };
+    if (wantJson) body.generationConfig.responseMimeType = "application/json";
     if (system) body.systemInstruction = { parts: [{ text: system }] };
-    const json = await aiFetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
+    const res = await aiFetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
       method: "POST",
       headers: { "x-goog-api-key": key, "content-type": "application/json" },
       body: JSON.stringify(body)
     });
-    return parseGeminiText(json);
+    assertComplete(((res.candidates || [])[0] || {}).finishReason, parseGeminiText(res), { allowTruncated });
+    return parseGeminiText(res);
   }
 };
 
@@ -5563,19 +5666,20 @@ const anthropicProvider = {
     });
     return parseAnthropicModels(json);
   },
-  async complete({ key, model, system, prompt, maxTokens = 4096 }) {
+  async complete({ key, model, system, prompt, maxTokens = 4096, allowTruncated = false }) {
     const body = {
       model,
       max_tokens: maxTokens,
       messages: [{ role: "user", content: prompt }]
     };
     if (system) body.system = system;
-    const json = await aiFetch(`${ANTHROPIC_BASE}/messages`, {
+    const res = await aiFetch(`${ANTHROPIC_BASE}/messages`, {
       method: "POST",
       headers: ANTHROPIC_HEADERS(key),
       body: JSON.stringify(body)
     });
-    return parseAnthropicText(json);
+    assertComplete(res.stop_reason, parseAnthropicText(res), { allowTruncated });
+    return parseAnthropicText(res);
   }
 };
 
@@ -5617,6 +5721,2072 @@ function maskKey(key) {
   if (!key) return "";
   if (key.length <= 12) return "•".repeat(key.length);
   return `${key.slice(0, 6)}${"•".repeat(10)}${key.slice(-4)}`;
+}
+
+
+// ---------------------------------------------------------------------------
+// Seasons
+//
+// Every other surface in this app looks at a week. This one looks at a
+// quarter, and it is the only place that reads across the whole history at
+// once. That difference is the feature, not an implementation detail: the
+// patterns worth seeing — a skill that compounded, a pillar that quietly
+// emptied, a theme that cuts across every pillar — are invisible at the
+// resolution a week gives you.
+//
+// It runs a few times a year rather than weekly, on purpose. There is not a
+// fresh insight every Monday, and a surface that promises one ends up
+// manufacturing it. Scarcity is what keeps this honest.
+//
+// The work is split in two. Everything countable is computed here, in code:
+// cadence, gaps, targets against actuals, which labels were in use when. The
+// model never gets to invent a number. What the model does is read the
+// reflection text — tone across months, a skill curve described in a person's
+// own words, the same observation made twice ten weeks apart — which is the
+// part no amount of counting reaches.
+// ---------------------------------------------------------------------------
+
+// Meteorological seasons: whole months, so a season boundary never lands
+// mid-week and every season is exactly three week-aligned-ish months. Winter
+// is the awkward one — it spans a year end, and is named for the year it
+// starts in.
+const SEASON_DEFS = [
+  { key: "winter", label: "Winter", startMonth: 12 },
+  { key: "spring", label: "Spring", startMonth: 3 },
+  { key: "summer", label: "Summer", startMonth: 6 },
+  { key: "fall", label: "Fall", startMonth: 9 }
+];
+
+function seasonKeyForMonth(m) {
+  if (m === 12 || m === 1 || m === 2) return "winter";
+  if (m >= 3 && m <= 5) return "spring";
+  if (m >= 6 && m <= 8) return "summer";
+  return "fall";
+}
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+function lastDayOfMonth(y, m) {
+  return new Date(y, m, 0).getDate();
+}
+
+// A season is identified by the year it *begins* in, so Dec 2026 and Jan 2027
+// are one object: "2026-winter".
+function makeSeason(year, key) {
+  const def = SEASON_DEFS.find(d => d.key === key);
+  const sm = def.startMonth;
+  const startY = year;
+  const endM = sm === 12 ? 2 : sm + 2;
+  const endY = sm === 12 ? year + 1 : year;
+  const label = key === "winter"
+    ? `Winter ${year}\u2013${String(endY).slice(2)}`
+    : `${def.label} ${year}`;
+  return {
+    id: `${year}-${key}`,
+    key,
+    year,
+    label,
+    start: `${startY}-${pad2(sm)}-01`,
+    end: `${endY}-${pad2(endM)}-${pad2(lastDayOfMonth(endY, endM))}`
+  };
+}
+
+function seasonForDate(ds) {
+  const [y, m] = String(ds).split("-").map(Number);
+  const key = seasonKeyForMonth(m);
+  // December belongs to the winter that starts in its own year; Jan and Feb
+  // belong to the winter that started the year before.
+  const year = key === "winter" && m < 12 ? y - 1 : y;
+  return makeSeason(year, key);
+}
+
+function seasonBefore(season) {
+  const order = ["winter", "spring", "summer", "fall"];
+  const i = order.indexOf(season.key);
+  // Winter opens in December, so the fall before it is the same calendar
+  // year's fall — the year only turns over inside the season, not before it.
+  if (i === 0) return makeSeason(season.year, "fall");
+  return makeSeason(season.year, order[i - 1]);
+}
+
+// Every season between the first day with anything in it and today, newest
+// first. Seasons with no data at all are left out — an empty shelf slot says
+// nothing worth saying.
+function seasonsWithData(todayStr) {
+  // An empty week file is not history. The app writes one whenever a week is
+  // merely visited, so keying the shelf off the earliest file put seasons on
+  // it that the user had never planned a single thing in.
+  const weekKeys = db.weekKeys().filter(k => {
+    const stored = readStoredWeek(k);
+    return Object.keys(stored || {}).some(ds => Object.keys(stored[ds] || {}).length > 0);
+  });
+  if (!weekKeys.length) return [];
+  const firstDs = weekKeys[0].replace(WEEK_PREFIX, "");
+  const seen = [];
+  let cur = seasonForDate(firstDs);
+  const today = seasonForDate(todayStr);
+  let guard = 0;
+  while (guard++ < 80) {
+    seen.push(cur);
+    if (cur.id === today.id) break;
+    const order = ["winter", "spring", "summer", "fall"];
+    const i = order.indexOf(cur.key);
+    cur = i === 3 ? makeSeason(cur.year + 1, "winter") : makeSeason(cur.year, order[i + 1]);
+  }
+  return seen.reverse();
+}
+
+// ---------------------------------------------------------------------------
+// Gathering
+//
+// Reads straight out of storage rather than off the loaded week, because a
+// season is three months and the app only ever holds one week in memory.
+// ---------------------------------------------------------------------------
+
+function collectSeasonData(season, cats) {
+  const labelOf = {};
+  (cats || []).forEach(c => { labelOf[c.id] = c.label; });
+  const events = [];
+  db.weekKeys().forEach(wkKey => {
+    // readStoredWeek returns the day map directly — { "2026-06-01": { id: entry } } —
+    // not a week object with an `entries` field.
+    const byDay = readStoredWeek(wkKey) || {};
+    Object.keys(byDay).forEach(ds => {
+      if (ds < season.start || ds > season.end) return;
+      const items = byDay[ds] || {};
+      Object.keys(items).forEach(id => {
+        const e = items[id] || {};
+        const text = String(e.text || "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").trim();
+        if (!text) return;
+        events.push({
+          ds,
+          text,
+          done: Boolean(e.done),
+          pillars: (e.pillars || []).map(p => labelOf[p] || p).filter(Boolean)
+        });
+      });
+    });
+  });
+  events.sort((a, b) => a.ds.localeCompare(b.ds));
+
+  const journal = db.read(K.journal, {}) || {};
+  const reflections = [];
+  Object.keys(journal).forEach(wk => {
+    (journal[wk] || []).forEach(entry => {
+      const ds = String(entry.timestamp || "").slice(0, 10);
+      if (!ds || ds < season.start || ds > season.end) return;
+      const text = String(entry.text || "").trim();
+      if (!text) return;
+      const li = entry.linkedItem || {};
+      reflections.push({
+        ds,
+        text,
+        item: String(li.itemText || "").trim(),
+        pillarLabel: String(li.catLabel || "").trim(),
+        mood: entry.mood || ""
+      });
+    });
+  });
+  reflections.sort((a, b) => a.ds.localeCompare(b.ds));
+  return { events, reflections };
+}
+
+// ---------------------------------------------------------------------------
+// Signals
+//
+// The countable half. Everything below is arithmetic over what is stored, so
+// nothing here can be wrong in the way a model can be wrong — and the model is
+// handed these rather than asked to derive them.
+// ---------------------------------------------------------------------------
+
+function normActivity(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Sentences where somebody is measuring themselves against an earlier version
+// of themselves. This is what "getting good at something" sounds like in
+// writing, and it is the raw material for the part of the reading that
+// celebrates effort that compounded.
+const GROWTH_PAT = /[^.!?\n]*\b(far cry|used to|last time|first time|finally|for the first time|better than|never been able|haven'?t been able|hardly hurt|easier than|getting easier|more confident|stronger|progress|breakthrough|figured out|managed to|sent (?:a|my)|personal best|improv\w+|no longer struggl\w+)\b[^.!?\n]*[.!?]?/gi;
+
+// Sentences that state an intention. Half of them never became anything, and
+// which half is the interesting part.
+const INTENT_PAT = /[^.!?\n]*\b(I should|should be doing|need to|I want to|want to try|will try|make a point of|aspire|hope to|plan to)\b[^.!?\n]*[.!?]?/gi;
+
+function matchSentences(text, pat) {
+  const out = [];
+  const re = new RegExp(pat.source, pat.flags);
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const s = m[0].trim();
+    if (s.length > 8 && s.length < 260) out.push(s);
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+function seasonSignals(season, data, cats, goals) {
+  const { events, reflections } = data;
+  const labels = (cats || []).map(c => c.label);
+
+  // Pillar volume by month, against the target the user set.
+  const months = [];
+  const byMonth = {};
+  events.forEach(e => {
+    const mo = e.ds.slice(0, 7);
+    if (!byMonth[mo]) { byMonth[mo] = {}; months.push(mo); }
+    (e.pillars.length ? e.pillars : ["untagged"]).forEach(p => {
+      byMonth[mo][p] = (byMonth[mo][p] || 0) + 1;
+    });
+  });
+  months.sort();
+  const targets = {};
+  (cats || []).forEach(c => {
+    const g = goals && goals[c.id];
+    if (g != null) targets[c.label] = g;
+  });
+
+  // Items per week, which is the bluntest measure of how full a season was.
+  const perWeek = {};
+  events.forEach(e => {
+    const wk = ymd(mondayOfDate(e.ds));
+    perWeek[wk] = (perWeek[wk] || 0) + 1;
+  });
+
+  // Recurring activities: how often, over what span, and how long since.
+  const actMap = {};
+  events.forEach(e => {
+    const k = normActivity(e.text);
+    if (!k || k.length < 2) return;
+    if (!actMap[k]) actMap[k] = { name: e.text, count: 0, first: e.ds, last: e.ds, pillars: {} };
+    const a = actMap[k];
+    a.count += 1;
+    if (e.ds < a.first) a.first = e.ds;
+    if (e.ds > a.last) a.last = e.ds;
+    (e.pillars.length ? e.pillars : ["untagged"]).forEach(p => { a.pillars[p] = (a.pillars[p] || 0) + 1; });
+  });
+  const activities = Object.keys(actMap)
+    .map(k => actMap[k])
+    .filter(a => a.count >= 2)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 40)
+    .map(a => ({
+      name: a.name,
+      count: a.count,
+      first: a.first,
+      last: a.last,
+      pillars: Object.keys(a.pillars)
+    }));
+
+  // Pillar labels as they were at the time of each reflection. A label that
+  // was in use and no longer exists means the user renamed or retired a
+  // pillar mid-season — which changes what its numbers mean, and is the kind
+  // of thing nobody remembers doing.
+  const labelSpan = {};
+  reflections.forEach(r => {
+    if (!r.pillarLabel) return;
+    if (!labelSpan[r.pillarLabel]) labelSpan[r.pillarLabel] = { label: r.pillarLabel, count: 0, first: r.ds, last: r.ds };
+    const l = labelSpan[r.pillarLabel];
+    l.count += 1;
+    if (r.ds < l.first) l.first = r.ds;
+    if (r.ds > l.last) l.last = r.ds;
+  });
+  const labelHistory = Object.keys(labelSpan).map(k => ({
+    ...labelSpan[k],
+    stillExists: labels.indexOf(k) !== -1
+  })).sort((a, b) => a.first.localeCompare(b.first));
+
+  // The same activity filed under different pillars at different times. When
+  // a pillar is renamed, its contents scatter — this is how that shows up.
+  const migrations = [];
+  Object.keys(actMap).forEach(k => {
+    const a = actMap[k];
+    if (Object.keys(a.pillars).length > 1 && a.count >= 2) {
+      migrations.push({ name: a.name, pillars: Object.keys(a.pillars) });
+    }
+  });
+
+  // How much of each pillar gets written about. A pillar with events and no
+  // reflections is one the user is doing without thinking about.
+  const evByPillar = {};
+  events.forEach(e => (e.pillars.length ? e.pillars : ["untagged"]).forEach(p => {
+    evByPillar[p] = (evByPillar[p] || 0) + 1;
+  }));
+  const reflByPillar = {};
+  reflections.forEach(r => {
+    if (r.pillarLabel) reflByPillar[r.pillarLabel] = (reflByPillar[r.pillarLabel] || 0) + 1;
+  });
+
+  // The idea bench is a menu, not a to-do list. Most of what sits on it is
+  // meant to stay there — it exists so there is something to pick from, not
+  // so it can be cleared. Counting what went untouched would invent a debt
+  // nobody owes, so what is measured here is the funnel instead: tried at
+  // all, and then of those, the few that recurred often enough to stop being
+  // an experiment. That last number is the one worth knowing, because a thing
+  // that became part of the week is a thing no longer being decided from
+  // scratch every morning.
+  const weeksOf = {};
+  events.forEach(e => {
+    const k = normActivity(e.text);
+    if (!k) return;
+    (weeksOf[k] = weeksOf[k] || new Set()).add(ymd(mondayOfDate(e.ds)));
+  });
+  const eventKeys = Object.keys(weeksOf);
+  const matchIdea = ideaText => {
+    const k = normActivity(String(ideaText || "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1"));
+    if (!k || k.length < 3) return null;
+    const hit = eventKeys.find(d => d.indexOf(k) !== -1 || k.indexOf(d) !== -1);
+    return hit ? { key: hit, weeks: weeksOf[hit].size } : null;
+  };
+  const REGULAR_WEEKS = 3;
+  const ideaFunnel = [];
+  const storedIdeas = db.read(K.ideas, {}) || {};
+  Object.keys(storedIdeas).forEach(pid => {
+    const cat = (cats || []).find(c => c.id === pid);
+    const list = storedIdeas[pid] || [];
+    if (!list.length) return;
+    const tried = [], regular = [];
+    list.forEach(i => {
+      const clean = String(i.text || "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").trim();
+      const m = matchIdea(clean);
+      if (!m) return;
+      tried.push(clean);
+      if (m.weeks >= REGULAR_WEEKS) regular.push(clean);
+    });
+    ideaFunnel.push({
+      pillar: cat ? cat.label : pid,
+      onTheBench: list.length,
+      tried: tried.length,
+      becameRegular: regular.length,
+      regularExamples: regular.slice(0, 6),
+      triedExamples: tried.slice(0, 6)
+    });
+  });
+
+  // What the weeks actually settled into, whichever way it got there. A thing
+  // appearing across several weeks of a season is the rhythm forming, and it
+  // is worth naming whether it started as an idea, a rule, or nothing at all.
+  const rhythms = eventKeys
+    .filter(k => weeksOf[k].size >= REGULAR_WEEKS)
+    .map(k => {
+      const sample = events.find(e => normActivity(e.text) === k);
+      const dates = events.filter(e => normActivity(e.text) === k).map(e => e.ds).sort();
+      return {
+        name: sample ? sample.text : k,
+        weeks: weeksOf[k].size,
+        times: dates.length,
+        first: dates[0],
+        last: dates[dates.length - 1]
+      };
+    })
+    .sort((a, b) => b.weeks - a.weeks)
+    .slice(0, 25);
+
+  // Rules the user set up, which are a cadence they chose rather than a
+  // promise they owe.
+  const rules = db.read(K.rules, []) || [];
+  const standingRoutines = (Array.isArray(rules) ? rules : []).slice(0, 25).map(r => ({
+    text: String(r.text || "").trim(),
+    freq: r.freq || r.rule || ""
+  })).filter(r => r.text);
+
+  const growth = [];
+  const intents = [];
+  reflections.forEach(r => {
+    matchSentences(r.text, GROWTH_PAT).forEach(s => growth.push({ ds: r.ds, item: r.item, text: s }));
+    matchSentences(r.text, INTENT_PAT).forEach(s => intents.push({ ds: r.ds, item: r.item, text: s }));
+  });
+
+  return {
+    span: { start: season.start, end: season.end },
+    counts: {
+      events: events.length,
+      // Kept alongside the planned count so the reading's header can say how
+      // much of a season was actually lived, not only how much was intended.
+      done: events.filter(e => e.done).length,
+      reflections: reflections.length,
+      weeks: Object.keys(perWeek).length
+    },
+    targetsPerWeek: targets,
+    pillarByMonth: byMonth,
+    itemsPerWeek: perWeek,
+    activities,
+    labelHistory,
+    pillarMigrations: migrations.slice(0, 20),
+    reflectionCoverage: Object.keys(evByPillar).map(p => ({
+      pillar: p,
+      events: evByPillar[p],
+      reflections: reflByPillar[p] || 0
+    })),
+    growthSentences: growth.slice(0, 60),
+    intentSentences: intents.slice(0, 40),
+    ideaFunnel,
+    rhythms,
+    standingRoutines
+  };
+}
+
+// A season is worth reading when there is enough in it to find a pattern in.
+// Below this the honest answer is "not yet", and saying so is better than
+// producing three paragraphs of filler about four events.
+const SEASON_MIN_WEEKS = 5;
+const SEASON_MIN_REFLECTIONS = 12;
+
+function seasonReadiness(season, todayStr) {
+  const data = collectSeasonData(season, db.read(K.cats, []) || []);
+  const weeks = {};
+  data.events.forEach(e => { weeks[ymd(mondayOfDate(e.ds))] = 1; });
+  const weekCount = Object.keys(weeks).length;
+  const complete = todayStr > season.end;
+  const thin = weekCount < SEASON_MIN_WEEKS || data.reflections.length < SEASON_MIN_REFLECTIONS;
+  return {
+    complete,
+    thin,
+    weeks: weekCount,
+    events: data.events.length,
+    reflections: data.reflections.length,
+    ready: complete && !thin
+  };
+}
+
+function seasonFromId(id) {
+  const m = /^(\d{4})-(winter|spring|summer|fall)$/.exec(String(id || ""));
+  if (!m) return null;
+  return makeSeason(Number(m[1]), m[2]);
+}
+
+// ---------------------------------------------------------------------------
+// Writing the season
+//
+// The voice matters as much as the analysis here, so most of the system prompt
+// is about restraint: no advice, no conclusions the evidence hasn't earned, no
+// encouragement that isn't attached to something that actually happened. The
+// reading is a mirror. What to do about what it shows is the reader's job, and
+// an app that jumps to that is doing the interesting part for them.
+// ---------------------------------------------------------------------------
+
+const SEASON_SYSTEM = `You write one seasonal look-back for a person using a weekly life planner. It arrives a few times a year, and it is the only time anything reads across months of their planned days and written reflections at once.
+
+WHAT THIS IS
+A mirror, grounded in evidence. Second, a record of what they got better at. Third, a nudge back toward things they loved and stopped doing. It is NOT a coach and NOT a scout: do not tell them what their next pursuit should be, do not prescribe actions, do not close with encouragement. Lay the evidence out clearly enough that they can draw their own conclusion, then stop talking.
+
+VOICE
+Warm, plain, specific. Short sentences.
+
+Write to them, in the second person, in the active voice. They are the subject of every sentence about their own life. "You solved the descent" — never "the descent was solved". "You said out loud what you wanted from the group" — never "an idea was voiced". Passive constructions erase the person from their own season and are the single fastest way to make this read like a report about a stranger. If a sentence has no "you" in it and is about something they did, rewrite it.
+
+Do not frame a claim as a contrast that denies half its own evidence. "Technique over force" reads as clever and is wrong when the entries show someone who got both stronger and more skilful — the "over" throws away real progress the reader earned. Prefer the plainest accurate framing to a sharper one that has to exclude something to work. If the evidence points several ways, say several things.
+
+Name things concretely. Not "new grades were reached on the wall" but "you sent an 11d". Not "long-standing mechanical problems were solved" but "you fixed the valve core yourself". Specifics are what make a reader believe you actually read their season. Quote their own words back to them often — their sentences are better than yours. Optimistic by default, because most of what is here is worth celebrating, but never at the cost of accuracy: if something slipped, say so plainly and without softening. Reframing is welcome where it is true (a run of dull experiments is exploration doing its job). Flattery is not. Never use the words "journey", "embrace", "lean into", "showing up". Do not address them as "you should".
+
+ORDER
+Lead with what went well — ALL of it. The first section is ALWAYS growth, and every other affirming section (things they built, communities they started, ease they found) comes next, BEFORE anything about decline, pain, retreat or difficulty. Do not alternate good and bad. A reader should arrive at the hard part having already been shown everything that went right, and should never have to scroll past a loss to reach a win.
+
+WHAT IS WORTH SAYING
+- Growth: REQUIRED, and always the first section. One entry, drawing on everything that supports it, not one per skill. A skill that visibly compounded, told through dated evidence in their own words. Frequency is not growth — getting better is. The GROWTH SENTENCES block below is where these live: sentences where they measured themselves against an earlier version of themselves. Prefer a concrete, measurable curve (harder grades climbed, a technique solved, a distance covered) over a thematic observation. People rarely notice their own progress and almost never celebrate it, which is why this section is not optional. If the block is genuinely empty, say so plainly rather than inventing one.
+- Threads that cut across their pillar categories. The best patterns are the ones their own taxonomy hides. Look for a verb or a material that recurs under three different labels.
+- Things that went quiet, and whether it looks deliberate or not. Say which, and say why you think so.
+- Rare signals: reactions of unusual intensity that happened once or twice in the whole season — "I want to be in this performance", "it's a rare feeling". Present these plainly as early hunches (see below), with no recommendation attached.
+- Confounds: if something non-obvious explains an apparent decline (an injury, a rename, a life event), name it rather than letting a wrong story stand.
+
+FREQUENCY IS NOT MOTIVE
+Counts say how often something happened. They never say why. Plenty of real commitments are episodic by nature — board work, volunteering, seasonal obligations, anything that arrives when someone else sends it — and a quiet stretch in one of those usually means nothing arrived, not that the person withdrew. Never read intent, disengagement or a decision out of a drop in volume. If their own words say the work drains them, you may say the work drains them; that is a feeling they reported, and it is not the same as having stepped back, wanting to, or planning to. Say what the entries say and let the count be a count.
+
+DO NOT DECIDE FOR THEM
+Report the evidence, not the conclusion it points toward. "This work drains you" is supported by four entries; "you have realised this belongs to your past" is a decision they have not made, and asserting it puts words in their mouth. Whenever a finding implies a choice — to quit something, take something up, change what they value — state the finding and ASK the question instead. The question is the more useful half.
+
+EVIDENCE AND CONFIDENCE
+Every claim carries evidence: dated quotes from their reflections. Set confidence to "established" when three or more separate entries support it, which should be nearly every entry. Set it to "hunch" only for the exception described below. Never invent a quote, a date, or a number. The SIGNALS block is computed from their data and is authoritative; use its numbers rather than counting yourself.
+
+LENGTH AND SIZE OF CLAIM
+600 to 750 words total, in three or four sections holding FOUR TO SIX ENTRIES IN THE WHOLE READING. Not per section — in total. Fewer, larger observations beat more, smaller ones every time.
+
+Each entry must rest on at least THREE separate entries from their season, and ideally four or five. Gather every entry that supports a claim before you write it, and cite three to six of them.
+
+A claim you can only support with one or two entries is not a small insight. It is a detail sitting inside a larger pattern you have not found yet — so go and find the larger pattern. "You fixed a bike valve core" is a detail; "the things that absorb you completely are the ones you make with your hands" is the pattern it belongs to, and that one has a season's worth of evidence behind it. If you cannot get to three, drop the claim and write about something else.
+
+The one exception is an EARLY HUNCH: something that rests on only one or two entries but could turn out to matter a great deal — a reaction of unusual intensity, a first flicker of something they have not given a real chance yet. The scarcity is part of the finding. Mark it "hunch", cite the one or two entries, and say plainly that it rests on very little so far. Use this sparingly: at most TWO in a whole reading, and none at all if nothing earns it. A hunch is never a thin version of a pattern you could have found; it is a rare thing worth watching.
+
+Dense enough to be worth sitting down with, short enough to finish. Cut anything you are including for completeness rather than because it is interesting.
+
+OUTPUT
+Return JSON only. No markdown fence, no preamble.
+{
+  "headline": "one sentence naming the shape of the WHOLE season — what these three months were about, taken together. Name two or three of its forces, not one. It is not a preview of the first section, and 'X gave way to Y' is a shape to avoid unless the season really was that simple. Use their own vocabulary sparingly; a phrase they coined, handed straight back, reads flatter than it did when they wrote it.",
+  "carryover": "optional. only if a previous season is supplied: what it claimed, and what actually happened. empty string otherwise",
+  "sections": [
+    { "heading": "short, plain, sentence case. When the section holds ONE entry, leave that entry's title empty — a heading and a title stacked on the same paragraph read as two labels for one thing.",
+      "kind": "growth" | "thread" | "quiet" | "signal" | "confound",
+      "entries": [
+        { "title": "short or empty",
+          "body": "one short paragraph",
+          "confidence": "established" | "hunch",
+          "pillars": ["<exact pillar names this touches — one, or several when it crosses them>"],
+          "evidence": [ { "date": "YYYY-MM-DD", "text": "their words, trimmed" } ] } ] }
+  ],
+  "pillarNotes": { "<exact pillar name>": "at most one plain sentence naming WHAT THIS PILLAR ACTUALLY HELD this season — the real activities, by name. 'Dance classes, climbing sessions and weekend hikes.' NEVER mention the target, and never use words like exceeded, met, fell short, greatly, easily, successfully, or fulfilled: the numbers are printed beside this line already and the reader draws their own conclusion. No praise, no concern, no advice. Omit any pillar you have nothing specific to say about." },
+  "questions": ["two or three questions this season raises, unanswered"]
+}
+
+THE IDEA BENCH IS A MENU
+Their pillars hold a bench of ideas — things they might try. It is a brainstorm, not a to-do list, and most of it is supposed to stay untouched. NEVER treat unacted ideas as a backlog, a shortfall, a debt, or evidence of anything at all. Do not count them, list them, or ask why they were skipped. The funnel is what matters: a few get tried, and a few of those recur until they stop being experiments and become part of the week. That last step is the whole point of the bench, so when something made it, say so and name it — a thing that has settled into the rhythm is a morning they no longer have to invent from scratch, and it is worth more than any number in this reading.
+
+RHYTHMS
+The RHYTHMS block lists what actually recurred across the season, however it started. Treat a new rhythm as a real achievement, on a par with growth, and put it with the affirming material. A rhythm that faded is worth noting once, plainly, without asking them to restart it.
+
+PILLARS
+Tag every entry with the pillars it touches, by exact name. An observation that spans three of them should say so — that is the most useful thing about it, and it is what tells the reader the pattern has no home in their current structure.
+
+Where someone has stated a PURPOSE for a pillar, that is the standard the season is measured against, not the weekly target. A count below target where the purpose was served is a good season, and you should say so. Never treat a missed number as a failure; if the numbers and the purpose disagree, the number is the thing to question. Their targets were set at the start and may have outlived the phase they were set in.
+
+Where a pillar has no stated purpose, describe what it held and leave it there.
+
+QUESTIONS
+Two or three, and they must be ANSWERABLE. Aim for something a thoughtful person could answer in two or three sentences, off the top of their head, because it is about something concrete in their life: what they want a particular pillar to give them, what to do about a specific activity that has gone quiet, which of two things they'd rather have more of.
+
+Do NOT write existential or therapeutic questions. "What conditions do you need to protect this version of yourself?" and "Where are you settling for less than you want?" are the failure mode: they are unanswerable, they sound like a coach, and they make a reader want to skip the section. A question that is hard to answer is not deep, it is just unanswerable.
+
+Never imply a deficiency. Do not ask where they are settling, avoiding, holding back, or failing to show up. Ask about choices in front of them, not shortcomings behind them. Anchor each question to something specific and named from the season.`;
+
+// ---------------------------------------------------------------------------
+// Season actions
+//
+// Suggestions come AFTER the reading has been read and written back to, not
+// beside each claim as it is made. An action proposed before the reader has
+// said what they make of a finding is the app putting its conclusion ahead of
+// theirs; one proposed after has the reader's own words to work from, which is
+// the part of a season with any judgement in it.
+// ---------------------------------------------------------------------------
+const SEASON_ACTIONS_SYSTEM = `A person has just read a seasonal look-back at their own life and written their reactions to it. Suggest a few concrete things they could carry into the next season.
+
+WHAT YOU ARE GIVEN
+The reading, their written answers to it, and their pillars — the handful of domains their week is organised around. Each pillar holds a BENCH: things they might try. A bench is a menu, not a to-do list.
+
+WHAT YOU RETURN
+At most FOUR suggestions, and fewer is better. A season that ends in four new commitments is a season nobody keeps. Return an empty list rather than padding it with anything weak.
+
+Most suggestions are one specific thing that lands on one pillar's bench.
+
+WRITE THEM THE WAY THEY WRITE
+The bench items supplied below are this person's own phrasing, and they are the house style: short, plain, usually two to five words, no verb where none is needed. "Taiko drumming class", not "Consider trying a Taiko drumming class this fall". Match their length and their voice. If yours reads like a recommendation, it is wrong; a bench item is a note-to-self.
+
+A NEW PILLAR
+At most ONE suggestion may propose a new pillar instead — only when the season plainly holds a body of activity with no home in the current set, and enough of it to carry a pillar of its own. Name it in one word, in their vocabulary, the way their existing pillars are named. Never propose a pillar that duplicates one they already have, and never propose renaming or retiring an existing one. Most seasons warrant none: omit it unless the evidence is obvious.
+
+RULES
+Their own words come first. If they wrote something that IS an intention — "I want to protect two climbing days a week" — hand it back to them as a suggestion, in their phrasing, not yours. Anything they wrote outranks anything the reading claimed.
+Be specific enough to act on. "Climb more" is not a suggestion; "book the Tuesday night bouldering session" is.
+Never suggest something already on that pillar's bench. The existing bench is supplied; read it.
+Never suggest anything that adds pressure to a finding the person found difficult, or that reads as a correction of how they spent their season. Nothing framed as fixing, catching up, or being more disciplined.
+Never propose a weekly target, or renaming or retiring a pillar. Those are decided elsewhere.
+Phrase each one as the person would write it in their own planner: short, plain, no coaching voice.
+
+OUTPUT
+Return JSON only. No markdown fence, no preamble.
+{ "actions": [
+  { "kind": "idea", "pillar": "<exact pillar name>", "text": "the thing to try, in their phrasing", "why": "one plain sentence tying it to what they wrote or what the season showed" },
+  { "kind": "pillar", "text": "<one-word name for the new pillar>", "why": "one plain sentence naming the activity that has no home right now" }
+] }`;
+
+function buildSeasonActionsPrompt({ entry, pillars, benches, kept }) {
+  const r = (entry && entry.reading) || {};
+  const lines = [];
+  lines.push(`SEASON: ${entry.label}`);
+  if (r.headline) lines.push(`THE SEASON IN SHORT: ${r.headline}`);
+  lines.push("");
+  lines.push("PILLARS (name | purpose | what is already on the bench):");
+  (pillars || []).forEach(p => {
+    const bench = (benches[p.label] || []).slice(0, 25);
+    lines.push(`- ${p.label} | ${p.purpose || "no stated purpose"} | ${bench.length ? bench.join("; ") : "empty"}`);
+  });
+  lines.push("");
+  lines.push("THE READING:");
+  (r.sections || []).forEach((sec, si) => {
+    (sec.entries || []).forEach((en, ei) => {
+      const title = en.title || sec.heading || "";
+      lines.push(`[${si}:${ei}] ${title}`);
+      if (en.body) lines.push(en.body);
+      const note = (entry.notes || {})[`${si}:${ei}`];
+      if (note) lines.push(`THEIR ANSWER: ${note}`);
+      lines.push("");
+    });
+  });
+  if ((r.questions || []).length) {
+    lines.push("QUESTIONS THE READING ASKED, AND THEIR ANSWERS:");
+    (r.questions || []).forEach((q, i) => {
+      lines.push(`Q: ${typeof q === "string" ? q : q.text}`);
+      const a = (entry.notes || {})[`q:${i}`];
+      lines.push(a ? `A: ${a}` : "A: (unanswered)");
+    });
+    lines.push("");
+  }
+  // The bench is also a writing sample. Handing over the typical length keeps
+  // suggestions from arriving as full sentences among a column of two-word
+  // notes-to-self.
+  const allBench = Object.keys(benches).reduce((acc, k) => acc.concat(benches[k] || []), []);
+  if (allBench.length) {
+    const words = allBench.map(t => t.split(/\s+/).filter(Boolean).length).sort((a, b) => a - b);
+    const mid = words[Math.floor(words.length / 2)];
+    lines.push(`THEIR BENCH ITEMS RUN ABOUT ${mid} WORD${mid === 1 ? "" : "S"} EACH. Match that.`);
+    lines.push("");
+  }
+  if ((kept || []).length) {
+    lines.push("ALREADY CARRIED FORWARD FROM THIS SEASON (do not repeat these, or offer variations of them):");
+    (kept || []).forEach(k => lines.push(`- ${k}`));
+    lines.push("");
+  }
+  const answered = Object.keys(entry.notes || {}).filter(k => String((entry.notes || {})[k] || "").trim()).length;
+  if (!answered) {
+    lines.push("They have not written anything back yet, so you have only the reading to work from. Be correspondingly careful: suggest less, and only what the evidence plainly supports.");
+  }
+  return lines.join("\n");
+}
+
+function parseSeasonActionsJSON(raw, pillarNames) {
+  let text = String(raw || "").trim();
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) text = fence[1].trim();
+  let obj;
+  try { obj = JSON.parse(text); } catch (e) { throw new Error("bad-json"); }
+  const known = (pillarNames || []).map(n => String(n).toLowerCase());
+  const out = [];
+  let pillarProposed = false;
+  (Array.isArray(obj.actions) ? obj.actions : []).forEach((a, i) => {
+    const txt = String((a && a.text) || "").trim();
+    const kind = String((a && a.kind) || "idea").trim().toLowerCase();
+    const why = String((a && a.why) || "").trim();
+    if (!txt) return;
+    if (kind === "pillar") {
+      // One at most, and never one they already have under that name.
+      if (pillarProposed) return;
+      if (known.includes(txt.toLowerCase())) return;
+      pillarProposed = true;
+      out.push({ id: `sa_${i}_${Date.now().toString(36)}`, kind: "pillar", text: txt, why });
+      return;
+    }
+    const pillar = String((a && a.pillar) || "").trim();
+    if (!pillar) return;
+    // A suggestion aimed at a pillar they don't have has nowhere to land.
+    if (!known.includes(pillar.toLowerCase())) return;
+    out.push({ id: `sa_${i}_${Date.now().toString(36)}`, kind: "idea", pillar, text: txt, why });
+  });
+  return out.slice(0, 4);
+}
+
+async function generateSeasonActions(entry, { cats, ideas, kept, model: modelOverride }) {
+  const conn = readAIConnection();
+  if (!conn.ready) throw new Error("no-connection");
+  const provider = aiProviderById(conn.providerId);
+  if (!provider) throw new Error("no-connection");
+  const pillars = (cats || []).map(c => ({ label: c.label, purpose: String(c.purpose || "").trim() }));
+  const benches = {};
+  (cats || []).forEach(c => {
+    benches[c.label] = ((ideas || {})[c.id] || []).map(i => String(i.text || "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").trim()).filter(Boolean);
+  });
+  const raw = await provider.complete({
+    key: conn.key,
+    model: String(modelOverride || "").trim() || conn.model,
+    system: SEASON_ACTIONS_SYSTEM,
+    prompt: buildSeasonActionsPrompt({ entry, pillars, benches, kept }),
+    maxTokens: 8000,
+    json: true
+  });
+  return {
+    generatedAt: new Date().toISOString(),
+    items: parseSeasonActionsJSON(raw, pillars.map(p => p.label))
+  };
+}
+
+function buildSeasonPrompt({ season, data, signals, prevReading, prevNotes, ownNotes, userName, pillars }) {
+  const lines = [];
+  lines.push(`SEASON: ${season.label} (${season.start} to ${season.end})`);
+  if (userName) lines.push(`PERSON: ${userName}`);
+  lines.push("");
+  lines.push("PILLARS — their own priorities, in their own words. A purpose is what they said this pillar is FOR; judge the season against that, not against the weekly number:");
+  (pillars || []).forEach(p => {
+    lines.push(`- ${p.label}${p.target != null ? ` | target ${p.target}/week` : " | no target"}${p.purpose ? ` | purpose: ${p.purpose}` : " | no stated purpose"}`);
+  });
+  lines.push("Use these names exactly in any action or pillar tag.");
+  lines.push("");
+  lines.push("SIGNALS (computed from their data — authoritative, do not recompute):");
+  lines.push(JSON.stringify(signals));
+  lines.push("");
+  // Pulled out of the signals blob deliberately. Buried in a JSON dump these
+  // got skimmed; the growth section was the one the reading kept dropping,
+  // and it is the one the reader is least able to supply for themselves.
+  if (signals.growthSentences && signals.growthSentences.length) {
+    lines.push("GROWTH SENTENCES — every place they measured themselves against an earlier self. The required first section is built from these:");
+    signals.growthSentences.forEach(g => lines.push(`${g.ds} | ${g.item || "(the day)"} | ${g.text}`));
+    lines.push("");
+  }
+  if (ownNotes && ownNotes.length) {
+    lines.push("THIS SEASON HAS BEEN READ BEFORE. WHAT THEY WROTE BACK ABOUT THAT READING:");
+    ownNotes.forEach(n => lines.push(`- ${n}`));
+    lines.push("Treat these as corrections and steers on the same material. Do not repeat a claim they have already pushed back on.");
+    lines.push("");
+  }
+  if (prevReading) {
+    lines.push(`PREVIOUS SEASON (${prevReading.label}) — what was said then:`);
+    lines.push(JSON.stringify({
+      headline: prevReading.reading && prevReading.reading.headline,
+      sections: ((prevReading.reading && prevReading.reading.sections) || []).map(s => ({
+        heading: s.heading,
+        entries: (s.entries || []).map(e => ({ title: e.title, body: e.body }))
+      }))
+    }));
+    if (prevNotes && prevNotes.length) {
+      lines.push("What they wrote back about it:");
+      prevNotes.forEach(n => lines.push(`- ${n}`));
+    }
+    lines.push("");
+  }
+  lines.push("PLANNED ITEMS (date | pillars | done | text):");
+  data.events.forEach(e => {
+    lines.push(`${e.ds} | ${e.pillars.join("/") || "untagged"} | ${e.done ? "done" : "not done"} | ${e.text}`);
+  });
+  lines.push("");
+  lines.push("REFLECTIONS (date | what it was about | text). This is the real material:");
+  data.reflections.forEach(r => {
+    lines.push(`--- ${r.ds} | ${r.item || "(the day)"}${r.pillarLabel ? " | " + r.pillarLabel : ""}`);
+    lines.push(r.text);
+  });
+  return lines.join("\n");
+}
+
+// Models answer with JSON surprisingly often and with a fenced block almost as
+// often. Both are fine; anything else is a failure worth reporting honestly
+// rather than rendering half a reading.
+// An insight is established at three supporting entries and an early hunch
+// below that. Derived from the evidence every time, so readings written under
+// the older high/open labels display by the same rule as new ones.
+const SEASON_ESTABLISHED_MIN = 3;
+const SEASON_MAX_HUNCHES = 2;
+function seasonConfidence(entry) {
+  const n = Array.isArray(entry && entry.evidence) ? entry.evidence.length : 0;
+  return n >= SEASON_ESTABLISHED_MIN ? "established" : "hunch";
+}
+
+function parseSeasonJSON(raw, knownPillars = []) {
+  let s = String(raw || "").trim();
+  s = s.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+  const first = s.indexOf("{");
+  const last = s.lastIndexOf("}");
+  if (first > 0 || last < s.length - 1) {
+    if (first === -1 || last === -1) throw new Error("no JSON in response");
+    s = s.slice(first, last + 1);
+  }
+  const parsed = JSON.parse(s);
+  if (!parsed || typeof parsed !== "object") throw new Error("not an object");
+  parsed.sections = Array.isArray(parsed.sections) ? parsed.sections : [];
+  parsed.questions = Array.isArray(parsed.questions) ? parsed.questions : [];
+  parsed.headline = String(parsed.headline || "");
+  parsed.carryover = String(parsed.carryover || "");
+  parsed.pillarNotes = parsed.pillarNotes && typeof parsed.pillarNotes === "object" ? parsed.pillarNotes : {};
+  // Questions arrive as plain strings; they are objects here so each can hold
+  // an answer. They turned out to be the part that draws the longest replies,
+  // and they were the one place with nowhere to write.
+  parsed.questions = parsed.questions
+    .map(q => (typeof q === "string" ? { text: q } : q))
+    .filter(q => q && String(q.text || "").trim());
+  parsed.sections.forEach(sec => {
+    sec.entries = Array.isArray(sec.entries) ? sec.entries : [];
+    sec.entries = sec.entries.filter(e => e && typeof e === "object");
+    sec.entries.forEach(e => {
+      e.evidence = Array.isArray(e.evidence) ? e.evidence : [];
+    });
+    // Confidence is read off the evidence, not off the model's label. Three or
+    // more entries is established. One or two is an early hunch — kept only
+    // when the model deliberately offered it as one (or as a rare signal),
+    // because models also reach for a single vivid entry when they haven't
+    // found the pattern it belongs to, and that is a detail, not a hunch.
+    // Hunches are capped across the whole reading below: they are only
+    // valuable if they are rare.
+    sec.entries = sec.entries.filter(e => {
+      const n = e.evidence.length;
+      if (n >= SEASON_ESTABLISHED_MIN) return true;
+      if (n < 1) return false;
+      return e.confidence === "hunch" || sec.kind === "signal";
+    });
+    sec.entries.forEach(e => {
+      e.confidence = seasonConfidence(e);
+      e.action = normalizeSeasonAction(e.action);
+      // Retired pillar labels are in the signals — that is how a rename gets
+      // spotted — so the model can reach for one that no longer exists and
+      // tag an insight with a pillar the reader cannot see in their own app.
+      e.pillars = Array.isArray(e.pillars)
+        ? e.pillars.map(x => String(x || "").trim())
+            .filter(x => x && (!knownPillars.length || knownPillars.indexOf(x) !== -1))
+            .slice(0, 6)
+        : [];
+    });
+  });
+  let hunches = 0;
+  parsed.sections.forEach(sec => {
+    sec.entries = sec.entries.filter(e => e.confidence !== "hunch" || ++hunches <= SEASON_MAX_HUNCHES);
+  });
+  // Last, so a section emptied by the evidence floor doesn't print as a bare
+  // heading with nothing under it.
+  parsed.sections = parsed.sections.filter(sec => (sec.entries || []).length > 0);
+  return parsed;
+}
+
+// An action is executed against the user's real pillars and ideas, so it is
+// validated here rather than trusted. Anything malformed becomes null and the
+// entry simply renders without a control — a missing button is a much smaller
+// failure than a button that renames the wrong pillar.
+function normalizeSeasonAction(a) {
+  if (!a || typeof a !== "object") return null;
+  const kind = String(a.kind || "");
+  const pillar = String(a.pillar || "").trim();
+  const why = String(a.why || "").trim();
+  if (kind === "idea") {
+    const text = String(a.text || "").trim();
+    return text && pillar ? { kind, text, pillar, why } : null;
+  }
+  if (kind === "pillar") {
+    const name = String(a.name || "").trim();
+    const replaces = String(a.replaces || "").trim();
+    // A pillar change reorganises the whole planner. Without a stated reason
+    // it arrives as a non sequitur under an otherwise welcome observation,
+    // so an unexplained one is dropped rather than shown.
+    return name && why ? { kind, name, replaces: replaces || null, why } : null;
+  }
+  if (kind === "target") {
+    const perWeek = Number(a.perWeek);
+    return pillar && Number.isFinite(perWeek) && perWeek >= 0 && perWeek <= 40
+      ? { kind, pillar, perWeek: Math.round(perWeek), why }
+      : null;
+  }
+  return null;
+}
+
+// Computed, never written. The user asked to see target and actual side by
+// side with no verdict attached, and the surest way to keep a verdict out is
+// for the numbers never to pass through a model at all. The model supplies at
+// most one descriptive line per pillar; the arithmetic is done here.
+function seasonLedger(signals, cats, goals) {
+  const weeks = Math.max(1, (signals.counts && signals.counts.weeks) || 1);
+  const totals = {};
+  Object.keys(signals.pillarByMonth || {}).forEach(mo => {
+    const row = signals.pillarByMonth[mo] || {};
+    Object.keys(row).forEach(p => { totals[p] = (totals[p] || 0) + row[p]; });
+  });
+  return (cats || []).map(c => ({
+    id: c.id,
+    pillar: c.label,
+    purpose: String(c.purpose || "").trim(),
+    target: goals && goals[c.id] != null ? goals[c.id] : null,
+    perWeek: Math.round(((totals[c.label] || 0) / weeks) * 10) / 10,
+    total: totals[c.label] || 0
+  })).filter(r => r.total > 0 || r.target != null || r.purpose);
+}
+
+async function generateSeasonReading(season, { cats, goals, userName, store, model: modelOverride, fresh = false }) {
+  const conn = readAIConnection();
+  if (!conn.ready) throw new Error("no-connection");
+  // A re-read can name its own model without changing the saved connection:
+  // trying a second opinion shouldn't quietly change what every later
+  // reading uses.
+  const model = String(modelOverride || "").trim() || conn.model;
+  const provider = aiProviderById(conn.providerId);
+  if (!provider) throw new Error("no-connection");
+  const data = collectSeasonData(season, cats);
+  const signals = seasonSignals(season, data, cats, goals);
+  const prev = store.get(seasonBefore(season).id);
+  const prevNotes = prev ? Object.keys(prev.notes || {}).map(k => prev.notes[k]).filter(Boolean) : [];
+  // Re-reading the same season — a better model, a second opinion — used to
+  // discard whatever the user had written back on the old one. Notes are keyed
+  // to claim positions a new reading won't reproduce, so they can't be
+  // re-attached, but they can be kept and handed to the model. A second
+  // reading that has heard what you made of the first is a better reading
+  // than one starting cold.
+  const existing = fresh ? null : store.get(season.id);
+  const carried = existing
+    ? (existing.carriedNotes || []).concat(Object.keys(existing.notes || {}).map(k => existing.notes[k]).filter(Boolean))
+    : [];
+  const prompt = buildSeasonPrompt({
+    season,
+    data,
+    signals,
+    prevReading: prev,
+    prevNotes,
+    ownNotes: carried,
+    userName,
+    pillars: (cats || []).map(c => ({
+      label: c.label,
+      purpose: String(c.purpose || "").trim(),
+      target: goals && goals[c.id] != null ? goals[c.id] : null
+    }))
+  });
+  const raw = await provider.complete({
+    key: conn.key,
+    model,
+    system: SEASON_SYSTEM,
+    prompt,
+    // The reading itself is around 1,500 tokens. The rest of this ceiling is
+    // headroom for models that think before they answer and charge their
+    // thinking to the same budget — at 4,096 a reasoning model would spend
+    // the allowance working out what to say and get cut off mid-sentence.
+    maxTokens: 16000,
+    json: true
+  });
+  const reading = parseSeasonJSON(raw, (cats || []).map(c => c.label));
+  return {
+    ledger: seasonLedger(signals, cats, goals),
+    id: season.id,
+    label: season.label,
+    start: season.start,
+    end: season.end,
+    generatedAt: new Date().toISOString(),
+    model,
+    counts: signals.counts,
+    reading,
+    notes: {},
+    carriedNotes: carried
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Storage
+//
+// Readings are keyed by season id. Seeds live at the top level rather than on
+// a season, because a seed is a request about the season that hasn't happened
+// yet — it is consumed by whichever reading comes next.
+// ---------------------------------------------------------------------------
+
+function useSeasonsStore(canEdit) {
+  const [state, setState] = useState(() => db.read(K.seasons, { readings: {}, seeds: [] }) || { readings: {}, seeds: [] });
+  // An import rewrites storage underneath this hook, so it needs the same
+  // reload hook every other store here has.
+  function reloadFromStorage() {
+    setState(db.read(K.seasons, { readings: {}, seeds: [] }) || { readings: {}, seeds: [] });
+  }
+  function commit(next) {
+    if (!canEdit) return state;
+    setState(next);
+    db.write(K.seasons, next);
+    return next;
+  }
+  return {
+    state,
+    reloadFromStorage,
+    get(id) { return (state.readings || {})[id] || null; },
+    all() { return state.readings || {}; },
+    save(entry) {
+      return commit({ ...state, readings: { ...(state.readings || {}), [entry.id]: entry } });
+    },
+    remove(id) {
+      const next = { ...(state.readings || {}) };
+      delete next[id];
+      return commit({ ...state, readings: next });
+    },
+    // Suggestions live on the reading they came from: they are a product of
+    // that season's notes, and a re-read should not inherit them.
+    setActions(seasonId, actions) {
+      const cur = (state.readings || {})[seasonId];
+      if (!cur) return state;
+      return commit({ ...state, readings: { ...(state.readings || {}), [seasonId]: { ...cur, actions } } });
+    },
+    setActionState(seasonId, id, patch) {
+      const cur = (state.readings || {})[seasonId];
+      if (!cur || !cur.actions) return state;
+      const items = (cur.actions.items || []).map(it => it.id === id ? { ...it, ...patch } : it);
+      return commit({
+        ...state,
+        readings: { ...(state.readings || {}), [seasonId]: { ...cur, actions: { ...cur.actions, items } } }
+      });
+    },
+    addOwnAction(seasonId, item) {
+      const cur = (state.readings || {})[seasonId];
+      if (!cur) return state;
+      const actions = cur.actions || { generatedAt: null, items: [] };
+      return commit({
+        ...state,
+        readings: { ...(state.readings || {}), [seasonId]: { ...cur, actions: { ...actions, items: [...(actions.items || []), item] } } }
+      });
+    },
+    markApplied(seasonId, key) {
+      const cur = (state.readings || {})[seasonId];
+      if (!cur) return state;
+      return commit({
+        ...state,
+        readings: { ...(state.readings || {}), [seasonId]: { ...cur, applied: { ...(cur.applied || {}), [key]: true } } }
+      });
+    },
+    setNote(seasonId, key, text) {
+      const cur = (state.readings || {})[seasonId];
+      if (!cur) return state;
+      const notes = { ...(cur.notes || {}) };
+      if (String(text || "").trim()) notes[key] = String(text).trim();
+      else delete notes[key];
+      return commit({
+        ...state,
+        readings: { ...(state.readings || {}), [seasonId]: { ...cur, notes } }
+      });
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SeasonNote
+//
+// The place a reading stops being something you read and becomes something you
+// answer. Writing back to an insight does three jobs at once: it is a
+// reflection a level up from the ones about single events, it is the seed the
+// next reading is handed, and it is often where a decision gets made. One
+// affordance, because it is one gesture.
+// ---------------------------------------------------------------------------
+function SeasonNote({ value, onSave, canEdit, prompt }) {
+  const [open, setOpen] = useState(Boolean(value));
+  const [val, setVal] = useState(value || "");
+  useEffect(() => { setVal(value || ""); }, [value]);
+  if (!canEdit && !value) return null;
+  if (!open) {
+    // Shaped like the box it becomes, and sized to the evidence block above it
+    // — the em box is set on the wrapper so both measure against the same font
+    // size. A link asks to be clicked; a field asks to be written in, and
+    // writing is the thing worth getting people to do.
+    return React.createElement("div", { style: { maxWidth: "38em" } },
+      React.createElement("button", {
+        onClick: () => setOpen(true),
+        style: {
+          marginTop: 12,
+          width: "100%",
+          background: "transparent",
+          border: `1px solid ${NEUTRAL_OUTLINE}`,
+          borderRadius: TILE_RADIUS,
+          padding: "10px 12px",
+          cursor: "text",
+          textAlign: "left",
+          fontFamily: "inherit",
+          fontSize: 12.5,
+          fontWeight: SIDEBAR_SECTION_LABEL.fontWeight,
+          color: SIDEBAR_SECTION_LABEL.color,
+          display: "flex",
+          alignItems: "center",
+          gap: 8
+        }
+      }, React.createElement(ReflectBubble, { size: 13, stroke: REFLECT, weight: 1.7 }), prompt || "How does this land?")
+    );
+  }
+  return React.createElement("div", {
+    style: {
+      marginTop: 12,
+      maxWidth: "38em",
+      background: "transparent",
+      border: `1px solid ${NEUTRAL_OUTLINE}`,
+      borderRadius: TILE_RADIUS,
+      padding: "9px 11px"
+    }
+  }, React.createElement("textarea", {
+    value: val,
+    readOnly: !canEdit,
+    autoFocus: !value,
+    // Saved as it is typed rather than on blur. A note here is somebody
+    // answering the one thing the app asks them all year, and closing the
+    // reading mid-sentence must not be the way it gets thrown away.
+    onChange: e => { setVal(e.target.value); onSave(e.target.value); },
+    placeholder: "Your answer to this \u2014 carried into next season",
+    rows: 3,
+    style: {
+      width: "100%",
+      border: "none",
+      background: "transparent",
+      resize: "vertical",
+      outline: "none",
+      fontFamily: "inherit",
+      fontSize: 12.5,
+      lineHeight: 1.6,
+      color: INK_2
+    }
+  }));
+}
+
+// Evidence sits folded, but never hidden. The entries behind a claim are the
+// reader's own words, and a count ("5 entries") gave no reason to open them.
+// One of those words is shown instead — the fullest one, since the longest
+// entry is usually the most vivid — so what's inside is already on the page
+// before anyone clicks.
+function seasonEvidenceTeaser(evidence) {
+  return (evidence || []).reduce((best, ev) =>
+    String((ev && ev.text) || "").length > String((best && best.text) || "").length ? ev : best, null);
+}
+
+function SeasonEvidence({ evidence }) {
+  const [open, setOpen] = useState(false);
+  if (!evidence || !evidence.length) return null;
+  const count = evidence.length;
+  const teaser = seasonEvidenceTeaser(evidence);
+  const quote = t => `\u201c${String(t || "").trim()}\u201d`;
+  const rest = Math.max(0, count - 1);
+  const shown = open ? evidence : (teaser ? [teaser] : []);
+  const line = React.createElement("div", {
+    style: { fontSize: 13, fontWeight: 700, color: ACCENT, marginBottom: 8 }
+  }, "In your words");
+  return React.createElement("div", {
+    className: "season-evidence",
+    style: {
+      marginTop: 12,
+      background: EVIDENCE_WASH,
+      borderRadius: TILE_RADIUS,
+      padding: "11px 13px 10px",
+      maxWidth: "38em"
+    }
+  },
+    line,
+    shown.map((ev, i) => React.createElement("div", { key: i, style: { marginBottom: i === shown.length - 1 ? 0 : 10 } },
+      React.createElement("div", { style: { fontSize: 10.5, fontWeight: 600, color: MUTED } }, fmtShortDate(ev.date)),
+      React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.6, color: INK_2, marginTop: 1 } }, quote(ev.text))
+    )),
+    // Only the count opens the rest. Clicking anywhere used to collapse a
+    // quote mid-sentence, which is a strange thing to have happen while you
+    // are reading your own words.
+    rest > 0 && React.createElement("button", {
+      onClick: () => setOpen(!open),
+      style: {
+        marginTop: 9,
+        background: "none",
+        border: "none",
+        padding: 0,
+        cursor: "pointer",
+        fontFamily: "inherit",
+        fontSize: 11.5,
+        fontWeight: 600,
+        color: ACCENT,
+        textDecoration: "underline",
+        textDecorationColor: "#E0B296",
+        textUnderlineOffset: 3
+      }
+    }, open ? "Show less" : `${rest} more`)
+  );
+}
+
+function fmtShortDate(ds) {
+  if (!ds) return "";
+  const [y, m, d] = String(ds).split("-").map(Number);
+  if (!y || !m) return String(ds);
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return d ? `${MON[m - 1]} ${d}` : MON[m - 1];
+}
+
+
+// ---------------------------------------------------------------------------
+// SeasonPillarRow
+//
+// The end of a season is the one moment when the question "is this still what
+// I want out of this pillar?" can be asked with three months of evidence
+// sitting right above it. Everywhere else in the app a target is just a
+// number to hit. Here it is up for renegotiation, and the purpose beside it
+// is the thing being renegotiated against.
+//
+// Adjustments are folded away until asked for, because most pillars will need
+// none, and a row of controls on every pillar would turn a look back into a
+// form to fill in.
+// ---------------------------------------------------------------------------
+function SeasonPillarRow({ row, cat, note, pillarNote, canEdit, goalFor, onNote, onSetPurpose, onSetTarget, onRename }) {
+  // Name, purpose and target are read live off the pillar rather than out of
+  // the stored ledger, so an edit made in this row shows up in it immediately
+  // instead of leaving the row describing the season's starting state. The
+  // ledger's own copies are the fallback for a pillar that has since been
+  // deleted.
+  const name = (cat && cat.label) || row.pillar;
+  // Two values, deliberately. An editable field must be bound to the raw
+  // stored string: bind it to a trimmed one and the space you just typed is
+  // removed before the next character arrives, which makes the field
+  // unspaceable. Trimming is for display only.
+  const purposeRaw = cat ? String(cat.purpose || "") : String(row.purpose || "");
+  const purpose = purposeRaw.trim();
+  const target = cat && goalFor ? goalFor(cat.id) : row.target;
+  const [adjusting, setAdjusting] = useState(false);
+  const [nameVal, setNameVal] = useState(name);
+  useEffect(() => { setNameVal(name); }, [name]);
+  // A rename can't be written on every keystroke — the pillar would be
+  // renamed to "M", then "Mo" — so it commits when the field is left. Closing
+  // the reading with the cursor still in it is not "leaving the field" as far
+  // as the DOM is concerned, though, and the edit would simply vanish. This
+  // catches that case.
+  const pendingName = useRef(name);
+  pendingName.current = nameVal;
+  const commitName = () => {
+    const clean = String(pendingName.current || "").trim();
+    if (clean && clean !== name) onRename(clean);
+  };
+  const commitRef = useRef(commitName);
+  commitRef.current = commitName;
+  useEffect(() => () => commitRef.current(), []);
+  const deep = cat ? catDeep(cat) : NEUTRAL_OUTLINE;
+  return React.createElement("div", {
+    style: { borderLeft: `3px solid ${deep}`, paddingLeft: 10, marginBottom: 16 }
+  },
+    React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: INK } }, name),
+    purpose && React.createElement("div", {
+      style: { fontSize: 12.5, lineHeight: 1.55, color: INK_2, marginTop: 1 }
+    }, purpose),
+    React.createElement("div", { style: { fontSize: 11, color: MUTED, marginTop: 2 } },
+      `${row.perWeek}/week actual${target != null ? ` \u00b7 ${target}/week intended` : ""} \u00b7 ${row.total} in the season`),
+    pillarNote && React.createElement("div", {
+      style: { fontSize: 12.5, lineHeight: 1.6, color: INK_2, marginTop: 3 }
+    }, pillarNote),
+
+    React.createElement(SeasonNote, {
+      value: note || "",
+      canEdit: canEdit,
+      onSave: onNote,
+      prompt: purpose ? "Did it give you that?" : "What do you want from this pillar?"
+    }),
+
+    canEdit && React.createElement("button", {
+      onClick: () => setAdjusting(!adjusting),
+      style: {
+        marginTop: 7,
+        background: "none",
+        border: "none",
+        padding: 0,
+        cursor: "pointer",
+        fontFamily: "inherit",
+        fontSize: 11,
+        fontWeight: 600,
+        color: MUTED
+      }
+    }, adjusting ? "Done adjusting" : "Adjust for next season"),
+
+    adjusting && canEdit && React.createElement("div", {
+      style: {
+        marginTop: 7,
+        background: WASH,
+        borderRadius: TILE_RADIUS,
+        padding: "9px 10px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8
+      }
+    },
+      React.createElement("div", null,
+        React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 4px" } }, "What it's for"),
+        React.createElement("textarea", {
+          value: purposeRaw,
+          onChange: e => onSetPurpose(e.target.value),
+          rows: 2,
+          placeholder: `What do you want ${name} to give you?`,
+          style: {
+            width: "100%",
+            boxSizing: "border-box",
+            border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+            borderRadius: TILE_RADIUS,
+            background: PAPER,
+            padding: "6px 8px",
+            fontFamily: "inherit",
+            fontSize: 12,
+            lineHeight: 1.5,
+            color: INK_2,
+            outline: "none",
+            resize: "vertical"
+          }
+        })
+      ),
+      React.createElement("div", null,
+        React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 4px" } },
+          `A week's worth \u2014 you averaged ${row.perWeek}`),
+        React.createElement("div", { style: { display: "flex", gap: 4 } },
+          [1, 2, 3, 4, 5, 6, 7].map(v => React.createElement("button", {
+            key: v,
+            onClick: () => onSetTarget(v),
+            style: {
+              flex: 1,
+              height: 24,
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              ...pillarChip(cat || {}, v === target)
+            }
+          }, v)))
+      ),
+      React.createElement("div", null,
+        React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 4px" } }, "Name"),
+        React.createElement("input", {
+          value: nameVal,
+          onChange: e => setNameVal(e.target.value),
+          onBlur: commitName,
+          onKeyDown: e => { if (e.key === "Enter") e.target.blur(); },
+          style: {
+            width: "100%",
+            boxSizing: "border-box",
+            border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+            borderRadius: TILE_RADIUS,
+            background: PAPER,
+            padding: "5px 8px",
+            fontFamily: "inherit",
+            fontSize: 12,
+            color: INK_2,
+            outline: "none"
+          }
+        })
+      ),
+      React.createElement("div", { style: { fontSize: 10.5, lineHeight: 1.5, color: FAINT } },
+        "Retiring a pillar altogether lives in Pillars, where the rest of the set is in view.")
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SeasonSectionHead
+//
+// A reading has three movements — what happened, what it left open, what to do
+// about the pillars — and until now they ran together as one column of small
+// grey labels. Each movement gets a numbered rule, a full-size name and a line
+// saying what it is for, so the reader can see where they are in the piece.
+// ---------------------------------------------------------------------------
+function SeasonSectionHead({ num, title, blurb }) {
+  return React.createElement("div", {
+    style: { borderTop: `1px solid ${HAIRLINE}`, paddingTop: 15, marginBottom: 16, display: "flex", gap: 11 }
+  },
+    // The number is sized to be seen from across the page — it is the only
+    // thing in the reading that says "there are three of these".
+    React.createElement("div", {
+      style: { fontSize: 22, fontWeight: 700, color: ACCENT, lineHeight: 1, width: 30, flexShrink: 0, letterSpacing: "-0.01em" }
+    }, num),
+    React.createElement("div", { style: { minWidth: 0, marginTop: 1 } },
+      React.createElement("div", { style: { fontSize: 16, fontWeight: 700, color: ACCENT, lineHeight: 1.25 } }, title),
+      blurb && React.createElement("div", {
+        style: { fontSize: 11.5, lineHeight: 1.55, color: MUTED, marginTop: 4, maxWidth: "36em" }
+      }, blurb)
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SeasonActions
+//
+// Section 04. One button, pressed after the reading has been read and written
+// back to, and a short list of things that could follow — capped low on
+// purpose, because a season that ends in four new commitments is a season
+// nobody keeps. Each suggestion is editable before it is filed: a suggestion
+// that is nearly right should be bent, not dismissed.
+// ---------------------------------------------------------------------------
+function SeasonActionRow({ item, cats, canEdit, onApply, onDismiss, onEdit }) {
+  const [armed, setArmed] = useState(false);
+  const isPillar = item.kind === "pillar";
+  const cat = (cats || []).find(c => c.label === item.pillar);
+  if (item.status === "applied") {
+    return React.createElement("div", {
+      style: { marginBottom: 14, fontSize: 12, color: MUTED }
+    }, isPillar
+      ? `\u2713 ${item.text} \u2014 added as a pillar`
+      : `\u2713 ${item.text} \u2014 on your ${item.pillar} bench`);
+  }
+  if (item.status === "dismissed") return null;
+  return React.createElement("div", { style: { marginBottom: 16, maxWidth: "38em" } },
+    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 5 } },
+      React.createElement("span", {
+        style: {
+          fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 3, whiteSpace: "nowrap",
+          color: isPillar ? ACCENT : (cat ? "#FFFFFF" : MUTED),
+          background: isPillar ? "transparent" : (cat ? catDeep(cat) : WASH),
+          border: isPillar ? `1px solid ${ACCENT}` : undefined
+        }
+      }, isPillar ? "A new pillar" : item.pillar)
+    ),
+    React.createElement("input", {
+      value: item.text,
+      readOnly: !canEdit,
+      onChange: e => onEdit(e.target.value),
+      style: {
+        width: "100%",
+        boxSizing: "border-box",
+        border: `1px solid ${NEUTRAL_OUTLINE}`,
+        borderRadius: TILE_RADIUS,
+        background: "transparent",
+        padding: "8px 10px",
+        fontFamily: "inherit",
+        fontSize: 13,
+        color: INK,
+        outline: "none"
+      }
+    }),
+    item.why && React.createElement("div", {
+      style: { fontSize: 11.5, lineHeight: 1.5, color: MUTED, marginTop: 5 }
+    }, item.why),
+    canEdit && React.createElement("div", { style: { display: "flex", gap: 14, marginTop: 7, alignItems: "center" } },
+      // Filing an idea is reversible in one gesture; adding a pillar changes
+      // the shape of every week that follows, so it asks twice.
+      React.createElement("button", {
+        onClick: () => {
+          if (!isPillar) return onApply();
+          if (armed) { setArmed(false); return onApply(); }
+          setArmed(true);
+        },
+        onBlur: () => setArmed(false),
+        style: {
+          border: `${PLAN_BORDER_W}px solid ${ACCENT}`, borderRadius: TILE_RADIUS, background: "transparent",
+          padding: "4px 10px", fontSize: 11.5, fontWeight: 600, fontFamily: "inherit", color: ACCENT, cursor: "pointer"
+        }
+      }, isPillar
+        ? (armed ? "Add it \u2014 tap again" : `Add ${item.text} as a pillar`)
+        : `Add to ${item.pillar}`),
+      React.createElement("button", {
+        onClick: onDismiss,
+        style: {
+          background: "none", border: "none", padding: 0, cursor: "pointer",
+          fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: MUTED
+        }
+      }, "Not this one")
+    )
+  );
+}
+
+function SeasonActions({ entry, cats, canEdit, busy, error, onSuggest, onApply, onDismiss, onEdit, onAddOwn, aiReady }) {
+  const [ownText, setOwnText] = useState("");
+  const [ownPillar, setOwnPillar] = useState("");
+  const actions = entry.actions || null;
+  const items = (actions && actions.items) || [];
+  const live = items.filter(it => it.status !== "dismissed");
+  const answered = Object.keys(entry.notes || {}).filter(k => String((entry.notes || {})[k] || "").trim()).length;
+  const pillars = (cats || []).filter(c => !isTend(c.id));
+  const pillarName = ownPillar || (pillars[0] ? pillars[0].label : "");
+  return React.createElement("div", { style: { marginBottom: 10 } },
+    React.createElement(SeasonSectionHead, {
+      num: "04",
+      title: "Next season",
+      blurb: "A few new activities or changes to consider."
+    }),
+    error && React.createElement("div", {
+      style: { fontSize: 12, color: ACCENT, marginBottom: 10 }
+    }, error),
+    !actions && React.createElement("div", { style: { maxWidth: "38em" } },
+      React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.6, color: INK_2, marginBottom: 10 } },
+        answered
+          ? "Now that you've read the season and said what you make of it, a few things may follow."
+          : "Suggestions lean on what you wrote back above, so answering a question or two first will make them better."),
+      canEdit && aiReady && React.createElement("button", {
+        onClick: onSuggest,
+        disabled: busy,
+        style: {
+          border: `${PLAN_BORDER_W}px solid ${ACCENT}`, borderRadius: TILE_RADIUS,
+          background: "transparent", padding: "6px 12px", fontSize: 12, fontWeight: 600,
+          fontFamily: "inherit", color: busy ? MUTED : ACCENT, cursor: busy ? "default" : "pointer"
+        }
+      }, busy ? "Thinking it over\u2026" : "Suggest a few")
+    ),
+    actions && live.length === 0 && React.createElement("div", {
+      style: { fontSize: 12.5, lineHeight: 1.6, color: INK_2, marginBottom: 12, maxWidth: "38em" }
+    }, "Nothing suggested itself this time. Whatever you want to carry forward, write it below."),
+    live.map(it => React.createElement(SeasonActionRow, {
+      key: it.id,
+      item: it,
+      cats,
+      canEdit,
+      onApply: () => onApply(it),
+      onDismiss: () => onDismiss(it),
+      onEdit: text => onEdit(it, text)
+    })),
+    // Anything the app didn't think of. The list is a starting point, not the
+    // set of things a person is allowed to decide.
+    canEdit && React.createElement("div", { style: { marginTop: 18, maxWidth: "38em" } },
+      React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 6px" } }, "Something else you want to do?"),
+      React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+        React.createElement("input", {
+          value: ownText,
+          onChange: e => setOwnText(e.target.value),
+          onKeyDown: e => {
+            if (e.key === "Enter" && ownText.trim()) { onAddOwn(pillarName, ownText.trim()); setOwnText(""); }
+          },
+          placeholder: "In your own words",
+          style: {
+            flex: "1 1 200px", minWidth: 0, boxSizing: "border-box",
+            border: `1px solid ${NEUTRAL_OUTLINE}`, borderRadius: TILE_RADIUS, background: "transparent",
+            padding: "8px 10px", fontFamily: "inherit", fontSize: 13, color: INK, outline: "none"
+          }
+        }),
+        React.createElement("select", {
+          value: pillarName,
+          onChange: e => setOwnPillar(e.target.value),
+          style: {
+            border: `1px solid ${NEUTRAL_OUTLINE}`, borderRadius: TILE_RADIUS, background: "transparent",
+            padding: "8px 8px", fontFamily: "inherit", fontSize: 12.5, color: INK_2, outline: "none"
+          }
+        }, pillars.map(c => React.createElement("option", { key: c.id, value: c.label }, c.label))),
+        React.createElement("button", {
+          onClick: () => { if (ownText.trim()) { onAddOwn(pillarName, ownText.trim()); setOwnText(""); } },
+          style: {
+            border: `${PLAN_BORDER_W}px solid ${ACCENT}`, borderRadius: TILE_RADIUS, background: "transparent",
+            padding: "6px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", color: ACCENT, cursor: "pointer"
+          }
+        }, "Add it")
+      )
+    ),
+    actions && canEdit && aiReady && React.createElement("button", {
+      onClick: onSuggest,
+      disabled: busy,
+      style: {
+        marginTop: 16, background: "none", border: "none", padding: 0,
+        cursor: busy ? "default" : "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600,
+        color: busy ? MUTED : ACCENT, textDecoration: "underline", textDecorationColor: "#E0B296", textUnderlineOffset: 3
+      }
+    }, busy ? "Thinking it over\u2026" : "Suggest again")
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SeasonReading
+//
+// Deliberately a modal and not the 272px sidebar. A season is 700 words with
+// evidence folded underneath it, and the panel that works for a list of ideas
+// is the wrong shape for something meant to be sat down with. Opening it takes
+// over the screen because that is what reading it asks for.
+// ---------------------------------------------------------------------------
+function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPillarPurpose, onPillarTarget, onPillarRename, onRegenerate, busy, error, aiReady, actionsBusy, actionsError, onSuggestActions, onApplyAction, onDismissAction, onEditAction, onAddOwnAction }) {
+  const r = entry.reading || {};
+  const noteCount = Object.keys(entry.notes || {}).filter(k => String((entry.notes || {})[k] || "").trim()).length
+    + ((entry.carriedNotes || []).length);
+  return React.createElement("div", { onClick: onClose, style: { ...MODAL_OVERLAY, alignItems: "flex-start", padding: "40px 20px" } },
+    React.createElement("div", {
+      onClick: e => e.stopPropagation(),
+      style: {
+        background: PAPER,
+        borderRadius: 18,
+        border: `1px solid ${HAIRLINE}`,
+        boxShadow: "0 12px 48px rgba(0,0,0,0.18)",
+        width: "100%",
+        maxWidth: 660,
+        maxHeight: "calc(100vh - 80px)",
+        display: "flex",
+        flexDirection: "column"
+      }
+    },
+      // Header
+      React.createElement("div", {
+        style: {
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          padding: "22px 30px 14px",
+          borderBottom: `1px solid ${HAIRLINE}`,
+          flexShrink: 0
+        }
+      },
+        // The season's name carries the page, with the deep band the rest of the
+        // app uses to mark something that has been lived rather than planned.
+        React.createElement("div", { style: { display: "flex", gap: 13, minWidth: 0 } },
+          React.createElement("div", {
+            style: { width: 4, borderRadius: 2, background: ACCENT, flexShrink: 0, alignSelf: "stretch" }
+          }),
+          React.createElement("div", { style: { minWidth: 0 } },
+            React.createElement("div", {
+              style: { fontSize: 9.5, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: ACCENT, marginBottom: 4 }
+            }, "Seasons"),
+            React.createElement("div", {
+              style: { fontSize: 22, fontWeight: 700, color: INK, lineHeight: 1.15, marginBottom: 5 }
+            }, entry.label),
+            React.createElement("div", { style: { fontSize: 11, color: MUTED } },
+              `${fmtShortDate(entry.start)} \u2013 ${fmtShortDate(entry.end)}`,
+              entry.counts
+                ? `${typeof entry.counts.done === "number" ? ` \u00b7 ${entry.counts.done} activities` : ""} \u00b7 ${entry.counts.reflections} reflections`
+                : "")
+          )
+        ),
+        React.createElement("button", { onClick: onClose, style: PANEL_CLOSE_BTN }, "\u00d7")
+      ),
+      // Body
+      React.createElement("div", {
+        style: { flex: 1, overflowY: "auto", padding: "24px 30px 26px" }
+      },
+        // The season in a few sentences, tinted and banded so it reads as the
+        // one thing to stop on. Warmer and larger than the body, still unbolded
+        // so a whole paragraph of it stays easy on the eye.
+        r.headline && React.createElement("div", {
+          style: {
+            background: WASH,
+            borderRadius: TILE_RADIUS,
+            padding: "16px 18px",
+            marginBottom: 22
+          }
+        },
+          React.createElement("div", {
+            style: { fontSize: 9.5, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: ACCENT, marginBottom: 7 }
+          }, "The season, briefly"),
+          React.createElement("div", {
+            style: { fontSize: 16.5, fontWeight: 400, color: INK, lineHeight: 1.7, maxWidth: "34em" }
+          }, r.headline)
+        ),
+
+        // Two sentences of context, not a second summary. Left unfilled so the
+        // tinted block above it stays the only thing on the page asking to be
+        // stopped on.
+        r.carryover && React.createElement("div", { style: { marginBottom: 24 } },
+          React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 5px" } }, "Since last season"),
+          React.createElement("div", {
+            style: { fontSize: 13, lineHeight: 1.65, color: INK_2, maxWidth: "38em" }
+          }, r.carryover)
+        ),
+
+        (r.sections || []).length > 0 && React.createElement(SeasonSectionHead, {
+          num: "01",
+          title: "Looking back"
+        }),
+
+        (r.sections || []).map((sec, si) => React.createElement("div", {
+          key: si,
+          style: { marginBottom: si === (r.sections.length - 1) ? 26 : 0 }
+        },
+          // The reading is written so that a one-entry section leaves the
+          // entry's title empty: the heading is that entry's title. Rendering
+          // it as a separate grey label left the pillar chips with nothing to
+          // sit beside, so it is passed down as the title instead.
+          (sec.entries || []).length > 1 && React.createElement("div", {
+            style: { ...SIDEBAR_SECTION_LABEL, margin: si === 0 ? "0 0 10px" : "32px 0 10px", paddingTop: si === 0 ? 0 : 30, borderTop: si === 0 ? undefined : `1px solid ${HAIRLINE}` }
+          }, sec.heading || ""),
+          (sec.entries || []).map((en, ei) => {
+            const key = `${si}:${ei}`;
+            const heading = en.title || ((sec.entries || []).length === 1 ? (sec.heading || "") : "");
+            // Confidence used to be a dashed border, which said something only
+            // to whoever had built it. Two plain words say it to everyone, and
+            // "early" leaves room for next season to firm it up. Read off the
+            // evidence rather than the stored label, so older readings follow
+            // the same rule.
+            const hunch = seasonConfidence(en) === "hunch";
+            const chips = en.pillars || [];
+            // Each observation is its own thing to sit with. Without a rule
+            // between them a reading reads as one long column and the joins
+            // disappear.
+            // A multi-entry section already breaks at its grey heading, so the
+            // first entry under one doesn't draw a second rule.
+            const first = (si === 0 && ei === 0) || (ei === 0 && (sec.entries || []).length > 1);
+            return React.createElement("div", {
+              key: ei,
+              style: {
+                marginBottom: ei === (sec.entries.length - 1) ? 0 : 32,
+                paddingTop: first ? 0 : 30,
+                borderTop: first ? undefined : `1px solid ${HAIRLINE}`
+              }
+            },
+              // A hunch is a caveat on the claim, so it goes above it — the
+              // reader should know how much weight it carries before reading
+              // the sentence, not after.
+              hunch && React.createElement("div", {
+                className: "season-hunch",
+                title: "Only one or two entries behind this so far. Worth watching.",
+                style: { fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: MUTED, marginBottom: 4 }
+              }, "Just a hunch"),
+              // Title and pillars on one line. The chips label the claim rather
+              // than floating above it, and a cross-pillar entry still shows
+              // at a glance that the pattern sits in more than one place.
+              React.createElement("div", {
+                style: { display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8, marginBottom: 5 }
+              },
+                heading && React.createElement("span", {
+                  style: { fontSize: 14.5, fontWeight: 700, color: INK, lineHeight: 1.3 }
+                }, heading),
+                chips.map((pl, pi) => {
+                const cat = (cats || []).find(c => c.label === pl);
+                return React.createElement("span", {
+                  key: pi,
+                  style: {
+                    fontSize: 10,
+                    fontWeight: 600,
+                    padding: "2px 7px",
+                    borderRadius: 3,
+                    whiteSpace: "nowrap",
+                    color: cat ? "#FFFFFF" : MUTED,
+                    background: cat ? catDeep(cat) : WASH
+                  }
+                }, pl);
+              })),
+              React.createElement("div", {
+                style: { fontSize: 13.5, lineHeight: 1.68, color: INK_2, maxWidth: "38em" }
+              }, en.body || ""),
+              React.createElement(SeasonEvidence, { evidence: en.evidence }),
+              // The reader's own read comes first, and what to DO about the
+              // season is decided at the end of it, in section 04 — a button
+              // beside the claim asked before they had said anything.
+              React.createElement(SeasonNote, {
+                value: (entry.notes || {})[key] || "",
+                canEdit: canEdit,
+                onSave: text => onNote(key, text)
+              })
+            );
+          })
+        )),
+
+        // The open questions come before the pillars now: what you answer here
+        // is what you then decide each pillar against.
+        (r.questions || []).length > 0 && React.createElement("div", { style: { marginBottom: 26 } },
+          React.createElement(SeasonSectionHead, {
+            num: "02",
+            title: "Worth asking"
+          }),
+          // These draw the longest answers of anything in a reading, and until
+          // now were the one place with nowhere to write one down.
+          (r.questions || []).map((q, i) => React.createElement("div", {
+            key: i,
+            style: { marginBottom: 14 }
+          },
+            React.createElement("div", {
+              style: { fontSize: 13.5, lineHeight: 1.68, color: INK_2, maxWidth: "38em" }
+            }, typeof q === "string" ? q : q.text),
+            React.createElement(SeasonNote, {
+              value: (entry.notes || {})[`q:${i}`] || "",
+              canEdit: canEdit,
+              // An open question asks for an answer, not a verdict on someone
+              // else's claim, so it gets its own prompt.
+              prompt: "Thoughts?",
+              onSave: text => onNote(`q:${i}`, text)
+            })
+          ))
+        ),
+
+        // Straight from the arithmetic, with the person's own purpose beside
+        // it. Deliberately the plainest thing in the reading: two numbers and
+        // what they said they wanted, with nothing drawing a conclusion.
+        (entry.ledger || []).length > 0 && React.createElement("div", { style: { marginBottom: 24 } },
+          React.createElement(SeasonSectionHead, {
+            num: "03",
+            title: "Your life pillars",
+            // The only line kept: this section asks for a decision rather than
+            // a read, and nothing else on screen says so.
+            blurb: "Decide whether each gave you what you wanted, and what to change before next season."
+          }),
+          (entry.ledger || []).map((row, i) => {
+            // Readings written before rows carried an id still resolve by the
+            // label they were written with.
+            const cat = (cats || []).find(c => row.id ? c.id === row.id : c.label === row.pillar);
+            const key = row.id || row.pillar;
+            return React.createElement(SeasonPillarRow, {
+              key: i,
+              row,
+              cat,
+              note: (entry.notes || {})[`p:${key}`] || "",
+              // Keyed by the name the reading was written under, which is what
+              // the model was given.
+              pillarNote: (r.pillarNotes || {})[row.pillar],
+              canEdit,
+              goalFor,
+              onNote: text => onNote(`p:${key}`, text),
+              onSetPurpose: text => cat && onPillarPurpose(cat.id, text),
+              onSetTarget: v => cat && onPillarTarget(cat.id, v),
+              onRename: name => cat && onPillarRename(cat.id, name)
+            });
+          })
+        ),
+
+        React.createElement(SeasonActions, {
+          entry,
+          cats,
+          canEdit,
+          aiReady,
+          busy: actionsBusy,
+          error: actionsError,
+          onSuggest: onSuggestActions,
+          onApply: onApplyAction,
+          onDismiss: onDismissAction,
+          onEdit: onEditAction,
+          onAddOwn: onAddOwnAction
+        })
+
+      ),
+      React.createElement(SeasonFooter, {
+        entry,
+        canEdit,
+        busy,
+        error,
+        noteCount,
+        onRegenerate
+      })
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SeasonFooter
+//
+// This footer began as a workbench for comparing models and prompts: a
+// paragraph about what re-reading does, two look-alike destructive buttons,
+// and the model id. The date and the model stay, because knowing who wrote a
+// reading is part of reading it. Everything else folds behind the one choice a
+// reader makes here — ask a different model — which always starts fresh, and
+// says so before anything is replaced.
+// ---------------------------------------------------------------------------
+function SeasonFooter({ entry, canEdit, busy, error, noteCount, onRegenerate }) {
+  const [choosing, setChoosing] = useState(false);
+  const [models, setModels] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [model, setModel] = useState("");
+  const hasNotes = noteCount > 0;
+  const written = fmtShortDate(String(entry.generatedAt || "").slice(0, 10));
+  // A new reading arriving means the choice was made; fold the chooser away.
+  useEffect(() => { setChoosing(false); }, [entry.generatedAt]);
+
+  function openChooser() {
+    setChoosing(true);
+    const conn = readAIConnection();
+    // Whatever happens with the network, the models already known about are
+    // selectable: the one that wrote this reading and the saved default.
+    const known = [conn.model, entry.model].filter(Boolean)
+      .filter((id, i, a) => a.indexOf(id) === i)
+      .map(id => ({ id, label: id }));
+    setModels(known);
+    setModel((known.find(m => m.id !== entry.model) || known[0] || {}).id || "");
+    const provider = aiProviderById(conn.providerId);
+    if (!conn.ready || !provider) return;
+    setLoading(true);
+    provider.listModels(conn.key)
+      .then(found => {
+        const ranked = rankModels(found || []);
+        if (!ranked.length) return;
+        setModels(ranked);
+        // Preselect the best-ranked model that isn't the author of this one,
+        // since "a different model" is what was asked for.
+        setModel((ranked.find(m => m.id !== entry.model) || ranked[0]).id);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }
+
+  const quietBtn = {
+    background: "none",
+    border: "none",
+    padding: 0,
+    fontFamily: "inherit",
+    fontSize: 11.5,
+    fontWeight: 600,
+    color: busy ? FAINT : INK_3,
+    cursor: busy ? "default" : "pointer"
+  };
+
+  return React.createElement("div", {
+    className: "season-footer",
+    style: {
+      borderTop: `1px solid ${HAIRLINE}`,
+      padding: "12px 30px 14px",
+      flexShrink: 0,
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  },
+    error && React.createElement("div", {
+      style: { background: WASH, borderRadius: TILE_RADIUS, padding: "8px 10px", fontSize: 11.5, lineHeight: 1.5, color: INK_2 }
+    }, error),
+
+    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 } },
+      React.createElement("div", { style: { fontSize: 11, color: MUTED } },
+        `Written ${written}`, entry.model && ` by ${entry.model}`),
+      canEdit && !choosing && React.createElement("button", {
+        onClick: openChooser,
+        disabled: busy,
+        style: quietBtn
+      }, busy ? "Writing a new reading\u2026" : "Read again with a different model")
+    ),
+
+    canEdit && choosing && React.createElement("div", {
+      style: {
+        background: WASH,
+        borderRadius: TILE_RADIUS,
+        padding: "10px 12px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8
+      }
+    },
+      React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
+        React.createElement("select", {
+          "aria-label": "Model",
+          value: model,
+          disabled: busy,
+          onChange: e => setModel(e.target.value),
+          style: {
+            flex: "1 1 220px",
+            minWidth: 0,
+            border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+            borderRadius: TILE_RADIUS,
+            background: PAPER,
+            padding: "5px 8px",
+            fontFamily: "inherit",
+            fontSize: 12,
+            color: INK_2,
+            cursor: "pointer"
+          }
+        }, models.map(m => React.createElement("option", { key: m.id, value: m.id },
+          `${m.label || m.id}${m.id === entry.model ? " (wrote this one)" : ""}`))),
+        React.createElement("button", {
+          className: "season-reread",
+          onClick: () => { if (model) onRegenerate({ model, fresh: true }); },
+          disabled: busy || !model,
+          style: {
+            border: `${PLAN_BORDER_W}px solid ${ACCENT}`,
+            borderRadius: TILE_RADIUS,
+            background: "transparent",
+            padding: "5px 12px",
+            fontSize: 11.5,
+            fontWeight: 600,
+            fontFamily: "inherit",
+            color: busy ? FAINT : ACCENT,
+            cursor: busy ? "default" : "pointer"
+          }
+        }, busy ? "Writing\u2026" : hasNotes ? "Read again without my notes" : "Read again"),
+        React.createElement("button", {
+          onClick: () => setChoosing(false),
+          disabled: busy,
+          style: { ...quietBtn, color: MUTED }
+        }, "Cancel")
+      ),
+      loading && React.createElement("div", { style: { fontSize: 11, color: MUTED } }, "Fetching the models your key can use\u2026"),
+      // A second model reading the season fresh is the point of this control.
+      // Handing it notes written against a different reading made the new one
+      // argue with a text the reader could no longer see, so notes stay
+      // behind, and the reader is told before, not after.
+      React.createElement("div", {
+        className: "season-reread-warning",
+        style: { fontSize: 11.5, lineHeight: 1.55, color: hasNotes ? INK_2 : INK_3 }
+      }, hasNotes
+        ? `This replaces the reading you're looking at, and your ${noteCount === 1 ? "note on it" : `${noteCount} notes on it`} won't be kept.`
+        : "This replaces the reading you're looking at.")
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SeasonsPanel
+//
+// The shelf. Past seasons, newest first, and the one currently filling up.
+// A season that has been read shows its headline, so the shelf is itself a
+// look back: a year of them reads as a year, without opening anything.
+// ---------------------------------------------------------------------------
+function SeasonsPanel({
+  seasons,
+  store,
+  canEdit,
+  busyId,
+  error,
+  aiReady,
+  onGenerate,
+  onOpen,
+  onConnectAI,
+  onClose
+}) {
+  return React.createElement(React.Fragment, null,
+    React.createElement(PanelHeader, {
+      eyebrow: "Seasons",
+      title: "Zooming out",
+      subtitle: "From your weeks to your life",
+      onClose: onClose
+    }),
+    React.createElement("div", {
+      style: { flex: 1, overflowY: "auto", padding: "14px 16px 18px" }
+    },
+      !aiReady && canEdit && React.createElement("div", {
+        style: {
+          background: WASH,
+          border: `1px solid ${HAIRLINE}`,
+          borderRadius: TILE_RADIUS,
+          padding: "10px 11px",
+          marginBottom: 14
+        }
+      },
+        React.createElement("div", { style: { fontSize: 12, lineHeight: 1.5, color: INK_2, marginBottom: 7 } },
+          "Reading a season takes an AI connection. Yours isn't set up yet."),
+        React.createElement("button", {
+          onClick: onConnectAI,
+          style: {
+            border: `${PLAN_BORDER_W}px solid ${ACCENT}`,
+            borderRadius: TILE_RADIUS,
+            background: "transparent",
+            padding: "5px 10px",
+            fontSize: 11.5,
+            fontWeight: 600,
+            fontFamily: "inherit",
+            color: ACCENT,
+            cursor: "pointer"
+          }
+        }, "Connect")
+      ),
+
+      seasons.length === 0 && React.createElement("div", {
+        style: { fontSize: 12.5, lineHeight: 1.6, color: MUTED, padding: "8px 0" }
+      }, "Nothing to look back on yet. A season fills up over three months \u2014 keep planning and reflecting, and this is where it gets read."),
+
+      seasons.map(s => {
+        const saved = store.get(s.id);
+        const busy = busyId === s.id;
+        const st = s.readiness;
+        const clickable = Boolean(saved);
+        const headline = saved ? String((saved.reading || {}).headline || "").trim() : "";
+        return React.createElement("div", {
+          key: s.id,
+          onClick: clickable ? () => onOpen(s.id) : undefined,
+          style: {
+            border: `${PLAN_BORDER_W}px solid ${saved ? NEUTRAL_OUTLINE : HAIRLINE}`,
+            borderLeft: `4px solid ${saved ? ACCENT : NEUTRAL_OUTLINE}`,
+            borderRadius: TILE_RADIUS,
+            background: saved ? TILE_PLAN_FILL : "transparent",
+            padding: "10px 11px",
+            marginBottom: 8,
+            cursor: clickable ? "pointer" : "default"
+          }
+        },
+          // The read control sits on the label row as a quiet text link. A season
+          // in progress shouldn't shout; a finished one gets the accent colour.
+          React.createElement("div", {
+            style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }
+          },
+            React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: INK } }, s.label),
+            canEdit && !saved && aiReady && (() => {
+              const rest = busy ? FAINT : (st.ready ? ACCENT : MUTED);
+              const restLine = busy ? "transparent" : (st.ready ? "#FDBA74" : FAINT);
+              return React.createElement("button", {
+                className: "season-read-link",
+                onClick: e => { e.stopPropagation(); onGenerate(s.id); },
+                disabled: busy,
+                onMouseEnter: e => { if (busy) return; e.currentTarget.style.color = ACCENT; e.currentTarget.style.textDecorationColor = "#FDBA74"; },
+                onMouseLeave: e => { e.currentTarget.style.color = rest; e.currentTarget.style.textDecorationColor = restLine; },
+                style: {
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  flexShrink: 0,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  fontFamily: "inherit",
+                  color: rest,
+                  textDecoration: "underline",
+                  textDecorationColor: restLine,
+                  textUnderlineOffset: 3,
+                  cursor: busy ? "default" : "pointer"
+                }
+              }, busy ? "Reading\u2026" : st.complete ? "Read" : "Sneak peek");
+            })()
+          ),
+          saved && headline && React.createElement("div", {
+            className: "season-shelf-headline",
+            style: { fontSize: 12.5, lineHeight: 1.55, color: INK_2, marginTop: 4 }
+          }, headline),
+          // Once a season has been read, the headline speaks for the tile; the
+          // status line only earns its place while a season is still unread.
+          !saved && React.createElement("div", { style: { fontSize: 10.5, color: MUTED, marginTop: 2 } },
+            st.complete
+                ? (st.thin ? `Too little to work with \u00b7 ${st.weeks} weeks, ${st.reflections} reflections` : `Ready \u00b7 ${st.weeks} weeks, ${st.reflections} reflections`)
+                : `In progress \u00b7 ${st.weeks} weeks, ${st.reflections} reflections so far`),
+          // Failures belong next to the control that caused them. This used to
+          // print at the top of the panel, which on a list of seasons meant the
+          // message and the button you pressed were nowhere near each other.
+          error && error.id === s.id && React.createElement("div", {
+            style: {
+              marginTop: 8,
+              paddingTop: 8,
+              borderTop: `1px solid ${HAIRLINE}`,
+              fontSize: 11,
+              lineHeight: 1.5,
+              color: INK_2
+            }
+          }, error.message)
+        );
+      })
+    )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -6310,6 +8480,7 @@ function GoalsPanel({
   getGoal,
   progressFor,
   onSetGoal,
+  onSetPurpose,
   onRemoveGoal,
   canEdit,
   weekLabelText,
@@ -6323,7 +8494,7 @@ function GoalsPanel({
       eyebrow: "Intentions",
       readOnly: !canEdit,
       title: weekLabelText,
-      subtitle: "Tap a pillar to light it in the week",
+      subtitle: "A weekly number, and what it's for",
       onClose: onClose
     }),
     // The focus is set from the rows but cleared from here. Once a pillar is
@@ -6519,6 +8690,25 @@ function GoalsPanel({
       }, `+${exceeded}`)), /*#__PURE__*/React.createElement("div", {
         style: { display: "flex", gap: 3 }
       }, cells),
+      // The purpose belongs in the open, next to the number it justifies.
+      // Behind a tap it was effectively invisible, which left the target
+      // reading as a quota to clear rather than a proxy for something the
+      // person actually wants. When it is unset the line is an invitation,
+      // not a warning — nobody owes this field an answer.
+      /*#__PURE__*/React.createElement("div", {
+        onClick: e => {
+          e.stopPropagation();
+          setExpanded(isExpanded ? null : cat.id);
+        },
+        style: {
+          marginTop: 5,
+          fontSize: 11,
+          lineHeight: 1.5,
+          color: cat.purpose ? INK_2 : FAINT,
+          fontStyle: cat.purpose ? "normal" : "italic",
+          cursor: canEdit ? "pointer" : "default"
+        }
+      }, cat.purpose ? String(cat.purpose).trim() : (canEdit ? `Why ${cat.label}?` : "")),
       // The mosaic says how the week is shaped; this says it in numbers, so
       // the three quantities the intention turns on — lived, still coming,
       // and the gap to the target — are readable without hovering anything.
@@ -6567,7 +8757,28 @@ function GoalsPanel({
           fontFamily: "inherit",
           ...pillarChip(cat, v === goal)
         }
-      }, v))), isExpanded && /*#__PURE__*/React.createElement("button", {
+      }, v))), isExpanded && canEdit && /*#__PURE__*/React.createElement("textarea", {
+        value: cat.purpose || "",
+        onChange: e => onSetPurpose && onSetPurpose(cat.id, e.target.value),
+        onClick: e => e.stopPropagation(),
+        placeholder: `What do you want ${cat.label} to give you? This is the why behind the number.`,
+        rows: 2,
+        style: {
+          width: "100%",
+          boxSizing: "border-box",
+          marginBottom: 8,
+          border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+          borderRadius: TILE_RADIUS,
+          background: TILE_PLAN_FILL,
+          padding: "6px 8px",
+          fontFamily: "inherit",
+          fontSize: 11.5,
+          lineHeight: 1.5,
+          color: PLAN_TEXT,
+          outline: "none",
+          resize: "vertical"
+        }
+      }), isExpanded && /*#__PURE__*/React.createElement("button", {
         onClick: e => {
           e.stopPropagation();
           onRemoveGoal(cat.id);
@@ -6848,6 +9059,20 @@ function buildImportedView(obj, { id, now = new Date() } = {}) {
 // ---------------------------------------------------------------------------
 
 const pillarOps = {
+  // A pillar has always had a name, a colour and a weekly number. None of
+  // those record what the person wants it to GIVE them, which turns out to be
+  // the thing that decides whether a season went well. A count of 4 against a
+  // target of 6 is a shortfall; "Move is a means to an end, feeling stronger"
+  // makes the same season a success interrupted by an injury. Same data,
+  // opposite readings, and only the second is true.
+  setPurpose(cats, id, purpose) {
+    // Stored exactly as typed. Trimming here ran on every keystroke, so the
+    // space between two words was stripped the moment it was pressed and the
+    // field became unspaceable. Whitespace is trimmed where the value is
+    // read instead, which is the only place it matters.
+    const raw = String(purpose == null ? "" : purpose);
+    return cats.map(c => c.id === id ? { ...c, purpose: raw.trim() ? raw : undefined } : c);
+  },
   rename(cats, id, label) {
     const clean = (label || "").trim();
     if (!clean) return cats;
@@ -8130,6 +10355,29 @@ function AIConnectionDialog({ onClose }) {
   const [message, setMessage] = useState("");
   const provider = aiProviderById(providerId) || AI_PROVIDERS[0];
 
+  // Reopening the dialog used to show a list of exactly one model — the saved
+  // one — because the list only ever came back from pressing Test. That made
+  // changing model look impossible, which is the one thing somebody reopening
+  // this dialog is most likely trying to do. A saved key refetches on open.
+  useEffect(() => {
+    if (!saved.key || !saved.model) return;
+    let cancelled = false;
+    setStatus("testing");
+    provider.listModels(saved.key)
+      .then(found => {
+        if (cancelled || !found.length) return;
+        setModels(rankModels(found));
+        setStatus("idle");
+        setMessage("");
+      })
+      .catch(() => {
+        // The saved model stays selectable, so a provider that is down does
+        // not also strand the connection that was already working.
+        if (!cancelled) { setStatus("idle"); setMessage(""); }
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   function changeProvider(id) {
     setProviderId(id);
     // A key and a model list belong to one provider. Carrying either across
@@ -8151,7 +10399,7 @@ function AIConnectionDialog({ onClose }) {
     setStatus("testing");
     setMessage("");
     try {
-      const found = await provider.listModels(key.trim());
+      const found = rankModels(await provider.listModels(key.trim()));
       if (!found.length) {
         setStatus("error");
         setMessage("The key works, but no usable models came back for it.");
@@ -8159,14 +10407,49 @@ function AIConnectionDialog({ onClose }) {
       }
       setModels(found);
       // Keep the saved model if this key can still reach it. Otherwise the
-      // first one, so Save is reachable without a second decision.
+      // best-ranked one, so Save is reachable without a second decision.
       const keep = found.find(m => m.id === model);
-      setModel(keep ? keep.id : found[0].id);
-      setStatus("ok");
-      setMessage(`Connected. ${found.length} model${found.length === 1 ? "" : "s"} available.`);
+      const chosen = keep ? keep.id : found[0].id;
+      setModel(chosen);
+      await verifyModel(chosen, found.length);
     } catch (err) {
       setStatus("error");
       setMessage(err.message || "Something went wrong.");
+    }
+  }
+
+  // Listing models proves the key is valid. It does not prove the selected
+  // model will answer: access is granted per model, and a model can be
+  // healthy at 9am and shedding load at 10. Both of those used to surface
+  // only after a season reading had been asked for and waited on. A
+  // two-token completion settles it in a second instead.
+  async function verifyModel(id, modelCount) {
+    if (!id || !key.trim()) return;
+    setStatus("testing");
+    setMessage(`Checking ${id}\u2026`);
+    try {
+      await provider.complete({
+        key: key.trim(),
+        model: id,
+        prompt: "Reply with the single word: ok",
+        // Small enough that browsing the dropdown costs nothing, and
+        // truncation-tolerant so a model that thinks before answering still
+        // counts as having answered. Reaching the provider at all is the
+        // whole question here.
+        maxTokens: 64,
+        allowTruncated: true
+      });
+      setStatus("ok");
+      setMessage(modelCount
+        ? `Working. ${modelCount} model${modelCount === 1 ? "" : "s"} available on this key.`
+        : "Working.");
+    } catch (err) {
+      setStatus("error");
+      // The distinction that matters: one of these is worth waiting out, the
+      // other means pick something else.
+      setMessage(/overloaded|high demand/i.test(err.message || "")
+        ? `${id} is busy right now. Wait a few minutes, or pick another model.`
+        : `${id} didn't answer. ${err.message || ""}`.trim());
     }
   }
 
@@ -8189,7 +10472,7 @@ function AIConnectionDialog({ onClose }) {
     }, "AI connection"),
     /*#__PURE__*/React.createElement("div", {
       style: { fontSize: 12, color: INK_3, lineHeight: 1.5, marginBottom: 18 }
-    }, "Powers Threads and AI-generated ideas. Your key is stored in this browser and sent only to the provider you pick, only when you ask for one of those things."),
+    }, "Powers Seasons. Your key is stored in this browser and sent only to the provider you pick, only when you ask for a season to be read."),
 
     /*#__PURE__*/React.createElement("div", { style: { marginBottom: 14 } },
       /*#__PURE__*/React.createElement("div", { style: AI_FIELD_LABEL }, "Provider"),
@@ -8246,15 +10529,19 @@ function AIConnectionDialog({ onClose }) {
       models.length
         ? /*#__PURE__*/React.createElement("select", {
             value: model,
-            onChange: e => setModel(e.target.value),
+            // Changing the model re-checks it. Picking from a dropdown and
+            // finding out three months later that this one is unavailable is
+            // the exact loop this replaces.
+            onChange: e => { setModel(e.target.value); verifyModel(e.target.value, models.length); },
             style: { ...AI_INPUT, cursor: "pointer" }
-          }, models.map(m => /*#__PURE__*/React.createElement("option", { key: m.id, value: m.id }, m.label)))
+          }, models.map(m => /*#__PURE__*/React.createElement("option", { key: m.id, value: m.id },
+            `${m.label} \u2014 ${MODEL_TIER_NOTE[modelTier(m.id)]}`)))
         : /*#__PURE__*/React.createElement("div", {
             style: { ...AI_INPUT, color: FAINT, background: "#FBF9F4" }
           }, "Test the connection to load models"),
       /*#__PURE__*/React.createElement("div", {
         style: { fontSize: 11, color: MUTED, marginTop: 6, lineHeight: 1.45 }
-      }, "If results come back thin, try a larger model before deciding the feature doesn't work.")),
+      }, "A season is three months of writing read in one pass, so this is the one place the model really shows. Start at the top of the list and work down \u2014 the light models are quick, and tend to produce thin readings.")),
 
     /*#__PURE__*/React.createElement("button", {
       onClick: save,
@@ -8374,6 +10661,31 @@ function Planner() {
   // Resolved here because the entry store needs to know before any write.
   const activeView = importedViews.find(v => v.id === activeViewId) || null;
   const isOwnView = !activeView;
+  // Seasons. The store is read once and written through, like every other
+  // persisted thing here; the busy/error pair belongs to the one call this
+  // feature can make, which takes long enough that it has to be visible.
+  const seasonsStore = useSeasonsStore(isOwnView);
+  const [seasonBusy, setSeasonBusy] = useState(null);
+  const [seasonError, setSeasonError] = useState(null);
+  const [seasonActionsBusy, setSeasonActionsBusy] = useState(false);
+  const [seasonActionsError, setSeasonActionsError] = useState(null);
+  const [openSeasonId, setOpenSeasonId] = useState(null);
+  // Seasons is meant to arrive a few times a year rather than be checked on,
+  // so the rail says when there's one waiting: the season that just ended, if
+  // it has enough in it and hasn't been read. The cue goes when it's read, or
+  // when the next season ends and takes its place. Sizing a season walks
+  // stored weeks, so it runs once a day and again only when that season's
+  // read state changes — never on the ordinary render.
+  const lastSeason = seasonBefore(seasonForDate(todayStr));
+  const lastSeasonRead = Boolean(seasonsStore.get(lastSeason.id));
+  const seasonCue = React.useMemo(() => {
+    if (!isOwnView || lastSeasonRead) return null;
+    try {
+      return seasonReadiness(lastSeason, todayStr).ready ? lastSeason : null;
+    } catch {
+      return null;
+    }
+  }, [todayStr, isOwnView, lastSeasonRead]);
   // The loaded week's entries — the single source of truth for everything the
   // planner and calendar render.
   const entryStore = useEntryStore({ readOnly: !isOwnView, weekKey: key });
@@ -8615,6 +10927,124 @@ function Planner() {
     setSidebarTab('ideas');
     setSidebarOpen(true);
   }
+  function openSeasonsSidebar() {
+    setCatTyping(false);
+    setCatCustomInput("");
+    setSeasonError(null);
+    setSidebarTab('seasons');
+    setSidebarOpen(true);
+  }
+  // Reading a season is one network call over three months of text, so it
+  // is slow by nature. Failure is reported in the panel rather than thrown
+  // away: a key that has expired and a model that answered with prose are
+  // different problems, and the user can act on both.
+  async function runSeasonReading(seasonId, { model, fresh = false } = {}) {
+    if (seasonBusy) return;
+    const season = seasonFromId(seasonId);
+    if (!season) return;
+    setSeasonBusy(seasonId);
+    setSeasonError(null);
+    try {
+      const entry = await generateSeasonReading(season, {
+        cats,
+        goals,
+        userName,
+        store: seasonsStore,
+        model,
+        fresh
+      });
+      seasonsStore.save(entry);
+      setOpenSeasonId(seasonId);
+    } catch (err) {
+      const msg = String((err && err.message) || err);
+      setSeasonError({ id: seasonId, message:
+        msg === "no-connection"
+          ? "No AI connection set up yet."
+          : /JSON|object/i.test(msg)
+            ? "The model answered with something this couldn't read. Try again, or pick a different model."
+            : msg
+      });
+    } finally {
+      setSeasonBusy(null);
+    }
+  }
+  // What a season leads to is decided in section 04, after the reading has
+  // been read and answered. The model proposes; these decide, against the same
+  // writers every other part of the app uses.
+  async function suggestSeasonActions(seasonId) {
+    const entry = seasonsStore.get(seasonId);
+    if (!isOwnView || !entry) return;
+    setSeasonActionsBusy(true);
+    setSeasonActionsError(null);
+    try {
+      // Anything already filed stays on the list, and is handed to the model
+      // so a second pass doesn't propose it again in different words. Only the
+      // unfiled suggestions are replaced.
+      const keptItems = (((entry.actions || {}).items) || []).filter(it => it.status === "applied");
+      const actions = await generateSeasonActions(entry, {
+        cats,
+        ideas: ideasStore.ideas,
+        kept: keptItems.map(it => it.kind === "pillar" ? `${it.text} (added as a pillar)` : `${it.text} (${it.pillar})`)
+      });
+      seasonsStore.setActions(seasonId, { ...actions, items: keptItems.concat(actions.items || []) });
+    } catch (err) {
+      const msg = String((err && err.message) || err);
+      setSeasonActionsError(
+        msg === "no-connection"
+          ? "No AI connection set up yet."
+          : /JSON|bad-json|object/i.test(msg)
+            ? "The model answered with something this couldn't read. Try again."
+            : msg
+      );
+    } finally {
+      setSeasonActionsBusy(false);
+    }
+  }
+  // Filing one onto a pillar's bench, which is a menu rather than a promise —
+  // the lightest place a season's conclusion can land.
+  function applySeasonSuggestion(seasonId, item) {
+    if (!isOwnView || !item) return;
+    if (item.kind === "pillar") {
+      const { next, pillar } = pillarOps.add(cats, item.text);
+      if (!pillar) return;
+      saveCats(next);
+      seasonsStore.setActionState(seasonId, item.id, { status: "applied" });
+      return;
+    }
+    const cat = cats.find(c => c.label.toLowerCase() === String(item.pillar || "").trim().toLowerCase());
+    if (!cat) return;
+    ideasStore.add(cat.id, item.text);
+    seasonsStore.setActionState(seasonId, item.id, { status: "applied" });
+  }
+  function addOwnSeasonAction(seasonId, pillar, text) {
+    if (!isOwnView || !text) return;
+    const cat = cats.find(c => c.label.toLowerCase() === String(pillar || "").trim().toLowerCase());
+    if (!cat) return;
+    ideasStore.add(cat.id, text);
+    seasonsStore.addOwnAction(seasonId, {
+      id: `own_${Date.now().toString(36)}`,
+      pillar: cat.label,
+      text,
+      why: "",
+      own: true,
+      status: "applied"
+    });
+  }
+  function setSeasonsFromStorage() {
+    seasonsStore.reloadFromStorage();
+    setOpenSeasonId(null);
+    setSeasonError(null);
+  }
+  // Discarding a reading is the only way back to a genuinely blank page. A
+  // re-read deliberately carries prior notes into the prompt so a second pass
+  // can build on the first — which is the wrong behaviour when the point is
+  // to see what a different model makes of the season cold.
+  function discardSeasonReading(seasonId) {
+    if (!isOwnView || !seasonId) return;
+    seasonsStore.remove(seasonId);
+    setOpenSeasonId(null);
+    setSeasonError(null);
+  }
   function openGoalsSidebar() {
     setCatTyping(false);
     setCatCustomInput("");
@@ -8791,9 +11221,24 @@ function Planner() {
     if (!pendingImport) return;
     const obj = pendingImport;
     if (mode === "replace") {
+      // Writing the file's keys over the top is not a replace — anything the
+      // backup predates simply survives it. A file exported before a feature
+      // existed would leave that feature's data in place and look like the
+      // import had silently failed. So stored keys absent from the file are
+      // cleared first.
+      //
+      // Except the protected ones. Those are deliberately never exported —
+      // the API key above all — so every file "lacks" them, and clearing
+      // them would log the user out of their provider on every restore.
+      db.keys().forEach(k => {
+        if (Object.prototype.hasOwnProperty.call(obj, k)) return;
+        if (TRANSFER_SKIP_PREFIXES.some(p => k.startsWith(p))) return;
+        db.remove(k);
+      });
       Object.entries(obj).forEach(([k, v]) => {
         if (k !== "_meta") db.writeRaw(k, v);
       });
+      setSeasonsFromStorage();
       if (db.readRaw(K.cats)) setCats(withTend(migrateCatColors(db.read(K.cats, DEFAULT_CATS))));
       if (db.readRaw(K.goals)) setGoals(db.read(K.goals, {}));
       setRatings(db.read(K.ratings, {}));
@@ -10498,7 +12943,11 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v9.11.1")), (() => {
+  }, "v9.17.19")), (() => {
+    // Walking every stored week to size each season is the most expensive
+    // read in the app. It only happens while the panel is actually open.
+    const seasonShelf = !(sidebarOpen && sidebarTab === 'seasons') ? [] :
+      seasonsWithData(todayStr).map(s => ({ ...s, readiness: seasonReadiness(s, todayStr) }));
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
@@ -10558,7 +13007,19 @@ return /*#__PURE__*/React.createElement("div", {
       journalStore: journalStore,
       newEntryId: newEntryId,
       onClose: closeSidebar
+    }), sidebarTab === 'seasons' && isOwnView && /*#__PURE__*/React.createElement(SeasonsPanel, {
+      seasons: seasonShelf,
+      store: seasonsStore,
+      canEdit: isOwnView,
+      busyId: seasonBusy,
+      error: seasonError,
+      aiReady: readAIConnection().ready,
+      onGenerate: runSeasonReading,
+      onOpen: setOpenSeasonId,
+      onConnectAI: () => setShowAIConnection(true),
+      onClose: closeSidebar
     }), sidebarTab === 'goals' && /*#__PURE__*/React.createElement(GoalsPanel, {
+      onSetPurpose: (id, text) => saveCats(pillarOps.setPurpose(cats, id, text)),
       goalCats: goalCats,
       noGoalCats: noGoalCats,
       getGoal: getGoal,
@@ -10808,7 +13269,48 @@ return /*#__PURE__*/React.createElement("div", {
       // saying "this is open" but "you can let go here" — and with the caption
       // gone it's now the only thing saying it.
       activeColor: isOwnView && externalItemDrag ? REFLECT : INK
-    }, /*#__PURE__*/React.createElement(ReflectBubble, { size: 17, weight: 1.6 })), /*#__PURE__*/React.createElement(RailButton, {
+    }, /*#__PURE__*/React.createElement(ReflectBubble, { size: 17, weight: 1.6 })), isOwnView && /*#__PURE__*/React.createElement(RailButton, {
+      title: seasonCue ? `Seasons: ${seasonCue.label} is ready to read` : "Seasons",
+      active: sidebarOpen && sidebarTab === 'seasons',
+      onToggle: () => sidebarOpen && sidebarTab === 'seasons' ? closeSidebar() : openSeasonsSidebar()
+    }, /*#__PURE__*/React.createElement("span", {
+      style: { position: "relative", display: "inline-flex" }
+    },
+    // Four squared fields, one filled: a year in quarters, with the one
+    // being lived in picked out. Same vocabulary as the tiles and the
+    // pillar bands, which is the point — this is a view of the same
+    // material, stood further back.
+    /*#__PURE__*/React.createElement("svg", {
+      width: "17",
+      height: "17",
+      viewBox: "0 0 24 24",
+      fill: "currentColor"
+    }, /*#__PURE__*/React.createElement("rect", {
+      x: "3", y: "3", width: "8.5", height: "8.5", rx: "1.5"
+    }), /*#__PURE__*/React.createElement("rect", {
+      x: "12.5", y: "3", width: "8.5", height: "8.5", rx: "1.5", opacity: "0.42"
+    }), /*#__PURE__*/React.createElement("rect", {
+      x: "3", y: "12.5", width: "8.5", height: "8.5", rx: "1.5", opacity: "0.42"
+    }), /*#__PURE__*/React.createElement("rect", {
+      x: "12.5", y: "12.5", width: "8.5", height: "8.5", rx: "1.5", opacity: "0.2"
+    })),
+    // A small accent tile, squared like everything else in the app, rather
+    // than a notification dot. It sits on the corner of the quarter grid as if
+    // one more field had been filled in.
+    seasonCue && /*#__PURE__*/React.createElement("span", {
+      className: "season-cue",
+      "aria-label": `${seasonCue.label} is ready to read`,
+      style: {
+        position: "absolute",
+        top: -3,
+        right: -4,
+        width: 7,
+        height: 7,
+        borderRadius: 1.5,
+        background: ACCENT,
+        boxShadow: `0 0 0 2px ${PAPER}`
+      }
+    }))), /*#__PURE__*/React.createElement(RailButton, {
       title: "Intentions",
       active: sidebarOpen && sidebarTab === 'goals',
       onToggle: () => sidebarOpen && sidebarTab === 'goals' ? closeSidebar() : openGoalsSidebar()
@@ -10853,7 +13355,28 @@ return /*#__PURE__*/React.createElement("div", {
     }), /*#__PURE__*/React.createElement("rect", {
       x: "16.5", y: "13", width: "4.5", height: "8"
     })))));
-  })(), showAIConnection && /*#__PURE__*/React.createElement(AIConnectionDialog, {
+  })(), openSeasonId && seasonsStore.get(openSeasonId) && /*#__PURE__*/React.createElement(SeasonReading, {
+    entry: seasonsStore.get(openSeasonId),
+    cats,
+    goalFor: getGoal,
+    canEdit: isOwnView,
+    busy: seasonBusy === openSeasonId,
+    error: seasonError && seasonError.id === openSeasonId ? seasonError.message : null,
+    onClose: () => setOpenSeasonId(null),
+    onNote: (key, text) => seasonsStore.setNote(openSeasonId, key, text),
+    aiReady: readAIConnection().ready,
+    actionsBusy: seasonActionsBusy,
+    actionsError: seasonActionsError,
+    onSuggestActions: () => suggestSeasonActions(openSeasonId),
+    onApplyAction: item => applySeasonSuggestion(openSeasonId, item),
+    onDismissAction: item => seasonsStore.setActionState(openSeasonId, item.id, { status: "dismissed" }),
+    onEditAction: (item, text) => seasonsStore.setActionState(openSeasonId, item.id, { text }),
+    onAddOwnAction: (pillar, text) => addOwnSeasonAction(openSeasonId, pillar, text),
+    onPillarPurpose: (id, text) => saveCats(pillarOps.setPurpose(cats, id, text)),
+    onPillarTarget: (id, v) => saveGoals({ ...goals, [id]: v }),
+    onPillarRename: (id, name) => saveCats(pillarOps.rename(cats, id, name)),
+    onRegenerate: opts => runSeasonReading(openSeasonId, opts)
+  }), showAIConnection && /*#__PURE__*/React.createElement(AIConnectionDialog, {
     onClose: () => setShowAIConnection(false)
   }), showStartFreshConfirm && /*#__PURE__*/React.createElement(StartFreshDialog, {
     onClose: () => setShowStartFreshConfirm(false),
