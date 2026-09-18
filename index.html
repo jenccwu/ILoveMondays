@@ -6153,6 +6153,17 @@ function seasonReadiness(season, todayStr) {
   };
 }
 
+// Was this reading a sneak peek? New readings say so themselves. Ones saved
+// before the flag existed are judged by when they were written: a reading
+// dated inside its own season was read early, and stays a sneak peek even
+// after the season has since ended.
+function seasonEntryPartial(entry) {
+  if (!entry) return false;
+  if (typeof entry.partial === "boolean") return entry.partial;
+  const written = String(entry.generatedAt || "").slice(0, 10);
+  return Boolean(written && entry.end && written <= entry.end);
+}
+
 function seasonFromId(id) {
   const m = /^(\d{4})-(winter|spring|summer|fall)$/.exec(String(id || ""));
   if (!m) return null;
@@ -6635,6 +6646,11 @@ async function generateSeasonReading(season, { cats, goals, userName, store, mod
     json: true
   });
   const reading = parseSeasonJSON(raw, (cats || []).map(c => c.label));
+  // A reading written before the season finished — or off too little of one —
+  // is provisional, and has to say so for as long as it is kept. Recorded at
+  // the moment it is written: the season goes on filling up afterwards, so
+  // asking later whether it was complete gives the wrong answer.
+  const readiness = seasonReadiness(season, ymd(new Date()));
   return {
     ledger: seasonLedger(signals, cats, goals),
     id: season.id,
@@ -6643,6 +6659,7 @@ async function generateSeasonReading(season, { cats, goals, userName, store, mod
     end: season.end,
     generatedAt: new Date().toISOString(),
     model,
+    partial: !readiness.ready,
     counts: signals.counts,
     reading,
     notes: {},
@@ -6808,22 +6825,44 @@ function SeasonNote({ value, onSave, canEdit, prompt }) {
 
 // Evidence sits folded, but never hidden. The entries behind a claim are the
 // reader's own words, and a count ("5 entries") gave no reason to open them.
-// One of those words is shown instead — the fullest one, since the longest
-// entry is usually the most vivid — so what's inside is already on the page
-// before anyone clicks.
-function seasonEvidenceTeaser(evidence) {
-  return (evidence || []).reduce((best, ev) =>
-    String((ev && ev.text) || "").length > String((best && best.text) || "").length ? ev : best, null);
+// One of those words is shown instead — the earliest one, so the quotes run in
+// the order they were lived and opening the rest continues from the one just
+// read rather than starting over somewhere else in the season.
+//
+// Dates come back from a model, so they can't be compared as plain strings:
+// "2026-7-4" and "2026-07-04" mean the same day and sort nothing like it, and
+// a model occasionally writes "Jul 4, 2026" instead. Everything is turned into
+// a comparable number first, and anything unreadable sinks to the bottom
+// rather than silently claiming to be the earliest.
+function seasonEvidenceKey(ev) {
+  const s = String((ev && ev.date) || "").trim();
+  if (!s) return Infinity;
+  const iso = /^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?/.exec(s);
+  if (iso) return Number(iso[1]) * 10000 + Number(iso[2]) * 100 + Number(iso[3] || 1);
+  const t = Date.parse(s);
+  if (!isNaN(t)) {
+    const d = new Date(t);
+    return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+  }
+  return Infinity;
+}
+
+function seasonEvidenceOrdered(evidence) {
+  return (evidence || [])
+    .map((ev, i) => ({ ev, i, k: seasonEvidenceKey(ev) }))
+    // Ties keep the order the reading was written in.
+    .sort((a, b) => (a.k === b.k ? a.i - b.i : a.k - b.k))
+    .map(x => x.ev);
 }
 
 function SeasonEvidence({ evidence }) {
   const [open, setOpen] = useState(false);
   if (!evidence || !evidence.length) return null;
-  const count = evidence.length;
-  const teaser = seasonEvidenceTeaser(evidence);
+  const ordered = seasonEvidenceOrdered(evidence);
+  const count = ordered.length;
   const quote = t => `\u201c${String(t || "").trim()}\u201d`;
   const rest = Math.max(0, count - 1);
-  const shown = open ? evidence : (teaser ? [teaser] : []);
+  const shown = open ? ordered : ordered.slice(0, 1);
   const line = React.createElement("div", {
     style: { fontSize: 13, fontWeight: 700, color: ACCENT, marginBottom: 8 }
   }, "In your words");
@@ -7152,7 +7191,7 @@ function SeasonActions({ entry, cats, canEdit, busy, error, onSuggest, onApply, 
     React.createElement(SeasonSectionHead, {
       num: "04",
       title: "Next season",
-      blurb: "A few new activities or changes to consider."
+      blurb: "New activities or changes to consider"
     }),
     error && React.createElement("div", {
       style: { fontSize: 12, color: ACCENT, marginBottom: 10 }
@@ -7241,6 +7280,13 @@ function SeasonActions({ entry, cats, canEdit, busy, error, onSuggest, onApply, 
 // ---------------------------------------------------------------------------
 function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPillarPurpose, onPillarTarget, onPillarRename, onRegenerate, busy, error, aiReady, actionsBusy, actionsError, onSuggestActions, onApplyAction, onDismissAction, onEditAction, onAddOwnAction }) {
   const r = entry.reading || {};
+  // A sneak peek is a draft of a season that hasn't happened yet. It is drained
+  // of colour and of every place to write back: answering an insight is the
+  // most valuable thing anyone does in here, and an answer written against a
+  // half-season is work that the real reading can't carry forward. Read it,
+  // then read the season properly when it is done.
+  const partial = seasonEntryPartial(entry);
+  const canRespond = canEdit && !partial;
   const noteCount = Object.keys(entry.notes || {}).filter(k => String((entry.notes || {})[k] || "").trim()).length
     + ((entry.carriedNotes || []).length);
   return React.createElement("div", { onClick: onClose, style: { ...MODAL_OVERLAY, alignItems: "flex-start", padding: "40px 20px" } },
@@ -7250,7 +7296,11 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
         background: PAPER,
         borderRadius: 18,
         border: `1px solid ${HAIRLINE}`,
-        boxShadow: "0 12px 48px rgba(0,0,0,0.18)",
+        boxShadow: partial ? "0 6px 24px rgba(0,0,0,0.10)" : "0 12px 48px rgba(0,0,0,0.18)",
+        // One line does the whole job: every accent, pillar chip and tint in
+        // the reading below goes grey, without a partial-mode colour to thread
+        // through thirty style objects.
+        filter: partial ? "grayscale(1)" : undefined,
         width: "100%",
         maxWidth: 660,
         maxHeight: "calc(100vh - 80px)",
@@ -7278,7 +7328,7 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
           React.createElement("div", { style: { minWidth: 0 } },
             React.createElement("div", {
               style: { fontSize: 9.5, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: ACCENT, marginBottom: 4 }
-            }, "Seasons"),
+            }, partial ? "Seasons \u00b7 Sneak peek" : "Seasons"),
             React.createElement("div", {
               style: { fontSize: 22, fontWeight: 700, color: INK, lineHeight: 1.15, marginBottom: 5 }
             }, entry.label),
@@ -7295,6 +7345,27 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
       React.createElement("div", {
         style: { flex: 1, overflowY: "auto", padding: "24px 30px 26px" }
       },
+        // Said once, at the top, before anything it qualifies. Dashed rather
+        // than tinted: this is the one block in a grey reading that has to
+        // look unfinished on purpose.
+        partial && React.createElement("div", {
+          style: {
+            border: `1px dashed ${NEUTRAL_OUTLINE}`,
+            borderRadius: TILE_RADIUS,
+            padding: "11px 13px",
+            marginBottom: 20,
+            maxWidth: "38em",
+            fontSize: 12.5,
+            lineHeight: 1.6,
+            color: INK_2
+          }
+        },
+          React.createElement("span", { style: { fontWeight: 700 } }, "A sneak peek. "),
+          entry.counts
+            ? `Read early, from ${entry.counts.weeks} weeks and ${entry.counts.reflections} reflections \u2014 the rest of the season hasn't happened yet. `
+            : "Read early, from part of a season \u2014 the rest of it hasn't happened yet. ",
+          "Nothing to write back on here: read the season properly once it's done, and answer it then."),
+
         // The season in a few sentences, tinted and banded so it reads as the
         // one thing to stop on. Warmer and larger than the body, still unbolded
         // so a whole paragraph of it stays easy on the eye.
@@ -7405,7 +7476,7 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
               // beside the claim asked before they had said anything.
               React.createElement(SeasonNote, {
                 value: (entry.notes || {})[key] || "",
-                canEdit: canEdit,
+                canEdit: canRespond,
                 onSave: text => onNote(key, text)
               })
             );
@@ -7430,7 +7501,7 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
             }, typeof q === "string" ? q : q.text),
             React.createElement(SeasonNote, {
               value: (entry.notes || {})[`q:${i}`] || "",
-              canEdit: canEdit,
+              canEdit: canRespond,
               // An open question asks for an answer, not a verdict on someone
               // else's claim, so it gets its own prompt.
               prompt: "Thoughts?",
@@ -7463,7 +7534,7 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
               // Keyed by the name the reading was written under, which is what
               // the model was given.
               pillarNote: (r.pillarNotes || {})[row.pillar],
-              canEdit,
+              canEdit: canRespond,
               goalFor,
               onNote: text => onNote(`p:${key}`, text),
               onSetPurpose: text => cat && onPillarPurpose(cat.id, text),
@@ -7473,7 +7544,9 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
           })
         ),
 
-        React.createElement(SeasonActions, {
+        // Section 04 is the reading turning into decisions. A half-season has
+        // no business proposing what to carry into the next one.
+        !partial && React.createElement(SeasonActions, {
           entry,
           cats,
           canEdit,
@@ -7714,15 +7787,21 @@ function SeasonsPanel({
         const busy = busyId === s.id;
         const st = s.readiness;
         const clickable = Boolean(saved);
-        const headline = saved ? String((saved.reading || {}).headline || "").trim() : "";
+        // A sneak peek doesn't finish a season. Its tile keeps the plain grey
+        // of one still being lived, and shows no headline — the season is
+        // still changing underneath it, and a sentence about how it is going
+        // would go quietly out of date on the shelf.
+        const peek = saved ? seasonEntryPartial(saved) : false;
+        const read = Boolean(saved) && !peek;
+        const headline = read ? String((saved.reading || {}).headline || "").trim() : "";
         return React.createElement("div", {
           key: s.id,
           onClick: clickable ? () => onOpen(s.id) : undefined,
           style: {
-            border: `${PLAN_BORDER_W}px solid ${saved ? NEUTRAL_OUTLINE : HAIRLINE}`,
-            borderLeft: `4px solid ${saved ? ACCENT : NEUTRAL_OUTLINE}`,
+            border: `${PLAN_BORDER_W}px solid ${read ? NEUTRAL_OUTLINE : HAIRLINE}`,
+            borderLeft: `4px solid ${read ? ACCENT : NEUTRAL_OUTLINE}`,
             borderRadius: TILE_RADIUS,
-            background: saved ? TILE_PLAN_FILL : "transparent",
+            background: read ? TILE_PLAN_FILL : "transparent",
             padding: "10px 11px",
             marginBottom: 8,
             cursor: clickable ? "pointer" : "default"
@@ -7734,9 +7813,13 @@ function SeasonsPanel({
             style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }
           },
             React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: INK } }, s.label),
-            canEdit && !saved && aiReady && (() => {
+            canEdit && (!saved || peek) && aiReady && (() => {
               const rest = busy ? FAINT : (st.ready ? ACCENT : MUTED);
-              const restLine = busy ? "transparent" : (st.ready ? "#FDBA74" : FAINT);
+              // A finished season is offering something; an unfinished one is
+              // only allowing it. So the underline — the thing that reads as
+              // "click me" — belongs to "Read" and not to "Sneak peek", which
+              // picks it up on hover instead.
+              const restLine = busy || !st.ready ? "transparent" : "#FDBA74";
               return React.createElement("button", {
                 className: "season-read-link",
                 onClick: e => { e.stopPropagation(); onGenerate(s.id); },
@@ -7757,19 +7840,19 @@ function SeasonsPanel({
                   textUnderlineOffset: 3,
                   cursor: busy ? "default" : "pointer"
                 }
-              }, busy ? "Reading\u2026" : st.complete ? "Read" : "Sneak peek");
+              }, busy ? "Reading\u2026" : st.complete ? "Read" : (peek ? "Peek again" : "Sneak peek"));
             })()
           ),
-          saved && headline && React.createElement("div", {
+          read && headline && React.createElement("div", {
             className: "season-shelf-headline",
             style: { fontSize: 12.5, lineHeight: 1.55, color: INK_2, marginTop: 4 }
           }, headline),
           // Once a season has been read, the headline speaks for the tile; the
           // status line only earns its place while a season is still unread.
-          !saved && React.createElement("div", { style: { fontSize: 10.5, color: MUTED, marginTop: 2 } },
-            st.complete
+          !read && React.createElement("div", { style: { fontSize: 10.5, color: MUTED, marginTop: 2 } },
+            (peek ? "Sneak peek read \u00b7 " : "") + (st.complete
                 ? (st.thin ? `Too little to work with \u00b7 ${st.weeks} weeks, ${st.reflections} reflections` : `Ready \u00b7 ${st.weeks} weeks, ${st.reflections} reflections`)
-                : `In progress \u00b7 ${st.weeks} weeks, ${st.reflections} reflections so far`),
+                : `In progress \u00b7 ${st.weeks} weeks, ${st.reflections} reflections so far`)),
           // Failures belong next to the control that caused them. This used to
           // print at the top of the panel, which on a list of seasons meant the
           // message and the button you pressed were nowhere near each other.
@@ -12943,7 +13026,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v9.17.19")), (() => {
+  }, "v9.17.22")), (() => {
     // Walking every stored week to size each season is the most expensive
     // read in the app. It only happens while the panel is actually open.
     const seasonShelf = !(sidebarOpen && sidebarTab === 'seasons') ? [] :
