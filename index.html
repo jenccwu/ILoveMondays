@@ -702,7 +702,7 @@ function migrateTendStorage() {
     if (touched) db.write(K.ideas, next);
   }
   // A retired pillar's weekly target outlives it the same way, and shows up as
-  // a phantom row in the intentions panel. Drop targets whose pillar is gone,
+  // a phantom row in the pulse panel. Drop targets whose pillar is gone,
   // and never let Tend hold one — a row that doesn't count can't have a goal.
   const goals = db.read(K.goals);
   if (hasStoredCats && goals && typeof goals === "object") {
@@ -2796,7 +2796,12 @@ const SUGG_BG = "#ECFEFF";
 // appears on hover so the row stays quiet at rest, and every event is
 // stopped from bubbling because a suggestion row is itself clickable (it
 // adds the pillar) — editing a name must never also add it.
-function EditablePillarName({ value, onCommit, textStyle, accentColor, editTitle }) {
+// `inline` drops the hover pencil and makes the text itself the control, the
+// way an idea is edited in the Ideas panel. A pencil that only appears on
+// hover is invisible until you go looking for it and impossible on touch;
+// where the row has nothing else competing for a click, the plain text is the
+// better target.
+function EditablePillarName({ value, onCommit, textStyle, accentColor, editTitle, inline }) {
   const [editing, setEditing] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -2851,6 +2856,22 @@ function EditablePillarName({ value, onCommit, textStyle, accentColor, editTitle
         ...textStyle
       }
     });
+  }
+  if (inline) {
+    return /*#__PURE__*/React.createElement("span", {
+      onClick: e => { stop(e); setEditing(true); },
+      onMouseDown: stop,
+      title: editTitle || "Rename",
+      style: {
+        flex: 1,
+        minWidth: 0,
+        cursor: "text",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        ...textStyle
+      }
+    }, value);
   }
   return /*#__PURE__*/React.createElement("div", {
     onMouseEnter: () => setHovered(true),
@@ -6303,7 +6324,7 @@ Return JSON only. No markdown fence, no preamble.
   { "kind": "pillar", "text": "<one-word name for the new pillar>", "why": "one plain sentence naming the activity that has no home right now" }
 ] }`;
 
-function buildSeasonActionsPrompt({ entry, pillars, benches, kept }) {
+function buildSeasonActionsPrompt({ entry, pillars, benches, kept, declined }) {
   const r = (entry && entry.reading) || {};
   const lines = [];
   lines.push(`SEASON: ${entry.label}`);
@@ -6350,6 +6371,21 @@ function buildSeasonActionsPrompt({ entry, pillars, benches, kept }) {
     (kept || []).forEach(k => lines.push(`- ${k}`));
     lines.push("");
   }
+  // Turning one down is a judgement about this season, and a second pass that
+  // hands the same idea back has ignored the only feedback it was given.
+  // A second pass is a request for options they have not seen, so the model is
+  // pushed to look somewhere it hasn't — but never pushed into filling the
+  // list. Padding is the worse failure of the two; an empty pass says so in
+  // plain words on screen, which is all a blank space needed.
+  if ((declined || []).length || (kept || []).length) {
+    lines.push("THIS IS A REPEAT PASS: they have asked for more, so they want things they have not seen yet. Range wider first — a different pillar, a different finding in the reading, a smaller or more concrete version of something. But if the good ground really is taken, return an empty list. They would rather have none than weak ones: a thin suggestion costs more than a blank space, because it outlives the season that produced it.");
+    lines.push("");
+  }
+  if ((declined || []).length) {
+    lines.push("THEY ALREADY TURNED THESE DOWN THIS SEASON. Do not suggest them again, and do not reword them into something that means the same thing. Go somewhere else:");
+    (declined || []).forEach(d => lines.push(`- ${d}`));
+    lines.push("");
+  }
   const answered = Object.keys(entry.notes || {}).filter(k => String((entry.notes || {})[k] || "").trim()).length;
   if (!answered) {
     lines.push("They have not written anything back yet, so you have only the reading to work from. Be correspondingly careful: suggest less, and only what the evidence plainly supports.");
@@ -6357,20 +6393,44 @@ function buildSeasonActionsPrompt({ entry, pillars, benches, kept }) {
   return lines.join("\n");
 }
 
-function parseSeasonActionsJSON(raw, pillarNames) {
+// Normalised enough that "Book the Tuesday bouldering session" and "book
+// Tuesday bouldering" collide. A model told twice not to repeat itself mostly
+// obeys; this is what catches the time it doesn't.
+function actionKey(text) {
+  return String(text || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\b(the|a|an|to|for|your|my|this|session|class)\b/g, " ").replace(/\s+/g, " ").trim();
+}
+// "Book the Tuesday bouldering session" and "Tuesday bouldering" are the same
+// idea wearing a verb. One being a subset of the other catches that without a
+// list of verbs to maintain; two shared words minimum keeps it from swallowing
+// anything genuinely new.
+function sameAction(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const ta = a.split(" "), tb = b.split(" ");
+  const [small, big] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
+  if (small.length < 2) return false;
+  const set = new Set(big);
+  return small.every(t => set.has(t));
+}
+function parseSeasonActionsJSON(raw, pillarNames, avoid) {
   let text = String(raw || "").trim();
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fence) text = fence[1].trim();
   let obj;
   try { obj = JSON.parse(text); } catch (e) { throw new Error("bad-json"); }
   const known = (pillarNames || []).map(n => String(n).toLowerCase());
+  const seen = (avoid || []).map(actionKey).filter(Boolean);
   const out = [];
+  let dropped = 0;
   let pillarProposed = false;
   (Array.isArray(obj.actions) ? obj.actions : []).forEach((a, i) => {
     const txt = String((a && a.text) || "").trim();
     const kind = String((a && a.kind) || "idea").trim().toLowerCase();
     const why = String((a && a.why) || "").trim();
     if (!txt) return;
+    const key = actionKey(txt);
+    if (key && seen.some(k => sameAction(k, key))) { dropped++; return; }
+    if (key) seen.push(key);
     if (kind === "pillar") {
       // One at most, and never one they already have under that name.
       if (pillarProposed) return;
@@ -6385,10 +6445,13 @@ function parseSeasonActionsJSON(raw, pillarNames) {
     if (!known.includes(pillar.toLowerCase())) return;
     out.push({ id: `sa_${i}_${Date.now().toString(36)}`, kind: "idea", pillar, text: txt, why });
   });
-  return out.slice(0, 4);
+  // The caller needs to tell "the model had nothing new" apart from "the model
+  // repeated itself and we filtered it", because those read identically on
+  // screen — an empty list — and mean different things.
+  return { items: out.slice(0, 4), dropped };
 }
 
-async function generateSeasonActions(entry, { cats, ideas, kept, model: modelOverride }) {
+async function generateSeasonActions(entry, { cats, ideas, kept, declined, avoid, model: modelOverride }) {
   const conn = readAIConnection();
   if (!conn.ready) throw new Error("no-connection");
   const provider = aiProviderById(conn.providerId);
@@ -6402,13 +6465,15 @@ async function generateSeasonActions(entry, { cats, ideas, kept, model: modelOve
     key: conn.key,
     model: String(modelOverride || "").trim() || conn.model,
     system: SEASON_ACTIONS_SYSTEM,
-    prompt: buildSeasonActionsPrompt({ entry, pillars, benches, kept }),
+    prompt: buildSeasonActionsPrompt({ entry, pillars, benches, kept, declined }),
     maxTokens: 8000,
     json: true
   });
+  const parsed = parseSeasonActionsJSON(raw, pillars.map(p => p.label), avoid);
   return {
     generatedAt: new Date().toISOString(),
-    items: parseSeasonActionsJSON(raw, pillars.map(p => p.label))
+    items: parsed.items,
+    dropped: parsed.dropped
   };
 }
 
@@ -6975,7 +7040,7 @@ function SeasonPillarRow({ row, cat, note, pillarNote, canEdit, goalFor, onNote,
       value: note || "",
       canEdit: canEdit,
       onSave: onNote,
-      prompt: purpose ? "Did it give you that?" : "What do you want from this pillar?"
+      prompt: purpose ? "Did this give you what you hoped?" : "What are you hoping this gives you?"
     }),
 
     canEdit && React.createElement("button", {
@@ -7005,12 +7070,12 @@ function SeasonPillarRow({ row, cat, note, pillarNote, canEdit, goalFor, onNote,
       }
     },
       React.createElement("div", null,
-        React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 4px" } }, "What it's for"),
+        React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 4px" } }, "Purpose"),
         React.createElement("textarea", {
           value: purposeRaw,
           onChange: e => onSetPurpose(e.target.value),
           rows: 2,
-          placeholder: `What do you want ${name} to give you?`,
+          placeholder: "What are you hoping this gives you?",
           style: {
             width: "100%",
             boxSizing: "border-box",
@@ -7029,7 +7094,7 @@ function SeasonPillarRow({ row, cat, note, pillarNote, canEdit, goalFor, onNote,
       ),
       React.createElement("div", null,
         React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 4px" } },
-          `A week's worth \u2014 you averaged ${row.perWeek}`),
+          `Weekly target \u2014 you averaged ${row.perWeek}`),
         React.createElement("div", { style: { display: "flex", gap: 4 } },
           [1, 2, 3, 4, 5, 6, 7].map(v => React.createElement("button", {
             key: v,
@@ -7107,86 +7172,170 @@ function SeasonSectionHead({ num, title, blurb }) {
 // nobody keeps. Each suggestion is editable before it is filed: a suggestion
 // that is nearly right should be bent, not dismissed.
 // ---------------------------------------------------------------------------
-function SeasonActionRow({ item, cats, canEdit, onApply, onDismiss, onEdit }) {
+// A suggestion aimed at the wrong bench is the commonest near-miss, and asking
+// someone to dismiss it and retype it elsewhere is asking them to throw away a
+// good idea over a filing error. So the pillar tag is also the control that
+// changes it. A row that arrived as a new pillar can be filed onto an existing
+// one instead; the reverse isn't offered, because promoting a bench item into a
+// pillar is a decision with a whole season behind it.
+const NEW_PILLAR_OPT = "__new_pillar__";
+function selectCaret(color) {
+  return "url(\"data:image/svg+xml;charset=utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5'><path d='M1 1L4 4L7 1' fill='none' stroke='"
+    + String(color).replace("#", "%23")
+    + "' stroke-width='1.4' stroke-linecap='round'/></svg>\")";
+}
+// The pillar tag, which is also the control that changes it. Tend belongs in
+// the list: it is where a season's leftovers legitimately go, and leaving it
+// out meant a suggestion already aimed at Tend rendered under whichever pillar
+// happened to be first. It wears its own greige rather than white-on-deep,
+// which at 10px reads as an unlabelled grey smudge.
+function PillarChipSelect({ value, cats, isNew, offersNew, disabled, onChange, title, style }) {
+  const cat = (cats || []).find(c => c.label === value);
+  const tend = cat && isTend(cat.id);
+  const ink = isNew ? ACCENT : (tend ? cat.ink : (cat ? "#FFFFFF" : MUTED));
+  return React.createElement("select", {
+    value: isNew ? NEW_PILLAR_OPT : (value || ""),
+    disabled: !!disabled,
+    title: title || "Choose a pillar",
+    onChange: e => onChange(e.target.value),
+    style: {
+      appearance: "none", WebkitAppearance: "none", MozAppearance: "none",
+      flexShrink: 0, maxWidth: 130,
+      fontSize: 10, fontWeight: 600, fontFamily: "inherit",
+      padding: "3px 16px 3px 7px",
+      borderRadius: 3,
+      color: ink,
+      backgroundColor: isNew ? "transparent" : (tend ? cat.bg : (cat ? catDeep(cat) : WASH)),
+      backgroundImage: selectCaret(ink),
+      backgroundRepeat: "no-repeat",
+      backgroundPosition: "right 5px center",
+      border: isNew ? `1px solid ${ACCENT}` : (tend ? `1px solid ${cat.color}` : "1px solid transparent"),
+      cursor: disabled ? "default" : "pointer",
+      outline: "none",
+      ...(style || {})
+    }
+  },
+    offersNew && React.createElement("option", {
+      key: "__new__", value: NEW_PILLAR_OPT, style: { color: INK, backgroundColor: PAPER }
+    }, "A new pillar"),
+    (cats || []).map(c => React.createElement("option", {
+      key: c.id, value: c.label, style: { color: INK, backgroundColor: PAPER }
+    }, c.label))
+  );
+}
+
+function SeasonActionRow({ item, cats, canEdit, onApply, onDismiss, onEdit, onRepillar }) {
   const [armed, setArmed] = useState(false);
   const isPillar = item.kind === "pillar";
-  const cat = (cats || []).find(c => c.label === item.pillar);
   if (item.status === "applied") {
+    // A decision worth making is worth seeing. An unfilled square is how this
+    // app already draws something real but not yet lived — the shape a pillar
+    // wears while it is still only a suggestion. It takes the season's accent
+    // rather than the pillar's colour: the pillar palette is deliberately muted
+    // and reads as grey at 10px, and these marks are the one place in the
+    // reading where something was decided.
     return React.createElement("div", {
-      style: { marginBottom: 14, fontSize: 12, color: MUTED }
-    }, isPillar
-      ? `\u2713 ${item.text} \u2014 added as a pillar`
-      : `\u2713 ${item.text} \u2014 on your ${item.pillar} bench`);
-  }
-  if (item.status === "dismissed") return null;
-  return React.createElement("div", { style: { marginBottom: 16, maxWidth: "38em" } },
-    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 5 } },
+      style: { display: "flex", alignItems: "baseline", gap: 8, marginBottom: 9, maxWidth: "38em" }
+    },
       React.createElement("span", {
         style: {
-          fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 3, whiteSpace: "nowrap",
-          color: isPillar ? ACCENT : (cat ? "#FFFFFF" : MUTED),
-          background: isPillar ? "transparent" : (cat ? catDeep(cat) : WASH),
-          border: isPillar ? `1px solid ${ACCENT}` : undefined
+          flexShrink: 0, width: 10, height: 10, borderRadius: 3,
+          border: `1.5px solid ${ACCENT}`, background: "transparent",
+          position: "relative", top: 1
         }
-      }, isPillar ? "A new pillar" : item.pillar)
-    ),
+      }),
+      React.createElement("div", { style: { minWidth: 0, fontSize: 13, color: INK, lineHeight: 1.45 } },
+        item.text,
+        React.createElement("span", { style: { fontSize: 11.5, color: MUTED } },
+          isPillar ? " \u2014 added as a new pillar" : ` \u2014 added to your ${item.pillar} ideas`)
+      )
+    );
+  }
+  if (item.status === "dismissed") return null;
+  const offersNew = isPillar || !!item.wasPillar;
+  return React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 9, maxWidth: "38em" }
+  },
+    React.createElement(PillarChipSelect, {
+      value: item.pillar,
+      cats,
+      isNew: isPillar,
+      offersNew,
+      disabled: !canEdit,
+      title: "File it on a different pillar",
+      onChange: v => {
+        setArmed(false);
+        onRepillar(v === NEW_PILLAR_OPT
+          ? { kind: "pillar", pillar: "", wasPillar: true }
+          : { kind: "idea", pillar: v, wasPillar: offersNew });
+      }
+    }),
+    // The model's reasoning still comes back with each suggestion — it makes
+    // the suggestions better — but it sits in the tooltip rather than on the
+    // page. A one-line idea on a named pillar explains itself.
     React.createElement("input", {
       value: item.text,
       readOnly: !canEdit,
+      title: item.why || undefined,
       onChange: e => onEdit(e.target.value),
       style: {
-        width: "100%",
+        flex: "1 1 auto", minWidth: 0,
         boxSizing: "border-box",
         border: `1px solid ${NEUTRAL_OUTLINE}`,
         borderRadius: TILE_RADIUS,
         background: "transparent",
-        padding: "8px 10px",
+        padding: "6px 9px",
         fontFamily: "inherit",
         fontSize: 13,
         color: INK,
         outline: "none"
       }
     }),
-    item.why && React.createElement("div", {
-      style: { fontSize: 11.5, lineHeight: 1.5, color: MUTED, marginTop: 5 }
-    }, item.why),
-    canEdit && React.createElement("div", { style: { display: "flex", gap: 14, marginTop: 7, alignItems: "center" } },
-      // Filing an idea is reversible in one gesture; adding a pillar changes
-      // the shape of every week that follows, so it asks twice.
-      React.createElement("button", {
-        onClick: () => {
-          if (!isPillar) return onApply();
-          if (armed) { setArmed(false); return onApply(); }
-          setArmed(true);
-        },
-        onBlur: () => setArmed(false),
-        style: {
-          border: `${PLAN_BORDER_W}px solid ${ACCENT}`, borderRadius: TILE_RADIUS, background: "transparent",
-          padding: "4px 10px", fontSize: 11.5, fontWeight: 600, fontFamily: "inherit", color: ACCENT, cursor: "pointer"
-        }
-      }, isPillar
-        ? (armed ? "Add it \u2014 tap again" : `Add ${item.text} as a pillar`)
-        : `Add to ${item.pillar}`),
-      React.createElement("button", {
-        onClick: onDismiss,
-        style: {
-          background: "none", border: "none", padding: 0, cursor: "pointer",
-          fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: MUTED
-        }
-      }, "Not this one")
-    )
+    // Filing an idea is reversible in one gesture; adding a pillar changes the
+    // shape of every week that follows, so it asks twice.
+    canEdit && React.createElement("button", {
+      onClick: () => {
+        if (!isPillar) return onApply();
+        if (armed) { setArmed(false); return onApply(); }
+        setArmed(true);
+      },
+      onBlur: () => setArmed(false),
+      style: {
+        flexShrink: 0,
+        border: `${PLAN_BORDER_W}px solid ${ACCENT}`, borderRadius: TILE_RADIUS, background: "transparent",
+        padding: "4px 10px", fontSize: 11.5, fontWeight: 600, fontFamily: "inherit", color: ACCENT, cursor: "pointer"
+      }
+    }, isPillar ? (armed ? "Tap again" : "Add as pillar") : "Add"),
+    canEdit && React.createElement("button", {
+      onClick: onDismiss,
+      title: "Not this one",
+      "aria-label": "Not this one",
+      style: {
+        flexShrink: 0, background: "none", border: "none", padding: "0 2px",
+        cursor: "pointer", fontFamily: "inherit", fontSize: 15, lineHeight: 1, color: MUTED
+      }
+    }, "\u00D7")
   );
 }
 
-function SeasonActions({ entry, cats, canEdit, busy, error, onSuggest, onApply, onDismiss, onEdit, onAddOwn, aiReady }) {
+function SeasonActions({ entry, cats, canEdit, busy, error, note, onSuggest, onApply, onDismiss, onEdit, onRepillar, onAddOwn, aiReady }) {
   const [ownText, setOwnText] = useState("");
   const [ownPillar, setOwnPillar] = useState("");
   const actions = entry.actions || null;
   const items = (actions && actions.items) || [];
   const live = items.filter(it => it.status !== "dismissed");
+  // Anything decided on leaves the queue and collects at the top. Filing one
+  // in place leaves it sitting among the things still being weighed, so the
+  // list stops reading as a list of open questions — and the pile of what you
+  // chose is the part worth looking at on the way out.
+  const added = live.filter(it => it.status === "applied");
+  const pending = live.filter(it => it.status !== "applied");
   const answered = Object.keys(entry.notes || {}).filter(k => String((entry.notes || {})[k] || "").trim()).length;
-  const pillars = (cats || []).filter(c => !isTend(c.id));
-  const pillarName = ownPillar || (pillars[0] ? pillars[0].label : "");
+  // Tend is a place a season's leftovers can land, so it is offered here too.
+  // The default is still the first real pillar: a season should not open with
+  // its conclusions pointed at the chores row.
+  const first = (cats || []).find(c => !isTend(c.id)) || (cats || [])[0];
+  const pillarName = ownPillar || (first ? first.label : "");
   return React.createElement("div", { style: { marginBottom: 10 } },
     React.createElement(SeasonSectionHead, {
       num: "04",
@@ -7211,23 +7360,61 @@ function SeasonActions({ entry, cats, canEdit, busy, error, onSuggest, onApply, 
         }
       }, busy ? "Thinking it over\u2026" : "Suggest a few")
     ),
-    actions && live.length === 0 && React.createElement("div", {
+    // Only when the model genuinely returned nothing. Once there are dismissed
+    // rows behind it, an empty list means they cleared it, not that the season
+    // had nothing in it.
+    actions && items.length === 0 && React.createElement("div", {
       style: { fontSize: 12.5, lineHeight: 1.6, color: INK_2, marginBottom: 12, maxWidth: "38em" }
     }, "Nothing suggested itself this time. Whatever you want to carry forward, write it below."),
-    live.map(it => React.createElement(SeasonActionRow, {
+    added.length > 0 && React.createElement("div", { style: { marginBottom: pending.length ? 18 : 6 } },
+      React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 7px" } }, "Carrying forward"),
+      added.map(it => React.createElement(SeasonActionRow, {
+        key: it.id,
+        item: it,
+        cats,
+        canEdit,
+        onApply: () => {},
+        onDismiss: () => {},
+        onEdit: () => {},
+        onRepillar: () => {}
+      }))
+    ),
+    pending.map(it => React.createElement(SeasonActionRow, {
       key: it.id,
       item: it,
       cats,
       canEdit,
       onApply: () => onApply(it),
       onDismiss: () => onDismiss(it),
-      onEdit: text => onEdit(it, text)
+      onEdit: text => onEdit(it, text),
+      onRepillar: patch => onRepillar(it, patch)
     })),
-    // Anything the app didn't think of. The list is a starting point, not the
-    // set of things a person is allowed to decide.
-    canEdit && React.createElement("div", { style: { marginTop: 18, maxWidth: "38em" } },
-      React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 6px" } }, "Something else you want to do?"),
-      React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+    // Asking for more belongs directly under the list it extends. Writing your
+    // own is the last word in the section, which is where it should be: the
+    // list is a starting point, not the set of things a person may decide.
+    actions && note && React.createElement("div", {
+      style: { fontSize: 12, lineHeight: 1.55, color: INK_2, marginTop: 2, marginBottom: 8, maxWidth: "34em" }
+    }, note),
+    actions && canEdit && aiReady && React.createElement("button", {
+      onClick: onSuggest,
+      disabled: busy,
+      style: {
+        marginTop: 4, background: "none", border: "none", padding: 0,
+        cursor: busy ? "default" : "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600,
+        color: busy ? MUTED : ACCENT, textDecoration: "underline", textDecorationColor: "#E0B296", textUnderlineOffset: 3
+      }
+    }, busy ? "Thinking it over\u2026" : "Suggest more"),
+    canEdit && React.createElement("div", { style: { marginTop: 20, maxWidth: "38em" } },
+      React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 6px" } }, "Add your own"),
+      // Same three parts in the same order as a suggestion — pillar, words,
+      // Add. Writing your own is the same act as keeping one of theirs, so it
+      // should not be a differently shaped control.
+      React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+        React.createElement(PillarChipSelect, {
+          value: pillarName,
+          cats,
+          onChange: v => setOwnPillar(v)
+        }),
         React.createElement("input", {
           value: ownText,
           onChange: e => setOwnText(e.target.value),
@@ -7236,37 +7423,21 @@ function SeasonActions({ entry, cats, canEdit, busy, error, onSuggest, onApply, 
           },
           placeholder: "In your own words",
           style: {
-            flex: "1 1 200px", minWidth: 0, boxSizing: "border-box",
+            flex: "1 1 auto", minWidth: 0, boxSizing: "border-box",
             border: `1px solid ${NEUTRAL_OUTLINE}`, borderRadius: TILE_RADIUS, background: "transparent",
-            padding: "8px 10px", fontFamily: "inherit", fontSize: 13, color: INK, outline: "none"
+            padding: "6px 9px", fontFamily: "inherit", fontSize: 13, color: INK, outline: "none"
           }
         }),
-        React.createElement("select", {
-          value: pillarName,
-          onChange: e => setOwnPillar(e.target.value),
-          style: {
-            border: `1px solid ${NEUTRAL_OUTLINE}`, borderRadius: TILE_RADIUS, background: "transparent",
-            padding: "8px 8px", fontFamily: "inherit", fontSize: 12.5, color: INK_2, outline: "none"
-          }
-        }, pillars.map(c => React.createElement("option", { key: c.id, value: c.label }, c.label))),
         React.createElement("button", {
           onClick: () => { if (ownText.trim()) { onAddOwn(pillarName, ownText.trim()); setOwnText(""); } },
           style: {
+            flexShrink: 0,
             border: `${PLAN_BORDER_W}px solid ${ACCENT}`, borderRadius: TILE_RADIUS, background: "transparent",
-            padding: "6px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", color: ACCENT, cursor: "pointer"
+            padding: "4px 10px", fontSize: 11.5, fontWeight: 600, fontFamily: "inherit", color: ACCENT, cursor: "pointer"
           }
-        }, "Add it")
+        }, "Add")
       )
-    ),
-    actions && canEdit && aiReady && React.createElement("button", {
-      onClick: onSuggest,
-      disabled: busy,
-      style: {
-        marginTop: 16, background: "none", border: "none", padding: 0,
-        cursor: busy ? "default" : "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600,
-        color: busy ? MUTED : ACCENT, textDecoration: "underline", textDecorationColor: "#E0B296", textUnderlineOffset: 3
-      }
-    }, busy ? "Thinking it over\u2026" : "Suggest again")
+    )
   );
 }
 
@@ -7278,7 +7449,7 @@ function SeasonActions({ entry, cats, canEdit, busy, error, onSuggest, onApply, 
 // is the wrong shape for something meant to be sat down with. Opening it takes
 // over the screen because that is what reading it asks for.
 // ---------------------------------------------------------------------------
-function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPillarPurpose, onPillarTarget, onPillarRename, onRegenerate, busy, error, aiReady, actionsBusy, actionsError, onSuggestActions, onApplyAction, onDismissAction, onEditAction, onAddOwnAction }) {
+function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPillarPurpose, onPillarTarget, onPillarRename, onRegenerate, busy, error, aiReady, actionsBusy, actionsError, onSuggestActions, onApplyAction, onDismissAction, onEditAction, onRepillarAction, onAddOwnAction, actionsNote }) {
   const r = entry.reading || {};
   // A sneak peek is a draft of a season that hasn't happened yet. It is drained
   // of colour and of every place to write back: answering an insight is the
@@ -7553,10 +7724,12 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
           aiReady,
           busy: actionsBusy,
           error: actionsError,
+          note: actionsNote,
           onSuggest: onSuggestActions,
           onApply: onApplyAction,
           onDismiss: onDismissAction,
           onEdit: onEditAction,
+          onRepillar: onRepillarAction,
           onAddOwn: onAddOwnAction
         })
 
@@ -8541,13 +8714,26 @@ function ReflectionsPanel({
 }
 
 // ---------------------------------------------------------------------------
-// GoalsPanel
+// PulsePanel
 //
-// The sidebar's intentions tab: how many days a week the user means to touch
-// each pillar, and how they're tracking against it. Pillars with an intention
-// set are listed first; the rest are offered below.
+// The sidebar's read on the week: for each pillar, how many days of it have
+// been lived, how many are still on the calendar ahead, and — where a weekly
+// number exists — how far that leaves you from it.
 //
-// The panel also drives the week's focus. Reviewing an intention is a question
+// It authors nothing. A pillar's name, its why and its weekly number are all
+// decided in Pillars, where the whole set is in view and the number sits
+// directly under the reason for it. Setting a target used to happen here,
+// beside this week's count, which quietly made the number a reaction to one
+// week's shortfall rather than a standing answer to what the pillar is for.
+//
+// Because the why and the number are both optional and usually arrive late,
+// this panel has to be worth opening before either exists. So every pillar is
+// listed, in the same order as everywhere else: with a target it draws the
+// mosaic and names the gap, and without one it simply says what happened.
+// A count is a perfectly good pulse. Nothing here asks for a number — that
+// question belongs to a season, where there is evidence to answer it with.
+//
+// The panel also drives the week's focus. Reviewing a pillar is a question
 // about the week — five of seven, so which five, and what was on the two that
 // got away — and that answer lives in the grid, not in this list. Tapping a
 // pillar here lights it in the week behind the panel and dims the rest, and
@@ -8558,26 +8744,21 @@ function ReflectionsPanel({
 // them.
 // ---------------------------------------------------------------------------
 function GoalsPanel({
-  goalCats,
-  noGoalCats,
+  pillarCats,
   getGoal,
   progressFor,
-  onSetGoal,
-  onSetPurpose,
-  onRemoveGoal,
   canEdit,
   weekLabelText,
   selectedPillar,
   onFocusPillar,
   onClose
 }) {
-  const [expanded, setExpanded] = useState(null);
-  const focusedCat = [...goalCats, ...noGoalCats].find(c => c.id === selectedPillar) || null;
+  const focusedCat = (pillarCats || []).find(c => c.id === selectedPillar) || null;
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PanelHeader, {
-      eyebrow: "Intentions",
+      eyebrow: "Pulse",
       readOnly: !canEdit,
       title: weekLabelText,
-      subtitle: "A weekly number, and what it's for",
+      subtitle: "How the week is shaping up",
       onClose: onClose
     }),
     // The focus is set from the rows but cleared from here. Once a pillar is
@@ -8633,7 +8814,7 @@ function GoalsPanel({
         overflowY: "auto",
         padding: "14px 16px"
       }
-    }, noGoalCats.length === 0 && goalCats.length === 0 && /*#__PURE__*/React.createElement("div", {
+    }, (pillarCats || []).length === 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12,
         color: MUTED,
@@ -8645,8 +8826,9 @@ function GoalsPanel({
         flexDirection: "column",
         gap: 2
       }
-    }, goalCats.map(cat => {
+    }, (pillarCats || []).map(cat => {
       const goal = getGoal(cat.id);
+      const hasGoal = goal != null;
       const {
         doneCount,
         plannedCount
@@ -8655,28 +8837,24 @@ function GoalsPanel({
       // priority order — lived first, then planned, then whatever's left
       // open. The written breakdown below reports the true counts, so a week
       // planned past its target still says so instead of quietly clipping.
-      const doneSeg = Math.min(doneCount, goal);
-      const plannedSeg = Math.min(plannedCount, Math.max(0, goal - doneSeg));
-      const openSeg = Math.max(0, goal - doneSeg - plannedSeg);
-      const exceeded = Math.max(0, doneCount - goal);
-      const overPlanned = Math.max(0, plannedCount - plannedSeg);
-      const breakdown = `${doneCount} done \u00b7 ${plannedCount} planned \u00b7 ${openSeg} open`;
-      const isExpanded = expanded === cat.id;
-      // The intention reads as the week's mosaic in miniature: one cell per
-      // day meant for this pillar, in exactly the three states a tile can be
-      // in — flooded when lived, outlined when planned, faint when still
-      // open. A ring could only ever be a dashboard; this is the thing being
-      // filled in.
+      const doneSeg = hasGoal ? Math.min(doneCount, goal) : doneCount;
+      const plannedSeg = hasGoal ? Math.min(plannedCount, Math.max(0, goal - doneSeg)) : plannedCount;
+      const openSeg = hasGoal ? Math.max(0, goal - doneSeg - plannedSeg) : 0;
+      const exceeded = hasGoal ? Math.max(0, doneCount - goal) : 0;
+      const overPlanned = hasGoal ? Math.max(0, plannedCount - plannedSeg) : 0;
+      const breakdown = hasGoal
+        ? `${doneCount} done \u00b7 ${plannedCount} planned \u00b7 ${openSeg} open`
+        : `${doneCount} done \u00b7 ${plannedCount} planned`;
+      // The pulse reads as the week's mosaic in miniature: one cell per day
+      // meant for this pillar, in exactly the three states a tile can be in —
+      // flooded when lived, outlined when planned, faint when still open. A
+      // ring could only ever be a dashboard; this is the thing being filled
+      // in. Without a target there is no shape to fill, so the row says its
+      // numbers plainly and draws nothing.
       const deep = catDeep(cat);
-      // Two gestures, two targets. The body of the row asks the week a
-      // question — light this pillar, dim the others — and the count asks the
-      // intention one: seven, or was five always the honest number? They used
-      // to share a single click, which was fine when the row only did one
-      // thing and impossible once it did two. The count carries the target it
-      // edits, so it edits in place rather than through a pencil.
       const isLit = selectedPillar === cat.id;
       const dimmed = selectedPillar != null && !isLit;
-      const cells = Array.from({ length: goal }, (_, i) => {
+      const cells = hasGoal ? Array.from({ length: goal }, (_, i) => {
         const lived = i < doneSeg;
         const planned = !lived && i < doneSeg + plannedSeg;
         return /*#__PURE__*/React.createElement("span", {
@@ -8691,7 +8869,7 @@ function GoalsPanel({
               : `1.5px solid ${NEUTRAL_OUTLINE}`
           }
         });
-      });
+      }) : null;
       return /*#__PURE__*/React.createElement("div", {
         key: cat.id,
         style: {
@@ -8717,7 +8895,7 @@ function GoalsPanel({
           display: "flex",
           alignItems: "baseline",
           gap: 8,
-          marginBottom: 7
+          marginBottom: hasGoal ? 7 : 0
         }
       }, /*#__PURE__*/React.createElement("span", {
         style: {
@@ -8732,34 +8910,17 @@ function GoalsPanel({
           textOverflow: "ellipsis",
           whiteSpace: "nowrap"
         }
-      }, cat.label), canEdit ? /*#__PURE__*/React.createElement("button", {
-        onClick: e => {
-          e.stopPropagation();
-          setExpanded(isExpanded ? null : cat.id);
-        },
-        title: `Weekly target: ${goal} day${goal === 1 ? "" : "s"} \u00b7 Tap to change`,
-        style: {
-          fontSize: 11,
-          fontWeight: 700,
-          color: catInk(cat),
-          flexShrink: 0,
-          cursor: "pointer",
-          fontFamily: "inherit",
-          padding: "1px 6px",
-          lineHeight: 1.35,
-          alignSelf: "center",
-          ...pillarChip(cat, false),
-          ...(isExpanded ? { background: cat.bg || PLAN_BG } : null),
-          color: catInk(cat)
-        }
-      }, `${doneCount}/${goal}`) : /*#__PURE__*/React.createElement("span", {
+      }, cat.label), /*#__PURE__*/React.createElement("span", {
+        title: hasGoal
+          ? `${doneCount} of ${goal} day${goal === 1 ? "" : "s"} this week`
+          : `${doneCount} day${doneCount === 1 ? "" : "s"} this week`,
         style: {
           fontSize: 11,
           fontWeight: 700,
           color: catInk(cat),
           flexShrink: 0
         }
-      }, `${doneCount}/${goal}`), exceeded > 0 && /*#__PURE__*/React.createElement("span", {
+      }, hasGoal ? `${doneCount}/${goal}` : String(doneCount)), exceeded > 0 && /*#__PURE__*/React.createElement("span", {
         title: `Exceeded by ${exceeded}`,
         style: {
           fontSize: 10,
@@ -8770,31 +8931,23 @@ function GoalsPanel({
           borderRadius: 2,
           flexShrink: 0
         }
-      }, `+${exceeded}`)), /*#__PURE__*/React.createElement("div", {
+      }, `+${exceeded}`)), hasGoal && /*#__PURE__*/React.createElement("div", {
         style: { display: "flex", gap: 3 }
       }, cells),
-      // The purpose belongs in the open, next to the number it justifies.
-      // Behind a tap it was effectively invisible, which left the target
-      // reading as a quota to clear rather than a proxy for something the
-      // person actually wants. When it is unset the line is an invitation,
-      // not a warning — nobody owes this field an answer.
-      /*#__PURE__*/React.createElement("div", {
-        onClick: e => {
-          e.stopPropagation();
-          setExpanded(isExpanded ? null : cat.id);
-        },
+      // Their own words, read-only. This is the standard the numbers above
+      // are being read against, so it belongs in view — but it is edited
+      // where it is decided, next to the number it justifies, in Pillars.
+      cat.purpose && /*#__PURE__*/React.createElement("div", {
         style: {
           marginTop: 5,
           fontSize: 11,
           lineHeight: 1.5,
-          color: cat.purpose ? INK_2 : FAINT,
-          fontStyle: cat.purpose ? "normal" : "italic",
-          cursor: canEdit ? "pointer" : "default"
+          color: INK_2
         }
-      }, cat.purpose ? String(cat.purpose).trim() : (canEdit ? `Why ${cat.label}?` : "")),
+      }, String(cat.purpose).trim()),
       // The mosaic says how the week is shaped; this says it in numbers, so
-      // the three quantities the intention turns on — lived, still coming,
-      // and the gap to the target — are readable without hovering anything.
+      // the three quantities the week turns on — lived, still coming, and the
+      // gap to the target — are readable without hovering anything.
       /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
@@ -8811,177 +8964,14 @@ function GoalsPanel({
         style: { color: NEUTRAL_OUTLINE }
       }, "\u00b7"), /*#__PURE__*/React.createElement("span", {
         style: { fontWeight: 600, color: catDeep(cat) }
-      }, `${plannedCount} planned`), /*#__PURE__*/React.createElement("span", {
+      }, `${plannedCount} planned`), hasGoal && /*#__PURE__*/React.createElement("span", {
         style: { color: NEUTRAL_OUTLINE }
-      }, "\u00b7"), /*#__PURE__*/React.createElement("span", {
+      }, "\u00b7"), hasGoal && /*#__PURE__*/React.createElement("span", {
         style: { color: MUTED }
       }, `${openSeg} open`), overPlanned > 0 && /*#__PURE__*/React.createElement("span", {
         title: `${overPlanned} more day${overPlanned === 1 ? "" : "s"} planned than the target`,
         style: { color: MUTED }
-      }, `(+${overPlanned})`))), isExpanded && /*#__PURE__*/React.createElement("div", {
-        style: {
-          display: "flex",
-          gap: 4,
-          padding: "0 0 8px"
-        }
-      }, [1, 2, 3, 4, 5, 6, 7].map(v => /*#__PURE__*/React.createElement("button", {
-        key: v,
-        onClick: e => {
-          e.stopPropagation();
-          onSetGoal(cat.id, v);
-          setExpanded(null);
-        },
-        style: {
-          flex: 1,
-          height: 26,
-          fontSize: 11,
-          fontWeight: 700,
-          cursor: "pointer",
-          fontFamily: "inherit",
-          ...pillarChip(cat, v === goal)
-        }
-      }, v))), isExpanded && canEdit && /*#__PURE__*/React.createElement("textarea", {
-        value: cat.purpose || "",
-        onChange: e => onSetPurpose && onSetPurpose(cat.id, e.target.value),
-        onClick: e => e.stopPropagation(),
-        placeholder: `What do you want ${cat.label} to give you? This is the why behind the number.`,
-        rows: 2,
-        style: {
-          width: "100%",
-          boxSizing: "border-box",
-          marginBottom: 8,
-          border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
-          borderRadius: TILE_RADIUS,
-          background: TILE_PLAN_FILL,
-          padding: "6px 8px",
-          fontFamily: "inherit",
-          fontSize: 11.5,
-          lineHeight: 1.5,
-          color: PLAN_TEXT,
-          outline: "none",
-          resize: "vertical"
-        }
-      }), isExpanded && /*#__PURE__*/React.createElement("button", {
-        onClick: e => {
-          e.stopPropagation();
-          onRemoveGoal(cat.id);
-          setExpanded(null);
-        },
-        style: {
-          background: "none",
-          border: "none",
-          cursor: "pointer",
-          fontSize: 10,
-          color: MUTED,
-          padding: "0 0 10px",
-          fontFamily: "inherit",
-          textDecoration: "underline"
-        }
-      }, "Remove intention"));
-    })),
-    // While a pillar is lit, this block recedes with everything else. It isn't
-    // focusable — a pillar with no intention has nothing here to review, and
-    // its one control already means "pick a target" — but leaving it at full
-    // strength would make it the brightest thing on a panel that is supposed
-    // to be showing you one pillar.
-    canEdit && noGoalCats.length > 0 && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 10,
-        fontWeight: 600,
-        letterSpacing: "0.08em",
-        textTransform: "uppercase",
-        color: MUTED,
-        marginTop: goalCats.length > 0 ? 14 : 0,
-        marginBottom: 6,
-        opacity: selectedPillar != null ? 0.42 : 1,
-        transition: "opacity 0.12s ease"
-      }
-    }, "Set an intention"), canEdit && noGoalCats.length > 0 && /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        opacity: selectedPillar != null ? 0.42 : 1,
-        transition: "opacity 0.12s ease"
-      }
-    }, noGoalCats.map(cat => {
-      const isExpanded = expanded === cat.id;
-      return /*#__PURE__*/React.createElement("div", {
-        key: cat.id,
-        style: {
-          background: TILE_PLAN_FILL,
-          border: `${PLAN_BORDER_W}px solid ${cat.color}`,
-          borderRadius: TILE_RADIUS
-        }
-      }, /*#__PURE__*/React.createElement("button", {
-        onClick: () => setExpanded(isExpanded ? null : cat.id),
-        style: {
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          width: "100%",
-          padding: "7px 10px",
-          border: "none",
-          borderRadius: TILE_RADIUS,
-          background: "none",
-          cursor: "pointer",
-          fontFamily: "inherit",
-          textAlign: "left"
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: {
-          flex: 1,
-          minWidth: 0,
-          display: "flex",
-          flexDirection: "column",
-          gap: 1
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 11,
-          fontWeight: 700,
-          letterSpacing: "0.07em",
-          textTransform: "uppercase",
-          color: INK,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap"
-        }
-      }, cat.label)), /*#__PURE__*/React.createElement("div", {
-        style: {
-          width: 34,
-          height: 22,
-          flexShrink: 0,
-          borderRadius: 2,
-          border: `${PLAN_BORDER_W}px dashed ${hexA(cat.color, 0.55)}`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center"
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: { fontSize: 14, lineHeight: 1, color: cat.color }
-      }, "+"))), isExpanded && /*#__PURE__*/React.createElement("div", {
-        style: {
-          display: "flex",
-          gap: 4,
-          padding: "0 10px 8px"
-        }
-      }, [1, 2, 3, 4, 5, 6, 7].map(v => /*#__PURE__*/React.createElement("button", {
-        key: v,
-        onClick: () => {
-          onSetGoal(cat.id, v);
-          setExpanded(null);
-        },
-        style: {
-          flex: 1,
-          height: 26,
-          fontSize: 11,
-          fontWeight: 700,
-          cursor: "pointer",
-          fontFamily: "inherit",
-          ...plainChip(false)
-        }
-      }, v))));
+      }, `(+${overPlanned})`))));
     }))));
 }
 
@@ -10113,7 +10103,7 @@ function StartFreshDialog({ onClose, onConfirm }) {
       marginBottom: 20,
       lineHeight: 1.5
     }
-  }, "Erases My Plan across all weeks \u2014 entries, ideas, reflections, intentions \u2014 and resets your pillars. Shared plans aren't affected. Back it up first if you want to keep any of it."), /*#__PURE__*/React.createElement("button", {
+  }, "Erases My Plan across all weeks \u2014 entries, ideas, reflections, weekly targets \u2014 and resets your pillars. Shared plans aren't affected. Back it up first if you want to keep any of it."), /*#__PURE__*/React.createElement("button", {
     onClick: onConfirm,
     style: {
       width: "100%",
@@ -10673,6 +10663,11 @@ function Planner() {
   // the suggestion's original label. Lives only as long as the panel is
   // useful — once a suggestion is added it drops off the list anyway.
   const [suggestionNames, setSuggestionNames] = useState({});
+  // Which pillar in the Pillars panel has its why-and-how-often editor open.
+  // One at a time: the panel is a list of like things, and two open editors
+  // make it a form. Lives here rather than in the row because the panel is
+  // rendered inline and cannot hold hooks of its own.
+  const [pillarEditId, setPillarEditId] = useState(null);
 
   const [draggingCell, setDraggingCell] = useState(null);
   const [draggingCalItem, setDraggingCalItem] = useState(null);
@@ -10752,6 +10747,9 @@ function Planner() {
   const [seasonError, setSeasonError] = useState(null);
   const [seasonActionsBusy, setSeasonActionsBusy] = useState(false);
   const [seasonActionsError, setSeasonActionsError] = useState(null);
+  // Not an error — a pass that came back with nothing to add. Silence after a
+  // button press reads as a bug whether or not it is one.
+  const [seasonActionsNote, setSeasonActionsNote] = useState(null);
   const [openSeasonId, setOpenSeasonId] = useState(null);
   // Seasons is meant to arrive a few times a year rather than be checked on,
   // so the rail says when there's one waiting: the season that just ended, if
@@ -11059,17 +11057,30 @@ function Planner() {
     if (!isOwnView || !entry) return;
     setSeasonActionsBusy(true);
     setSeasonActionsError(null);
+    setSeasonActionsNote(null);
     try {
-      // Anything already filed stays on the list, and is handed to the model
-      // so a second pass doesn't propose it again in different words. Only the
-      // unfiled suggestions are replaced.
-      const keptItems = (((entry.actions || {}).items) || []).filter(it => it.status === "applied");
+      // Anything already decided on stays on the list and is handed to the
+      // model, so a second pass doesn't propose it again in different words.
+      // That includes the ones turned down: a dismissed row renders as nothing,
+      // but it has to survive in storage or every later pass is free to offer
+      // it back. Only the undecided suggestions are replaced.
+      const allItems = ((entry.actions || {}).items) || [];
+      const keptItems = allItems.filter(it => it.status === "applied" || it.status === "dismissed");
       const actions = await generateSeasonActions(entry, {
         cats,
         ideas: ideasStore.ideas,
-        kept: keptItems.map(it => it.kind === "pillar" ? `${it.text} (added as a pillar)` : `${it.text} (${it.pillar})`)
+        kept: allItems.filter(it => it.status === "applied")
+          .map(it => it.kind === "pillar" ? `${it.text} (added as a pillar)` : `${it.text} (${it.pillar})`),
+        declined: allItems.filter(it => it.status === "dismissed").map(it => it.text),
+        avoid: keptItems.map(it => it.text)
       });
-      seasonsStore.setActions(seasonId, { ...actions, items: keptItems.concat(actions.items || []) });
+      const fresh = actions.items || [];
+      seasonsStore.setActions(seasonId, { generatedAt: actions.generatedAt, items: keptItems.concat(fresh) });
+      if (!fresh.length) {
+        setSeasonActionsNote(actions.dropped
+          ? "Nothing new this time \u2014 what came back was things you'd already added or passed on."
+          : "Nothing more worth suggesting for this season. That's an answer in itself, and a better one than a thin idea. Add your own below whenever something occurs to you.");
+      }
     } catch (err) {
       const msg = String((err && err.message) || err);
       setSeasonActionsError(
@@ -11955,7 +11966,7 @@ function Planner() {
     setSelectedPillar(next);
     if (next) openIdeasSidebar(catId);
   }
-  // The intentions panel's door. Same focus, no cargo: the whole point of
+  // The pulse panel's door. Same focus, no cargo: the whole point of
   // lighting a pillar from there is to keep reading the counts while the week
   // answers for them, and swapping the panel out for ideas would take away the
   // thing being explained.
@@ -13026,7 +13037,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v9.17.22")), (() => {
+  }, "v9.18.13")), (() => {
     // Walking every stored week to size each season is the most expensive
     // read in the app. It only happens while the panel is actually open.
     const seasonShelf = !(sidebarOpen && sidebarTab === 'seasons') ? [] :
@@ -13034,10 +13045,15 @@ return /*#__PURE__*/React.createElement("div", {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
-    // Tend is absent from the intentions panel entirely — not listed as a
-    // pillar without a target yet, because there is no target to set.
-    const goalCats = displayCats.filter(c => !isTend(c.id) && getGoal(c.id) != null);
-    const noGoalCats = displayCats.filter(c => !isTend(c.id) && getGoal(c.id) == null);
+    // Tend is absent from the pulse entirely. It carries no weekly number by
+    // design, and a row of errand counts sitting among the pillars would read
+    // as one more thing being kept score of.
+    //
+    // Everything else appears in its usual order whether or not it has a
+    // target: the panel splitting into "tracked" and "untracked" halves was a
+    // consequence of it being the place targets were set, and targets are set
+    // in Pillars now.
+    const pulseCats = displayCats.filter(c => !isTend(c.id));
     return /*#__PURE__*/React.createElement("div", {
       style: {
         position: "fixed",
@@ -13102,13 +13118,9 @@ return /*#__PURE__*/React.createElement("div", {
       onConnectAI: () => setShowAIConnection(true),
       onClose: closeSidebar
     }), sidebarTab === 'goals' && /*#__PURE__*/React.createElement(GoalsPanel, {
-      onSetPurpose: (id, text) => saveCats(pillarOps.setPurpose(cats, id, text)),
-      goalCats: goalCats,
-      noGoalCats: noGoalCats,
+      pillarCats: pulseCats,
       getGoal: getGoal,
       progressFor: computeIntentionProgress,
-      onSetGoal: (catId, v) => saveGoals({ ...goals, [catId]: v }),
-      onRemoveGoal: removeGoal,
       canEdit: isOwnView,
       weekLabelText: weekLabel(dates),
       selectedPillar: selectedPillar,
@@ -13145,7 +13157,7 @@ return /*#__PURE__*/React.createElement("div", {
     // nothing else in the app says out loud.
     title: managedCats.length + " Active",
     titleCaps: true,
-    onClose: () => { setCatTyping(false); setCatCustomInput(""); setSuggestionNames({}); closeSidebar(); }
+    onClose: () => { setCatTyping(false); setCatCustomInput(""); setSuggestionNames({}); setPillarEditId(null); closeSidebar(); }
   }),
   /*#__PURE__*/React.createElement("div", {
     style: { flex: 1, overflowY: "auto", padding: "12px 14px" }
@@ -13163,6 +13175,18 @@ return /*#__PURE__*/React.createElement("div", {
       const dropLine = /*#__PURE__*/React.createElement("div", {
         style: { height: 2, background: ACCENT, borderRadius: 1, margin: "0 0 4px" }
       });
+      // A pillar is a name, optionally a why, and optionally a number of days
+      // a week that the why is worth. The last two are genuinely optional and
+      // most will arrive late — at a season, with three months of evidence —
+      // so an unanswered row shows one faint invitation and nothing else. Two
+      // empty fields per row would turn this list into a form, which is the
+      // thing that stops people naming pillars at all.
+      const goalVal = getGoal(cat.id);
+      const purposeRaw = String(cat.purpose || "");
+      const purposeText = purposeRaw.trim();
+      const isEditing = pillarEditId === cat.id;
+      const hasAnswer = goalVal != null || !!purposeText;
+      const openEditor = () => setPillarEditId(isEditing ? null : cat.id);
       return /*#__PURE__*/React.createElement(React.Fragment, {
         key: cat.id
       }, isTarget && dragPos === "above" && dropLine, /*#__PURE__*/React.createElement("div", {
@@ -13170,9 +13194,6 @@ return /*#__PURE__*/React.createElement("div", {
       onDrop: e => handleRowDrop(e, cat.id),
       style: {
         position: "relative",
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
         padding: "10px 12px",
         paddingLeft: TILE_INDENT,
         marginBottom: 6,
@@ -13183,8 +13204,16 @@ return /*#__PURE__*/React.createElement("div", {
         transition: "opacity 0.15s ease",
         cursor: "default"
       }
-    }, /*#__PURE__*/React.createElement("span", {
-      "aria-hidden": "true",
+    },
+    // The band is the handle. It is already the full height of the row and
+    // the one part of it that belongs to no other control, so making it the
+    // grip costs nothing and gives back the space the dots were using. Three
+    // faint ticks keep it legible as something to hold.
+    /*#__PURE__*/React.createElement("div", {
+      draggable: true,
+      onDragStart: e => handleRowDragStart(e, cat.id, "sidebar"),
+      onDragEnd: resetRowDrag,
+      title: "Drag to reorder",
       style: {
         position: "absolute",
         left: 0,
@@ -13194,42 +13223,155 @@ return /*#__PURE__*/React.createElement("div", {
         background: catDeep(cat),
         borderTopLeftRadius: Math.max(TILE_RADIUS - 1.5, 0),
         borderBottomLeftRadius: Math.max(TILE_RADIUS - 1.5, 0),
-        pointerEvents: "none"
+        cursor: "grab",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 2.5
       }
-    }), /*#__PURE__*/React.createElement("div", {
-      draggable: true,
-      onDragStart: e => handleRowDragStart(e, cat.id, "sidebar"),
-      onDragEnd: resetRowDrag,
-      title: "Drag to reorder",
-      style: { cursor: "grab", display: "flex", alignItems: "center", flexShrink: 0, marginLeft: -4 }
-    }, /*#__PURE__*/React.createElement(GripIcon, null)), /*#__PURE__*/React.createElement(EditablePillarName, {
+    }, [0, 1, 2].map(i => /*#__PURE__*/React.createElement("span", {
+      key: i,
+      "aria-hidden": "true",
+      style: {
+        width: 6,
+        height: 1.5,
+        borderRadius: 0.5,
+        background: hexA(PAPER, 0.45)
+      }
+    }))), /*#__PURE__*/React.createElement("div", {
+      style: { display: "flex", alignItems: "center", gap: 8 }
+    }, /*#__PURE__*/React.createElement(EditablePillarName, {
       value: cat.label,
+      inline: true,
       accentColor: cat.color,
-      editTitle: "Rename pillar",
+      editTitle: "Click to rename",
       onCommit: label => saveCats(pillarOps.rename(cats, cat.id, label)),
       textStyle: { fontSize: 13, color: INK, fontWeight: 500 }
     }),
-    // Sits left of the delete ×, so the row reads name → learn → remove and
-    // the destructive control keeps the end position it already had.
-    scienceSectionFor(cat.id) && /*#__PURE__*/React.createElement(ScienceInfoButton, {
-      pillarId: cat.id,
-      label: cat.label,
-      dim: catDeep(cat)
-    }),
+    // The door to the why and the number, on the name row rather than on a
+    // line of its own. A pillar nobody has answered for is then a single
+    // line with nothing unfinished hanging off it — which is the whole point
+    // of these two fields being optional. The bubble is the app's own mark
+    // for "words go here", and warmer than a gear.
+    // A chevron, not a bubble: the bubble means "write a reflection" every
+    // other place it appears, and this is a disclosure. It carries the only
+    // signal the collapsed row gives — the pillar's own ink when there is
+    // something behind it, faint when there isn't — and it asks for nothing.
     /*#__PURE__*/React.createElement("button", {
-      onClick: () => deleteCat(cat.id),
-      title: "Delete pillar",
+      onClick: openEditor,
+      title: isEditing ? "Close" : "Purpose and weekly target",
+      "aria-expanded": isEditing ? "true" : "false",
       style: {
         background: "none",
         border: "none",
         cursor: "pointer",
-        fontSize: 16,
-        lineHeight: 1,
-        color: PLAN_MUTED,
         padding: 2,
-        flexShrink: 0
+        lineHeight: 0,
+        flexShrink: 0,
+        color: isEditing ? catDeep(cat) : (hasAnswer ? catInk(cat) : FAINT)
       }
-    }, "\u00d7")), isTarget && dragPos === "below" && dropLine);
+    }, /*#__PURE__*/React.createElement("svg", {
+      width: 11,
+      height: 11,
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: 2.4,
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      style: {
+        transform: isEditing ? "rotate(90deg)" : "none",
+        transition: "transform 0.15s ease"
+      }
+    }, /*#__PURE__*/React.createElement("path", { d: "M9 5l7 7-7 7" })))),
+    // What a pillar is for and what it costs in a week, plus the way to
+    // remove it. The name is not in here: it is edited by clicking it on the
+    // row, which is one tap from anywhere and the same gesture an idea takes
+    // in the Ideas panel.
+    //
+    // Purpose and target are named as the rest of the app names them, rather
+    // than in friendlier words that only make sense in this one panel. The
+    // purpose sits above the number so the number reads as serving something.
+    isEditing && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 9,
+        display: "flex",
+        flexDirection: "column",
+        gap: 9
+      }
+    },
+      /*#__PURE__*/React.createElement("div", null,
+        /*#__PURE__*/React.createElement("div", {
+          style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 4px" }
+        }, "Purpose"),
+        /*#__PURE__*/React.createElement("textarea", {
+          value: purposeRaw,
+          onChange: e => saveCats(pillarOps.setPurpose(cats, cat.id, e.target.value)),
+          rows: 2,
+          // Names the pillar nowhere: it is already the heading of this card,
+          // and every pillar name is a verb, which makes any sentence built
+          // around one read badly.
+          placeholder: "What are you hoping this gives you?",
+          style: {
+            width: "100%",
+            boxSizing: "border-box",
+            border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+            borderRadius: TILE_RADIUS,
+            background: PAPER,
+            padding: "6px 8px",
+            fontFamily: "inherit",
+            fontSize: 11.5,
+            lineHeight: 1.5,
+            color: INK_2,
+            outline: "none",
+            resize: "vertical"
+          }
+        })
+      ),
+      // Seven squares, filled up to the number chosen, so the control reads as
+      // an amount rather than seven mutually exclusive options \u2014 four days is
+      // four squares, the same way the week's own mosaic fills. Tapping the
+      // last filled one empties the run, which is how a target was cleared
+      // before this panel existed and is why the row needs no eighth control.
+      /*#__PURE__*/React.createElement("div", null,
+        /*#__PURE__*/React.createElement("div", {
+          style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 4px" }
+        }, "Weekly target"),
+        /*#__PURE__*/React.createElement("div", {
+          style: { display: "flex", gap: 4 }
+        }, [1, 2, 3, 4, 5, 6, 7].map(v => /*#__PURE__*/React.createElement("button", {
+          key: v,
+          onClick: () => v === goalVal ? removeGoal(cat.id) : saveGoals({ ...goals, [cat.id]: v }),
+          title: v === goalVal
+            ? "Tap again for no weekly target"
+            : `${v} day${v === 1 ? "" : "s"} a week`,
+          style: {
+            flex: 1,
+            height: 24,
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: "pointer",
+            fontFamily: "inherit",
+            ...pillarChip(cat, goalVal != null && v <= goalVal)
+          }
+        }, v)))
+      ),
+      /*#__PURE__*/React.createElement("button", {
+        onClick: () => deleteCat(cat.id),
+        style: {
+          alignSelf: "flex-start",
+          background: "none",
+          border: "none",
+          padding: "2px 0 0",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          fontSize: 10.5,
+          color: MUTED,
+          textDecoration: "underline"
+        }
+      }, `Remove ${cat.label}`)
+    )), isTarget && dragPos === "below" && dropLine);
     }),
     newSuggestions.length > 0 && /*#__PURE__*/React.createElement("div", {
       style: { ...SIDEBAR_SECTION_LABEL, marginTop: 18 }
@@ -13346,7 +13488,7 @@ return /*#__PURE__*/React.createElement("div", {
       } : null,
       active: (isOwnView && externalItemDrag) || (sidebarOpen && sidebarTab === 'reflections'),
       activeBg: isOwnView && externalItemDrag ? REFLECT_BG : PAPER,
-      // Open is black here, the same as Ideas, Intentions and Pillars: an open
+      // Open is black here, the same as Ideas, Pulse and Pillars: an open
       // panel is an open panel, and this one had no reason to announce itself
       // differently. The purple is kept for the drag alone, where it isn't
       // saying "this is open" but "you can let go here" — and with the caption
@@ -13394,7 +13536,7 @@ return /*#__PURE__*/React.createElement("div", {
         boxShadow: `0 0 0 2px ${PAPER}`
       }
     }))), /*#__PURE__*/React.createElement(RailButton, {
-      title: "Intentions",
+      title: "Pulse",
       active: sidebarOpen && sidebarTab === 'goals',
       onToggle: () => sidebarOpen && sidebarTab === 'goals' ? closeSidebar() : openGoalsSidebar()
     }, /*#__PURE__*/React.createElement("svg", {
@@ -13450,10 +13592,12 @@ return /*#__PURE__*/React.createElement("div", {
     aiReady: readAIConnection().ready,
     actionsBusy: seasonActionsBusy,
     actionsError: seasonActionsError,
+    actionsNote: seasonActionsNote,
     onSuggestActions: () => suggestSeasonActions(openSeasonId),
     onApplyAction: item => applySeasonSuggestion(openSeasonId, item),
     onDismissAction: item => seasonsStore.setActionState(openSeasonId, item.id, { status: "dismissed" }),
     onEditAction: (item, text) => seasonsStore.setActionState(openSeasonId, item.id, { text }),
+    onRepillarAction: (item, patch) => seasonsStore.setActionState(openSeasonId, item.id, patch),
     onAddOwnAction: (pillar, text) => addOwnSeasonAction(openSeasonId, pillar, text),
     onPillarPurpose: (id, text) => saveCats(pillarOps.setPurpose(cats, id, text)),
     onPillarTarget: (id, v) => saveGoals({ ...goals, [id]: v }),
