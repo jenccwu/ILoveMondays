@@ -701,9 +701,10 @@ function migrateTendStorage() {
     });
     if (touched) db.write(K.ideas, next);
   }
-  // A retired pillar's weekly target outlives it the same way, and shows up as
-  // a phantom row in the pulse panel. Drop targets whose pillar is gone,
-  // and never let Tend hold one — a row that doesn't count can't have a goal.
+  // A retired pillar's weekly target outlives it the same way, and would show
+  // up as a phantom line on a row that no longer exists. Drop targets whose
+  // pillar is gone, and never let Tend hold one — a row that doesn't count
+  // can't have a goal.
   const goals = db.read(K.goals);
   if (hasStoredCats && goals && typeof goals === "object") {
     const ng = {};
@@ -711,6 +712,45 @@ function migrateTendStorage() {
       if (known.has(id) && !isTend(id)) ng[id] = goals[id];
     });
     if (Object.keys(ng).length !== Object.keys(goals).length) db.write(K.goals, ng);
+  }
+  // Reflections used to name their pillar and nothing else, so renaming a
+  // pillar orphaned everything ever written about it — its count on the row,
+  // its evidence in a season. They carry the pillar's id now, and this matches
+  // the old ones up by the name they were written under, once, on the first
+  // load that sees them. A pillar renamed before this ran can't be matched and
+  // stays orphaned: nothing recoverable is lost here, it was already lost.
+  const storedJournal = db.read(K.journal, {}) || {};
+  if (hasStoredCats && storedJournal && typeof storedJournal === "object") {
+    const idByLabel = {};
+    cats.forEach(c => { idByLabel[String(c.label || "").trim().toLowerCase()] = c.id; });
+    const idFor = label => idByLabel[String(label || "").trim().toLowerCase()];
+    let jTouched = false;
+    const nextJ = {};
+    Object.keys(storedJournal).forEach(wk => {
+      nextJ[wk] = (storedJournal[wk] || []).map(entry => {
+        const li = entry && entry.linkedItem;
+        if (!li) return entry;
+        // A day's own reflection names a weekday in this field and belongs to
+        // no pillar, so it must not adopt one that shares the name.
+        const isDayNote = !li.itemText && li.eventDate;
+        let next = li;
+        if (!isDayNote && li.catId == null && li.catLabel) {
+          const id = idFor(li.catLabel);
+          if (id) { next = { ...next, catId: id }; jTouched = true; }
+        }
+        if (Array.isArray(next.pillars) && next.pillars.some(x => x && x.id == null && x.label)) {
+          next = { ...next, pillars: next.pillars.map(x => {
+            if (!x || x.id != null || !x.label) return x;
+            const id = idFor(x.label);
+            if (!id) return x;
+            jTouched = true;
+            return { ...x, id };
+          }) };
+        }
+        return next === li ? entry : { ...entry, linkedItem: next };
+      });
+    });
+    if (jTouched) db.write(K.journal, nextJ);
   }
   if (!hasStoredCats) return;
   const moved = rawCats.length !== cats.length ||
@@ -920,10 +960,26 @@ function PanelHeader({ band, eyebrow, eyebrowColor = INK_3, readOnly, title, tit
 // ---------------------------------------------------------------------------
 // ReflectBubble
 //
-// The speech-bubble mark that stands for a reflection. It was drawn longhand in
-// six places at three sizes and three stroke weights, which meant the shape
-// itself — 47 characters of bezier — was six things to keep in step. Size and
-// weight are the only things any caller actually varied.
+// The mark that stands for a reflection. It was drawn longhand in six places at
+// three sizes and three stroke weights, which meant the shape itself was six
+// things to keep in step. Size and weight are the only things any caller
+// actually varied.
+//
+// It used to be a thought bubble — a cloud with two trailing dots. A thought
+// bubble means "something I thought"; this app's reflections are almost always
+// *about* something, tied to an activity, a day or a pillar, which is what a
+// comment is. The comment bubble says that, and it survives 10px far better:
+// the two trailing dots were the first thing to turn to mush at small sizes,
+// and the cloud's five arcs read as a blob once the stroke got near the gaps.
+//
+// Its ends are full semicircles rather than rounded corners. A boxed bubble
+// read as hard next to everything else, and corner detail is the first thing
+// to go at 10px anyway. Rounded, it is also the one soft shape in a squared
+// vocabulary — tiles, bands, the season's quarters are all square — which
+// suits the one part of the app that is about feeling rather than planning.
+//
+// One closed path, so a caller passing `fill` still gets a solid mark for
+// "a reflection exists here" without a second shape to keep in step.
 // ---------------------------------------------------------------------------
 function ReflectBubble({ size = 11, stroke = "currentColor", fill = "none", weight = 1.7 }) {
   return /*#__PURE__*/React.createElement("svg", {
@@ -932,10 +988,8 @@ function ReflectBubble({ size = 11, stroke = "currentColor", fill = "none", weig
     strokeLinecap: "round", strokeLinejoin: "round"
   },
     /*#__PURE__*/React.createElement("path", {
-      d: "M3.5 13.5 C2 13 2 11 3.5 9.5 C3 7 6 5.5 9 6.5 C10 4.5 15 4.5 17 6.5 C19 5.5 22 8 21 12 C20.5 15.5 17 17.5 12.5 17 C9 18 4 17 3.5 13.5Z"
-    }),
-    /*#__PURE__*/React.createElement("circle", { cx: "6.5", cy: "21", r: "2.2" }),
-    /*#__PURE__*/React.createElement("circle", { cx: "3.5", cy: "24", r: "1.4" })
+      d: "M21 10a7 7 0 0 1-7 7H7l-4 4V10a7 7 0 0 1 7-7h4a7 7 0 0 1 7 7z"
+    })
   );
 }
 
@@ -2550,7 +2604,8 @@ function JournalEntry({
   onSaveMood,
   onDelete,
   readOnly,
-  autoFocus
+  autoFocus,
+  catById
 }) {
   const [text, setText] = useState(entry.text);
   const [editing, setEditing] = useState(false);
@@ -2627,7 +2682,20 @@ function JournalEntry({
     // item shows up here already flooded with pigment, exactly as it does in
     // the week — which is the whole point of the tag.
     const chipDone = entry.linkedItem.wasCompleted !== false;
-    const chipPillars = entry.linkedItem.pillars && entry.linkedItem.pillars.length > 1 ? entry.linkedItem.pillars : entry.linkedItem.catLabel ? [{ label: entry.linkedItem.catLabel, color: entry.linkedItem.catColor, bg: entry.linkedItem.catBg || null }] : [];
+    // Each tag prefers the pillar as it stands now, so renaming one updates
+    // everything ever written about it. The name and colour stored on the
+    // entry are the fallback, which is what a reflection on a pillar that has
+    // since been deleted still reads by.
+    const live = p => (p && p.id && catById && catById[p.id]) || null;
+    const asChip = p => {
+      const c = live(p);
+      return c ? { label: c.label, color: c.color, bg: c.bg || null } : p;
+    };
+    const chipPillars = entry.linkedItem.pillars && entry.linkedItem.pillars.length > 1
+      ? entry.linkedItem.pillars.map(asChip)
+      : entry.linkedItem.catLabel
+        ? [asChip({ id: entry.linkedItem.catId, label: entry.linkedItem.catLabel, color: entry.linkedItem.catColor, bg: entry.linkedItem.catBg || null })]
+        : [];
     const accent = pillarAccent(chipPillars.length ? chipPillars : [], chipDone, null, "left", 0, entry.id);
     return /*#__PURE__*/React.createElement("div", {
       style: {
@@ -5903,7 +5971,11 @@ function collectSeasonData(season, cats) {
         ds,
         text,
         item: String(li.itemText || "").trim(),
-        pillarLabel: String(li.catLabel || "").trim(),
+        // The pillar as it is called now, falling back to the name the
+        // reflection was written under when the pillar is gone or predates
+        // ids. Without this a rename split a pillar's own history in two
+        // halfway through a season.
+        pillarLabel: String((li.catId && labelOf[li.catId]) || li.catLabel || "").trim(),
         mood: entry.mood || ""
       });
     });
@@ -5965,6 +6037,23 @@ function seasonSignals(season, data, cats, goals) {
     });
   });
   months.sort();
+
+  // Days with something actually done, per pillar. The same unit a weekly
+  // target is set in and the same one a pillar row fills its rule from.
+  // Reporting items instead meant two runs on one Tuesday counted as two
+  // against a target of four, so "you averaged 2.3" and "your target is 4"
+  // were never measuring the same thing — they sit in the same sentence.
+  const doneDaysByPillar = {};
+  events.forEach(e => {
+    if (!e.done) return;
+    (e.pillars.length ? e.pillars : ["untagged"]).forEach(p => {
+      if (!doneDaysByPillar[p]) doneDaysByPillar[p] = new Set();
+      doneDaysByPillar[p].add(e.ds);
+    });
+  });
+  const pillarDoneDays = {};
+  Object.keys(doneDaysByPillar).forEach(p => { pillarDoneDays[p] = doneDaysByPillar[p].size; });
+
   const targets = {};
   (cats || []).forEach(c => {
     const g = goals && goals[c.id];
@@ -6133,6 +6222,7 @@ function seasonSignals(season, data, cats, goals) {
       weeks: Object.keys(perWeek).length
     },
     targetsPerWeek: targets,
+    pillarDoneDays,
     pillarByMonth: byMonth,
     itemsPerWeek: perWeek,
     activities,
@@ -6646,19 +6736,25 @@ function normalizeSeasonAction(a) {
 // most one descriptive line per pillar; the arithmetic is done here.
 function seasonLedger(signals, cats, goals) {
   const weeks = Math.max(1, (signals.counts && signals.counts.weeks) || 1);
-  const totals = {};
+  // Items, kept only to decide whether a pillar belongs in the ledger at all.
+  // A pillar planned all season and never once done has nothing to average,
+  // and that is exactly the pillar worth putting in front of someone.
+  const items = {};
   Object.keys(signals.pillarByMonth || {}).forEach(mo => {
     const row = signals.pillarByMonth[mo] || {};
-    Object.keys(row).forEach(p => { totals[p] = (totals[p] || 0) + row[p]; });
+    Object.keys(row).forEach(p => { items[p] = (items[p] || 0) + row[p]; });
   });
+  const doneDays = signals.pillarDoneDays || {};
   return (cats || []).map(c => ({
     id: c.id,
     pillar: c.label,
     purpose: String(c.purpose || "").trim(),
     target: goals && goals[c.id] != null ? goals[c.id] : null,
-    perWeek: Math.round(((totals[c.label] || 0) / weeks) * 10) / 10,
-    total: totals[c.label] || 0
-  })).filter(r => r.total > 0 || r.target != null || r.purpose);
+    // Days, matching the target it is printed beside.
+    perWeek: Math.round(((doneDays[c.label] || 0) / weeks) * 10) / 10,
+    total: doneDays[c.label] || 0,
+    items: items[c.label] || 0
+  })).filter(r => r.total > 0 || r.items > 0 || r.target != null || r.purpose);
 }
 
 async function generateSeasonReading(season, { cats, goals, userName, store, model: modelOverride, fresh = false }) {
@@ -7031,7 +7127,7 @@ function SeasonPillarRow({ row, cat, note, pillarNote, canEdit, goalFor, onNote,
       style: { fontSize: 12.5, lineHeight: 1.55, color: INK_2, marginTop: 1 }
     }, purpose),
     React.createElement("div", { style: { fontSize: 11, color: MUTED, marginTop: 2 } },
-      `${row.perWeek}/week actual${target != null ? ` \u00b7 ${target}/week intended` : ""} \u00b7 ${row.total} in the season`),
+      `${row.perWeek} days/week${target != null ? ` \u00b7 ${target} intended` : ""} \u00b7 ${row.total} day${row.total === 1 ? "" : "s"} in the season`),
     pillarNote && React.createElement("div", {
       style: { fontSize: 12.5, lineHeight: 1.6, color: INK_2, marginTop: 3 }
     }, pillarNote),
@@ -7094,7 +7190,7 @@ function SeasonPillarRow({ row, cat, note, pillarNote, canEdit, goalFor, onNote,
       ),
       React.createElement("div", null,
         React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 4px" } },
-          `Weekly target \u2014 you averaged ${row.perWeek}`),
+          `Weekly target \u2014 you averaged ${row.perWeek} day${row.perWeek === 1 ? "" : "s"} a week`),
         React.createElement("div", { style: { display: "flex", gap: 4 } },
           [1, 2, 3, 4, 5, 6, 7].map(v => React.createElement("button", {
             key: v,
@@ -8583,6 +8679,16 @@ function useJournalStore() {
       return entry;
     },
     update: (weekStart, entryId, patch) => commit(journalOps.update(journal, weekStart, entryId, patch)),
+    // An entry is created the moment a panel opens one, before anything is
+    // typed. Without this they pile up invisibly — and get counted on the very
+    // row they were opened from, so the number climbs every time it is
+    // clicked. No words and no mood means it was never a reflection.
+    pruneBlank(weekStart) {
+      const list = journal[weekStart] || [];
+      const keep = list.filter(e => (e.text && String(e.text).trim()) || e.mood);
+      if (keep.length === list.length) return;
+      commit({ ...journal, [weekStart]: keep });
+    },
     remove: (weekStart, entryId) => commit(journalOps.remove(journal, weekStart, entryId)),
     // Surfaces an existing entry: pulls it to the top if needed, then flashes.
     surface(weekStart, entryId, ms = 600) {
@@ -8608,6 +8714,11 @@ function useJournalStore() {
 // entries newest-first. Writes go through the journal store; this component
 // only decides what to show.
 // ---------------------------------------------------------------------------
+// `focusCat` narrows the panel to one pillar's reflections. It is set by the
+// mark on a pillar row, which carries a count: a number on a thing promises
+// that clicking it shows you those things, and landing on a blank composer
+// instead would make the number a small lie. The rail's own button never sets
+// it — from there "reflections" means the week's.
 function ReflectionsPanel({
   entries,
   weekStart,
@@ -8616,16 +8727,75 @@ function ReflectionsPanel({
   viewerName,
   journalStore,
   newEntryId,
+  catById,
+  focusCat,
+  onClearFocus,
   onClose
 }) {
   const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
   const addEntry = (text = "", opts = {}) => journalStore.add(weekStart, text, opts);
+  // Narrowed by id, so a pillar renamed mid-week keeps everything written
+  // about it. An entry being written right now stays in view whatever it is
+  // tagged to — it was created by the click that opened this.
+  const shown = !focusCat ? entries : entries.filter(e => {
+    if (e.id === newEntryId) return true;
+    const li = e.linkedItem;
+    if (!li) return false;
+    if (Array.isArray(li.pillars) && li.pillars.length) return li.pillars.some(x => x && x.id === focusCat.id);
+    return li.catId === focusCat.id;
+  });
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PanelHeader, {
       eyebrow: "Reflections",
       title: weekLabelText,
       subtitle: "How is your week going?",
       onClose: onClose
-    }), /*#__PURE__*/React.createElement("div", {
+    }),
+    // One line, always in the same place, naming what the list has been cut
+    // down to and how to get the whole week back. The same shape the focused
+    // week used, because it answers the same question: what am I not seeing?
+    focusCat && /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "7px 18px",
+        borderBottom: `1px solid ${HAIRLINE}`,
+        background: PLAN_BG
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      "aria-hidden": "true",
+      style: {
+        width: 9,
+        height: 9,
+        flexShrink: 0,
+        borderRadius: 2,
+        background: catDeep(focusCat)
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        flex: 1,
+        minWidth: 0,
+        fontSize: 10,
+        color: MUTED,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      }
+    }, `On ${focusCat.label}`), /*#__PURE__*/React.createElement("button", {
+      onClick: onClearFocus,
+      style: {
+        background: "none",
+        border: "none",
+        cursor: "pointer",
+        fontSize: 10,
+        fontWeight: 600,
+        color: catInk(focusCat),
+        fontFamily: "inherit",
+        padding: 0,
+        flexShrink: 0,
+        textDecoration: "underline"
+      }
+    }, "All reflections")), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         overflowY: "auto",
@@ -8695,283 +8865,23 @@ function ReflectionsPanel({
       },
       onMouseEnter: e => e.currentTarget.style.opacity = "1",
       onMouseLeave: e => e.currentTarget.style.opacity = "0.75"
-    }, emoji)))), (entries).length === 0 && /*#__PURE__*/React.createElement("div", {
+    }, emoji)))), shown.length === 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         textAlign: "center",
         padding: "24px 0",
         color: FAINT,
         fontSize: 13
       }
-    }, "No reflections this week yet"), (entries).map(entry => /*#__PURE__*/React.createElement(JournalEntry, {
+    }, focusCat ? `Nothing written about ${focusCat.label} this week` : "No reflections this week yet"),
+    shown.map(entry => /*#__PURE__*/React.createElement(JournalEntry, {
       key: entry.id,
       entry: entry,
+      catById: catById,
       onSave: text => journalStore.update(weekStart, entry.id, { text }),
       onSaveMood: mood => journalStore.update(weekStart, entry.id, { mood: mood || undefined }),
       onDelete: () => journalStore.remove(weekStart, entry.id),
       readOnly: !canEdit,
       autoFocus: entry.id === newEntryId
-    }))));
-}
-
-// ---------------------------------------------------------------------------
-// PulsePanel
-//
-// The sidebar's read on the week: for each pillar, how many days of it have
-// been lived, how many are still on the calendar ahead, and — where a weekly
-// number exists — how far that leaves you from it.
-//
-// It authors nothing. A pillar's name, its why and its weekly number are all
-// decided in Pillars, where the whole set is in view and the number sits
-// directly under the reason for it. Setting a target used to happen here,
-// beside this week's count, which quietly made the number a reaction to one
-// week's shortfall rather than a standing answer to what the pillar is for.
-//
-// Because the why and the number are both optional and usually arrive late,
-// this panel has to be worth opening before either exists. So every pillar is
-// listed, in the same order as everywhere else: with a target it draws the
-// mosaic and names the gap, and without one it simply says what happened.
-// A count is a perfectly good pulse. Nothing here asks for a number — that
-// question belongs to a season, where there is evidence to answer it with.
-//
-// The panel also drives the week's focus. Reviewing a pillar is a question
-// about the week — five of seven, so which five, and what was on the two that
-// got away — and that answer lives in the grid, not in this list. Tapping a
-// pillar here lights it in the week behind the panel and dims the rest, and
-// the panel stays put: the counts and the days they came from are readable at
-// the same time. Going out to the toolbar's focus chips answered the same
-// question but swapped the sidebar for that pillar's ideas on the way, which
-// meant losing the numbers you were reading in order to see what produced
-// them.
-// ---------------------------------------------------------------------------
-function GoalsPanel({
-  pillarCats,
-  getGoal,
-  progressFor,
-  canEdit,
-  weekLabelText,
-  selectedPillar,
-  onFocusPillar,
-  onClose
-}) {
-  const focusedCat = (pillarCats || []).find(c => c.id === selectedPillar) || null;
-  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PanelHeader, {
-      eyebrow: "Pulse",
-      readOnly: !canEdit,
-      title: weekLabelText,
-      subtitle: "How the week is shaping up",
-      onClose: onClose
-    }),
-    // The focus is set from the rows but cleared from here. Once a pillar is
-    // lit every other row is dimmed, which makes the lit one the last place
-    // you'd look for the way out — and tapping a dimmed row switches focus
-    // rather than releasing it. One always-placed line, above the list, is
-    // the only spot that reads as "off" no matter which row is on.
-    focusedCat && /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "7px 16px",
-        borderBottom: `1px solid ${HAIRLINE}`,
-        background: PLAN_BG
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      "aria-hidden": "true",
-      style: {
-        width: 9,
-        height: 9,
-        flexShrink: 0,
-        borderRadius: 2,
-        background: catDeep(focusedCat)
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        flex: 1,
-        minWidth: 0,
-        fontSize: 10,
-        color: MUTED,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap"
-      }
-    }, `${focusedCat.label} is lit in the week`), /*#__PURE__*/React.createElement("button", {
-      onClick: () => onFocusPillar && onFocusPillar(focusedCat.id),
-      style: {
-        background: "none",
-        border: "none",
-        cursor: "pointer",
-        fontSize: 10,
-        fontWeight: 600,
-        color: catInk(focusedCat),
-        fontFamily: "inherit",
-        padding: 0,
-        flexShrink: 0,
-        textDecoration: "underline"
-      }
-    }, "Clear")), /*#__PURE__*/React.createElement("div", {
-      style: {
-        flex: 1,
-        overflowY: "auto",
-        padding: "14px 16px"
-      }
-    }, (pillarCats || []).length === 0 && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: MUTED,
-        lineHeight: 1.6
-      }
-    }, "No pillars yet."), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        flexDirection: "column",
-        gap: 2
-      }
-    }, (pillarCats || []).map(cat => {
-      const goal = getGoal(cat.id);
-      const hasGoal = goal != null;
-      const {
-        doneCount,
-        plannedCount
-      } = progressFor(cat.id);
-      // The mosaic only has `goal` cells, so the three states are packed in
-      // priority order — lived first, then planned, then whatever's left
-      // open. The written breakdown below reports the true counts, so a week
-      // planned past its target still says so instead of quietly clipping.
-      const doneSeg = hasGoal ? Math.min(doneCount, goal) : doneCount;
-      const plannedSeg = hasGoal ? Math.min(plannedCount, Math.max(0, goal - doneSeg)) : plannedCount;
-      const openSeg = hasGoal ? Math.max(0, goal - doneSeg - plannedSeg) : 0;
-      const exceeded = hasGoal ? Math.max(0, doneCount - goal) : 0;
-      const overPlanned = hasGoal ? Math.max(0, plannedCount - plannedSeg) : 0;
-      const breakdown = hasGoal
-        ? `${doneCount} done \u00b7 ${plannedCount} planned \u00b7 ${openSeg} open`
-        : `${doneCount} done \u00b7 ${plannedCount} planned`;
-      // The pulse reads as the week's mosaic in miniature: one cell per day
-      // meant for this pillar, in exactly the three states a tile can be in —
-      // flooded when lived, outlined when planned, faint when still open. A
-      // ring could only ever be a dashboard; this is the thing being filled
-      // in. Without a target there is no shape to fill, so the row says its
-      // numbers plainly and draws nothing.
-      const deep = catDeep(cat);
-      const isLit = selectedPillar === cat.id;
-      const dimmed = selectedPillar != null && !isLit;
-      const cells = hasGoal ? Array.from({ length: goal }, (_, i) => {
-        const lived = i < doneSeg;
-        const planned = !lived && i < doneSeg + plannedSeg;
-        return /*#__PURE__*/React.createElement("span", {
-          key: i,
-          style: {
-            flex: 1,
-            height: 18,
-            borderRadius: 2,
-            background: lived ? deep : TILE_PLAN_FILL,
-            border: lived ? `${DONE_BORDER_W}px solid ${deep}`
-              : planned ? `${PLAN_BORDER_W}px solid ${cat.color}`
-              : `1.5px solid ${NEUTRAL_OUTLINE}`
-          }
-        });
-      }) : null;
-      return /*#__PURE__*/React.createElement("div", {
-        key: cat.id,
-        style: {
-          marginBottom: 4,
-          background: isLit ? (cat.bg || PLAN_BG) : TILE_PLAN_FILL,
-          border: `${isLit ? DONE_BORDER_W + 0.5 : PLAN_BORDER_W}px solid ${isLit ? deep : cat.color}`,
-          borderRadius: TILE_RADIUS,
-          padding: "0 10px",
-          opacity: dimmed ? 0.42 : 1,
-          transition: "opacity 0.12s ease, background 0.12s ease"
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        onClick: () => onFocusPillar && onFocusPillar(cat.id),
-        title: isLit
-          ? `${breakdown} \u00b7 Tap to clear the focus`
-          : `${breakdown} \u00b7 Tap to light ${cat.label} in the week`,
-        style: {
-          padding: "9px 0",
-          cursor: onFocusPillar ? "pointer" : "default"
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: {
-          display: "flex",
-          alignItems: "baseline",
-          gap: 8,
-          marginBottom: hasGoal ? 7 : 0
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          flex: 1,
-          minWidth: 0,
-          fontSize: 11,
-          fontWeight: 700,
-          letterSpacing: "0.07em",
-          textTransform: "uppercase",
-          color: INK,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap"
-        }
-      }, cat.label), /*#__PURE__*/React.createElement("span", {
-        title: hasGoal
-          ? `${doneCount} of ${goal} day${goal === 1 ? "" : "s"} this week`
-          : `${doneCount} day${doneCount === 1 ? "" : "s"} this week`,
-        style: {
-          fontSize: 11,
-          fontWeight: 700,
-          color: catInk(cat),
-          flexShrink: 0
-        }
-      }, hasGoal ? `${doneCount}/${goal}` : String(doneCount)), exceeded > 0 && /*#__PURE__*/React.createElement("span", {
-        title: `Exceeded by ${exceeded}`,
-        style: {
-          fontSize: 10,
-          fontWeight: 700,
-          color: catDeep(cat),
-          background: cat.bg || PLAN_BG,
-          padding: "1px 4px",
-          borderRadius: 2,
-          flexShrink: 0
-        }
-      }, `+${exceeded}`)), hasGoal && /*#__PURE__*/React.createElement("div", {
-        style: { display: "flex", gap: 3 }
-      }, cells),
-      // Their own words, read-only. This is the standard the numbers above
-      // are being read against, so it belongs in view — but it is edited
-      // where it is decided, next to the number it justifies, in Pillars.
-      cat.purpose && /*#__PURE__*/React.createElement("div", {
-        style: {
-          marginTop: 5,
-          fontSize: 11,
-          lineHeight: 1.5,
-          color: INK_2
-        }
-      }, String(cat.purpose).trim()),
-      // The mosaic says how the week is shaped; this says it in numbers, so
-      // the three quantities the week turns on — lived, still coming, and the
-      // gap to the target — are readable without hovering anything.
-      /*#__PURE__*/React.createElement("div", {
-        style: {
-          display: "flex",
-          alignItems: "center",
-          gap: 5,
-          marginTop: 6,
-          fontSize: 10,
-          lineHeight: 1,
-          whiteSpace: "nowrap"
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        style: { fontWeight: 700, color: catInk(cat) }
-      }, `${doneCount} done`), /*#__PURE__*/React.createElement("span", {
-        style: { color: NEUTRAL_OUTLINE }
-      }, "\u00b7"), /*#__PURE__*/React.createElement("span", {
-        style: { fontWeight: 600, color: catDeep(cat) }
-      }, `${plannedCount} planned`), hasGoal && /*#__PURE__*/React.createElement("span", {
-        style: { color: NEUTRAL_OUTLINE }
-      }, "\u00b7"), hasGoal && /*#__PURE__*/React.createElement("span", {
-        style: { color: MUTED }
-      }, `${openSeg} open`), overPlanned > 0 && /*#__PURE__*/React.createElement("span", {
-        title: `${overPlanned} more day${overPlanned === 1 ? "" : "s"} planned than the target`,
-        style: { color: MUTED }
-      }, `(+${overPlanned})`))));
     }))));
 }
 
@@ -10685,9 +10595,6 @@ function Planner() {
   const [dragScope, setDragScope] = useState(null);
   const [hoveredId, setHoveredId] = useState(null);
   const [hoveredDayHeader, setHoveredDayHeader] = useState(null);
-  const [renamingId, setRenamingId] = useState(null);
-  const [renameVal, setRenameVal] = useState("");
-  const renameRef = useRef(null);
   const importRef = useRef(null);
   const [draggingIdea, setDraggingIdea] = useState(false);
   const [goals, setGoals] = useState({});
@@ -10713,6 +10620,9 @@ function Planner() {
   const newEntryId = journalStore.newEntryId;
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarTab, setSidebarTab] = useState('ideas');
+  // Set only by the mark on a pillar row. Every other door into Reflections
+  // means the week's, so each of them clears it.
+  const [reflectFocusId, setReflectFocusId] = useState(null);
   const [lastIdeaCatId, setLastIdeaCatId] = useState(null);
   const [nudgeItem, setNudgeItem] = useState(null);
   // Recurrence rules are read once at mount rather than in an effect, because
@@ -10825,9 +10735,6 @@ function Planner() {
     purgeLegacyCredentials();
   }, []);
   useEffect(() => {
-    if (renamingId && renameRef.current) renameRef.current.focus();
-  }, [renamingId]);
-  useEffect(() => {
     function handleClick(e) {
       if (viewDropdownRef.current && !viewDropdownRef.current.contains(e.target)) setShowViewDropdown(false);
     }
@@ -10918,36 +10825,20 @@ function Planner() {
     delete ng[catId];
     saveGoals(ng);
   }
-  // An intention is a count of days, not of items: "six days of Move" means
-  // Move showed up on six days, however many things were filed under it on
-  // any one of them. So each day resolves to exactly one of three states.
+  // How many of the week's seven days have something for this pillar actually
+  // done. Days, not items — three runs on Tuesday is one day of Move, because
+  // "four a week" was always a count of days, and a season reports the same
+  // unit.
   //
-  //   done    — at least one activity for this pillar is ticked off. Any is
-  //             enough; requiring all of them meant a single unfinished item
-  //             erased the day's credit, so a day with a climb done and a
-  //             stretch skipped read as no Move at all.
-  //   planned — nothing ticked yet, but the day hasn't passed, so it's still
-  //             ahead of the user.
-  //   neither — nothing ticked and the day is gone. It can't still be
-  //             "planned," so it stops padding the forecast; the slot falls
-  //             back to open, where it's honest about what's left.
-  function computeIntentionProgress(catId) {
-    let doneCount = 0,
-      plannedCount = 0;
+  // One tick is enough for the day. Requiring all of them meant a single
+  // unfinished item erased the day's credit, so a day with a climb done and a
+  // stretch skipped read as no Move at all.
+  function daysDone(catId) {
+    let n = 0;
     dates.forEach(d => {
-      const ds = ymd(d);
-      const list = entriesForCell(displayEntries, ds, catId);
-      if (list.length === 0) return;
-      if (list.some(e => e.done)) {
-        doneCount++;
-        return;
-      }
-      if (ds >= todayStr) plannedCount++;
+      if (entriesForCell(displayEntries, ymd(d), catId).some(e => e.done)) n++;
     });
-    return {
-      doneCount,
-      plannedCount
-    };
+    return n;
   }
   function handleCellMove(targetDs, targetCatId, cellData) {
     const dc = cellData || draggingCell;
@@ -11139,12 +11030,6 @@ function Planner() {
     setOpenSeasonId(null);
     setSeasonError(null);
   }
-  function openGoalsSidebar() {
-    setCatTyping(false);
-    setCatCustomInput("");
-    setSidebarTab('goals');
-    setSidebarOpen(true);
-  }
   function openReflectionSidebar(withNewEntry = false) {
     setCatTyping(false);
     setCatCustomInput("");
@@ -11154,6 +11039,7 @@ function Planner() {
     }
     setSidebarTab('reflections');
     setSidebarOpen(true);
+    setReflectFocusId(null);
     if (withNewEntry) {
       const entry = {
         id: `jentry_${Date.now()}`,
@@ -11166,18 +11052,23 @@ function Planner() {
         const cat = cats.find(c => c.id === nudgeItem.catId);
         const realCats = nudgeEntry ? pillarsOrDefault(nudgeEntry.pillars).map(pid => displayCatById[pid]).filter(Boolean).filter(c => c.id !== UNTAGGED_CAT.id) : [];
         if (itemText && cat) entry.linkedItem = {
+          catId: cat.id,
           catLabel: cat.label,
           catColor: cat.color,
           ...(realCats.length === 1 && realCats[0].bg ? { catBg: realCats[0].bg } : {}),
           itemText,
           eventDate: nudgeItem.ds,
-          ...(realCats.length > 1 ? { pillars: realCats.map(c => ({ label: c.label, color: c.color, bg: c.bg || null })) } : {})
+          ...(realCats.length > 1 ? { pillars: realCats.map(c => ({ id: c.id, label: c.label, color: c.color, bg: c.bg || null })) } : {})
         };
       }
       journalStore.add(weekStart, entry.text, entry.linkedItem ? { linkedItem: entry.linkedItem } : {});
     }
   }
-  function openReflectWithItem(itemText, catLabel, catColor, date = null, wasCompleted = null, allCats = null) {
+  // `opts.catId` names the pillar outright, for the callers that have it in
+  // hand. `opts.day` marks a day's own reflection, which names a weekday in
+  // the same field a pillar reflection uses for its name and must never adopt
+  // a pillar that happens to share it.
+  function openReflectWithItem(itemText, catLabel, catColor, date = null, wasCompleted = null, allCats = null, opts = {}) {
     setCatTyping(false);
     setCatCustomInput("");
     if (!sidebarOpen) {
@@ -11186,11 +11077,19 @@ function Planner() {
     }
     setSidebarTab('reflections');
     setSidebarOpen(true);
+    setReflectFocusId(opts.focusPillar ? opts.catId || null : null);
     const realCats = (allCats || []).filter(c => c.id !== UNTAGGED_CAT.id);
-    const pillars = realCats.length > 1 ? realCats.map(c => ({ label: c.label, color: c.color, bg: c.bg || null })) : null;
+    const pillars = realCats.length > 1 ? realCats.map(c => ({ id: c.id, label: c.label, color: c.color, bg: c.bg || null })) : null;
     const catBg = realCats.length === 1 ? realCats[0].bg || null : null;
+    // The id is what ties a reflection to its pillar from here on; the label
+    // and colour stay beside it as they were written, so an entry still reads
+    // properly after the pillar it named is deleted.
+    const namedCat = opts.day ? null
+      : (opts.catId ? displayCats.find(c => c.id === opts.catId)
+        : (realCats.length === 1 ? realCats[0] : displayCats.find(c => c.label === catLabel)));
     journalStore.add(weekStart, "", {
       linkedItem: {
+        ...(namedCat ? { catId: namedCat.id } : {}),
         catLabel,
         catColor,
         ...(catBg ? { catBg } : {}),
@@ -11227,6 +11126,7 @@ function Planner() {
     }
     setSidebarTab('reflections');
     setSidebarOpen(true);
+    setReflectFocusId(null);
     const found = journalStore.findForDay(weekStart, ds);
     if (found) journalStore.surface(weekStart, found.id);
   }
@@ -11396,15 +11296,6 @@ function Planner() {
     setActiveViewId("own");
     setShowStartFreshConfirm(false);
     setShowViewDropdown(false);
-  }
-  function startRename(cat) {
-    setRenamingId(cat.id);
-    setRenameVal(cat.label);
-  }
-  function commitRename(id) {
-    saveCats(pillarOps.rename(cats, id, renameVal));
-    setRenamingId(null);
-    setRenameVal("");
   }
   // Deleting a pillar untags its work; it never destroys it.
   //
@@ -11778,6 +11669,48 @@ function Planner() {
     });
     return set;
   }, [displayJournal, weekStart]);
+  // How many reflections this week name each pillar, for the mark on a pillar
+  // row. Keyed by the pillar's id, so renaming a pillar carries everything
+  // written about it along. Entries written before ids existed are matched up
+  // once at load; anything renamed before that pass stays unattached, and is
+  // counted here against nothing rather than against the wrong pillar.
+  //
+  // Only reflections with words in them count. An entry exists from the moment
+  // the panel opens, before anything is typed, so counting every entry would
+  // mean the number climbed each time the mark was clicked and came to
+  // nothing.
+  const reflectionsByPillar = React.useMemo(() => {
+    const entries = displayJournal[weekStart] || [];
+    const counts = new Map();
+    const bump = id => {
+      if (!id) return;
+      counts.set(id, (counts.get(id) || 0) + 1);
+    };
+    entries.forEach(e => {
+      if (!e.text || !e.text.trim()) return;
+      const li = e.linkedItem;
+      if (!li) return;
+      // A reflection on an item tagged to several pillars counts for each of
+      // them; everything else counts for the one it names. A day's own
+      // reflection names no pillar and so counts for none, which needs no
+      // special case now that the link is an id rather than a name.
+      if (Array.isArray(li.pillars) && li.pillars.length) li.pillars.forEach(x => bump(x && x.id));
+      else bump(li.catId);
+    });
+    return counts;
+  }, [displayJournal, weekStart]);
+  // Leaving the panel is when a reflection nobody typed into stops being a
+  // draft and starts being litter. Tracked rather than hooked to the close
+  // button because the panel is left in several ways — another rail button, a
+  // pillar's ideas, closing it outright.
+  const reflectionsShowing = sidebarOpen && sidebarTab === 'reflections';
+  const wasShowingReflections = useRef(false);
+  useEffect(() => {
+    if (isOwnView && wasShowingReflections.current && !reflectionsShowing) {
+      journalStore.pruneBlank(weekStart);
+    }
+    wasShowingReflections.current = reflectionsShowing;
+  }, [reflectionsShowing, weekStart, isOwnView]);
   // Draft state for the new/edit event dialog. Eleven values, one dialog:
   // they live in their own hook now rather than among Planner's own state.
   const dlg = useEventDialog({ entries, rules });
@@ -11954,24 +11887,12 @@ function Planner() {
   // dims everything else instead of removing it: the week keeps its shape, so
   // you can see what you're setting aside as well as what you're focusing on.
   const [selectedPillar, setSelectedPillar] = useState(null);
-  // The focus itself, with nothing attached. Both doors go through here so
-  // there is one definition of what "lit" means.
-  function setPillarFocus(catId) {
-    setSelectedPillar(selectedPillar === catId ? null : catId);
-  }
   // The toolbar's door. Picking a pillar from the top of the week is a move
   // toward doing something with it, so the ideas for it come along.
   function togglePillarFilter(catId) {
     const next = selectedPillar === catId ? null : catId;
     setSelectedPillar(next);
     if (next) openIdeasSidebar(catId);
-  }
-  // The pulse panel's door. Same focus, no cargo: the whole point of
-  // lighting a pillar from there is to keep reading the counts while the week
-  // answers for them, and swapping the panel out for ideas would take away the
-  // thing being explained.
-  function toggleFocusFromGoals(catId) {
-    setPillarFocus(catId);
   }
   // Takes the item's full list of tagged pillars, not just the single pillar
   // row it happened to render under. An item de-duped into one pillar's row is
@@ -12589,7 +12510,7 @@ return /*#__PURE__*/React.createElement("div", {
     onCreateItem: isOwnView ? createCalendarItem : null,
     toolbar: toolbar,
     isDimmed: isDimmedByFocus,
-    onReflectDay: isOwnView ? (ds, weekday) => openReflectWithItem("", weekday, REFLECT, ds) : null,
+    onReflectDay: isOwnView ? (ds, weekday) => openReflectWithItem("", weekday, REFLECT, ds, null, null, { day: true }) : null,
     onOpenDayReflection: isOwnView ? ds => openDayReflection(ds) : null,
     dayReflectionDates: isOwnView ? dayReflectionDates : null,
     openEdit: isOwnView ? openEditById : null,
@@ -12649,7 +12570,7 @@ return /*#__PURE__*/React.createElement("div", {
         if (hasDayReflection) {
           openDayReflection(ds);
         } else {
-          openReflectWithItem("", d.toLocaleDateString("en-US", { weekday: "long" }), REFLECT, ds);
+          openReflectWithItem("", d.toLocaleDateString("en-US", { weekday: "long" }), REFLECT, ds, null, null, { day: true });
         }
       },
       title: hasDayReflection ? "View / edit reflection" : "Reflect on this day",
@@ -12733,8 +12654,11 @@ return /*#__PURE__*/React.createElement("div", {
       onMouseEnter: () => setHoveredId(cat.id),
       onMouseLeave: () => setHoveredId(null),
       onClick: e => {
+        // A double-click would otherwise light the pillar and put it straight
+        // out again. Nothing here answers to one any more \u2014 renaming, which
+        // was the app's only double-click, is a single click in the Pillars
+        // panel now \u2014 so the second click is simply dropped.
         if (e.detail === 2) return;
-        if (renamingId === cat.id) return;
         togglePillarFilter(cat.id);
       },
       style: {
@@ -12786,94 +12710,128 @@ return /*#__PURE__*/React.createElement("div", {
       // every pillar above it instead of sliding left and looking broken.
       "aria-hidden": "true",
       style: { width: 10, flexShrink: 0 }
-    }), isOwnView && renamingId === cat.id ? /*#__PURE__*/React.createElement("input", {
-      ref: renameRef,
-      value: renameVal,
-      onChange: e => setRenameVal(e.target.value),
-      onBlur: () => commitRename(cat.id),
-      onKeyDown: e => {
-        if (e.key === "Enter") commitRename(cat.id);
-        if (e.key === "Escape") {
-          setRenamingId(null);
-          setRenameVal("");
-        }
-      },
-      onClick: e => e.stopPropagation(),
-      onMouseDown: e => e.stopPropagation(),
+    }), /*#__PURE__*/React.createElement("div", {
+      // Name over capacity, in one column, so the hover buttons stay beside
+      // the name rather than floating beside the pair of them.
       style: {
         flex: 1,
         minWidth: 0,
-        fontSize: 11,
-        border: "none",
-        borderBottom: "1.5px solid #EA580C",
-        outline: "none",
-        background: "transparent",
-        fontFamily: "'DM Sans',sans-serif",
-        color: INK,
-        padding: "1px 0",
-        userSelect: "text",
-        cursor: "text",
-        letterSpacing: "0.07em",
-        fontWeight: 700
+        display: "flex",
+        flexDirection: "column",
+        gap: 2
       }
-    }) : /*#__PURE__*/React.createElement("span", {
+    }, /*#__PURE__*/React.createElement("span", {
       // Tend keeps its name. It is a fixed part of the app's vocabulary
       // rather than one of the five things this particular person picked.
-      onDoubleClick: isOwnView && !isTendRow ? e => {
-        e.stopPropagation();
-        closeSidebar();
-            setCatTyping(false);
-        setCatCustomInput("");
-        startRename(cat);
-      } : undefined,
-      title: isOwnView && !isTendRow ? "Double-click to rename"
-        : isTendRow ? "The things that clear the way for the rest" : undefined,
+      //
+      // Not editable here any more. Renaming used to be a double-click on this
+      // label \u2014 the app's only double-click, where everything else editable in
+      // place takes one. It is a single click in the Pillars panel now, beside
+      // the purpose and the target it belongs with. Naming a pillar is a
+      // seasonal decision; this row is for looking at a week.
+      title: isTendRow ? "The things that clear the way for the rest" : undefined,
       style: {
         fontSize: 11,
         fontWeight: 700,
         letterSpacing: "0.07em",
         color: INK,
         textTransform: "uppercase",
-        flex: 1,
-        minWidth: 0,
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap"
       }
-    }, cat.label), isOwnView && isHovered && renamingId !== cat.id && !isTendRow && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
-      onClick: e => {
-        e.stopPropagation();
-        openReflectWithItem("", cat.label, cat.color);
-      },
-      title: "Reflect on this pillar",
-      style: {
-        background: "none",
-        border: "none",
-        cursor: "pointer",
-        padding: 0,
-        flexShrink: 0,
-        opacity: 0.8,
-        color: REFLECT,
-        display: "flex",
-        alignItems: "center"
-      }
-    }, /*#__PURE__*/React.createElement(ReflectBubble, null)), /*#__PURE__*/React.createElement("button", {
-      onClick: e => {
-        e.stopPropagation();
-        deleteCat(cat.id);
-      },
-      title: "Delete",
-      style: {
-        background: "none",
-        border: "none",
-        cursor: "pointer",
-        fontSize: 15,
-        lineHeight: 1,
-        color: FAINT,
-        padding: 0,
-        flexShrink: 0
-      }
-    }, "×")))), dates.map((d, dateIdx) => {
+    }, cat.label), (() => {
+      // The rule: a short track under the name, filled to how much of the
+      // weekly target has actually happened.
+      //
+      // It counts days with something ticked off, not days with something on
+      // the calendar. Two reasons. Giving a planned-but-missed day credit is
+      // exactly what makes a tracker feel like it is flattering you. And a
+      // rule fed by the calendar is set on Monday and never moves again, which
+      // is both untrue and unsatisfying; fed by what got done, it grows across
+      // the week.
+      //
+      // "Is Thursday thin?" is still answered \u2014 by the seven cells to the
+      // right, where planned work already shows as an outlined tile. The row
+      // says what is coming, the rule says what has happened, and they do not
+      // need to be the same measure.
+      //
+      // Nothing is drawn without a target. Naming a number is optional by
+      // design and usually arrives long after the pillar does; an empty track
+      // on every untargeted row would advertise the hole instead of leaving it
+      // alone.
+      const goal = getGoal(cat.id);
+      if (goal == null) return null;
+      const done = daysDone(cat.id);
+      // The track is the same width on every row rather than the width of the
+      // name, so two rows can be read against each other at a glance. Its
+      // length carries no meaning; the proportion does.
+      const pct = Math.min(100, Math.round((done / goal) * 100));
+      return /*#__PURE__*/React.createElement("span", {
+        title: `${cat.label}: ${done} day${done === 1 ? "" : "s"} done, of ${goal} a week`,
+        "aria-label": `${done} of ${goal} days done this week`,
+        style: {
+          display: "block",
+          width: 46,
+          height: 3,
+          borderRadius: 2,
+          background: PAPER_LINE_SOFT,
+          overflow: "hidden"
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        "aria-hidden": "true",
+        style: {
+          display: "block",
+          width: `${pct}%`,
+          height: 3,
+          borderRadius: 2,
+          background: catDeep(cat),
+          transition: "width 0.2s ease"
+        }
+      }));
+    })()), (() => {
+      // The pillar's reflections, on the name's own line.
+      //
+      // Two states, not one. With something behind it the mark sits there
+      // permanently carrying its count, because the number is worth seeing
+      // without hunting for it \u2014 and a pillar nobody has written a word about
+      // is worth noticing too. With nothing behind it there is no number to
+      // show, so it stays out of the way and appears on hover, as it always
+      // did.
+      //
+      // The delete that used to sit beside it is gone to the Pillars panel. A
+      // hover-revealed \u00d7 one click from removing a pillar, on a row the cursor
+      // crosses all week, was the wrong home for the one irreversible thing
+      // here. Hover in this row now means exactly one thing.
+      if (!isOwnView || isTendRow) return null;
+      const n = reflectionsByPillar.get(cat.id) || 0;
+      if (n === 0 && !isHovered) return null;
+      return /*#__PURE__*/React.createElement("button", {
+        onClick: e => {
+          e.stopPropagation();
+          openReflectWithItem("", cat.label, cat.color, null, null, null, { catId: cat.id, focusPillar: true });
+        },
+        title: n === 0
+          ? `Reflect on ${cat.label}`
+          : `${n} reflection${n === 1 ? "" : "s"} on ${cat.label} this week`,
+        style: {
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          // A bigger hit area than the mark, without a bigger mark.
+          padding: "8px 4px",
+          margin: "-8px -4px",
+          flexShrink: 0,
+          color: REFLECT,
+          display: "flex",
+          alignItems: "center",
+          gap: 3,
+          fontFamily: "inherit"
+        }
+      }, /*#__PURE__*/React.createElement(ReflectBubble, null), n > 0 && /*#__PURE__*/React.createElement("span", {
+        style: { fontSize: 9, fontWeight: 700, color: REFLECT_DEEP }
+      }, String(n)));
+    })())), dates.map((d, dateIdx) => {
       const ds = ymd(d),
         isToday = ds === todayStr,
         isFuture = ds > todayStr;
@@ -12945,7 +12903,7 @@ return /*#__PURE__*/React.createElement("div", {
         onEditStart: isOwnView ? () => openIdeasSidebar(cat.id) : null,
         onOpenRow: isOwnView ? entryId => openEditById(ds, entryId) : null,
         onOpenNewItem: isOwnView ? () => openCreate(ds, null, null, [cat.id]) : null,
-        onReflect: isOwnView ? (text, wasCompleted, row) => openReflectWithItem(text, cat.label, cat.color, ds, wasCompleted, row.allCats) : null,
+        onReflect: isOwnView ? (text, wasCompleted, row) => openReflectWithItem(text, cat.label, cat.color, ds, wasCompleted, row.allCats, { catId: cat.id }) : null,
         onToggleDone: isOwnView ? entryId => toggleDoneById(ds, cat.id, entryId) : null,
         onDeleteRow: isOwnView ? entryId => deleteEntryTagById(ds, cat.id, entryId) : null,
         onSetRowLink: isOwnView ? (entryId, url) => setItemLinkById(ds, entryId, url) : null,
@@ -13037,7 +12995,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v9.18.13")), (() => {
+  }, "v9.19.4")), (() => {
     // Walking every stored week to size each season is the most expensive
     // read in the app. It only happens while the panel is actually open.
     const seasonShelf = !(sidebarOpen && sidebarTab === 'seasons') ? [] :
@@ -13045,15 +13003,6 @@ return /*#__PURE__*/React.createElement("div", {
     const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
     const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
-    // Tend is absent from the pulse entirely. It carries no weekly number by
-    // design, and a row of errand counts sitting among the pillars would read
-    // as one more thing being kept score of.
-    //
-    // Everything else appears in its usual order whether or not it has a
-    // target: the panel splitting into "tracked" and "untracked" halves was a
-    // consequence of it being the place targets were set, and targets are set
-    // in Pillars now.
-    const pulseCats = displayCats.filter(c => !isTend(c.id));
     return /*#__PURE__*/React.createElement("div", {
       style: {
         position: "fixed",
@@ -13099,6 +13048,9 @@ return /*#__PURE__*/React.createElement("div", {
       onExternalDrop: handlePanelDrop
     }), sidebarTab === 'reflections' && /*#__PURE__*/React.createElement(ReflectionsPanel, {
       entries: displayJournal[weekStart] || [],
+      catById: displayCatById,
+      focusCat: displayCats.find(c => c.id === reflectFocusId) || null,
+      onClearFocus: () => setReflectFocusId(null),
       weekStart: weekStart,
       weekLabelText: weekLabel(dates),
       canEdit: isOwnView,
@@ -13116,15 +13068,6 @@ return /*#__PURE__*/React.createElement("div", {
       onGenerate: runSeasonReading,
       onOpen: setOpenSeasonId,
       onConnectAI: () => setShowAIConnection(true),
-      onClose: closeSidebar
-    }), sidebarTab === 'goals' && /*#__PURE__*/React.createElement(GoalsPanel, {
-      pillarCats: pulseCats,
-      getGoal: getGoal,
-      progressFor: computeIntentionProgress,
-      canEdit: isOwnView,
-      weekLabelText: weekLabel(dates),
-      selectedPillar: selectedPillar,
-      onFocusPillar: toggleFocusFromGoals,
       onClose: closeSidebar
     }), sidebarTab === 'pillars' && isOwnView && (() => {
     // Tend is absent from this panel entirely. It can't be renamed, reordered
@@ -13488,7 +13431,7 @@ return /*#__PURE__*/React.createElement("div", {
       } : null,
       active: (isOwnView && externalItemDrag) || (sidebarOpen && sidebarTab === 'reflections'),
       activeBg: isOwnView && externalItemDrag ? REFLECT_BG : PAPER,
-      // Open is black here, the same as Ideas, Pulse and Pillars: an open
+      // Open is black here, the same as Ideas and Pillars: an open
       // panel is an open panel, and this one had no reason to announce itself
       // differently. The purple is kept for the drag alone, where it isn't
       // saying "this is open" but "you can let go here" — and with the caption
@@ -13535,32 +13478,7 @@ return /*#__PURE__*/React.createElement("div", {
         background: ACCENT,
         boxShadow: `0 0 0 2px ${PAPER}`
       }
-    }))), /*#__PURE__*/React.createElement(RailButton, {
-      title: "Pulse",
-      active: sidebarOpen && sidebarTab === 'goals',
-      onToggle: () => sidebarOpen && sidebarTab === 'goals' ? closeSidebar() : openGoalsSidebar()
-    }, /*#__PURE__*/React.createElement("svg", {
-      width: "18",
-      height: "18",
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: "currentColor",
-      strokeWidth: "1.6",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("g", {
-      transform: "rotate(18 12 12)"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M12 6v12"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M12 9c-2.5-5-9-4.5-8-0.5c0.8 3 4.5 4 8 1.5"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M12 9c2.5-5 9-4.5 8-0.5c-0.8 3-4.5 4-8 1.5"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M12 13c-1.3-1.8-5.5-1.8-5.5 0.8c0 1.8 1.8 3.5 5.5 1.7"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M12 13c1.3-1.8 5.5-1.8 5.5 0.8c0 1.8-1.8 3.5-5.5 1.7"
-    })))), isOwnView && /*#__PURE__*/React.createElement(RailButton, {
+    }))), isOwnView && /*#__PURE__*/React.createElement(RailButton, {
       title: "Pillars",
       active: sidebarOpen && sidebarTab === 'pillars',
       onToggle: () => sidebarOpen && sidebarTab === 'pillars' ? closeSidebar() : openPillarsSidebar()
