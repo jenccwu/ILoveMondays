@@ -835,6 +835,15 @@ function migrateCatColors(cats) {
     return { ...c, slot, color: s.color, bg: s.bg, deep: s.deep, ink: s.ink };
   });
 }
+// A pillar's colour washed toward white. The ring uses it for days that are
+// planned but not yet done: the same hue as the done days, clearly lighter.
+function lightenHex(hex, amt) {
+  const h = String(hex || "").replace("#", "");
+  if (h.length !== 6) return "#E6DFD2";
+  const n = parseInt(h, 16);
+  const f = v => Math.max(0, Math.min(255, Math.round(v + (255 - v) * amt)));
+  return "#" + [f(n >> 16), f((n >> 8) & 255), f(n & 255)].map(v => v.toString(16).padStart(2, "0")).join("");
+}
 // Fallback for bespoke colours that aren't in the palette at all.
 function darkenHex(hex, amt) {
   const h = String(hex || "").replace("#", "");
@@ -877,13 +886,16 @@ const ICON_BTN = {
 // The same button, in the muted grey used for secondary actions.
 const MUTED_ICON_BTN = { ...ICON_BTN, lineHeight: 1, color: FAINT };
 // Header strip shared by every sidebar panel.
+// A column: the title block and its close button on one line, and \u2014 on the
+// panels that have one \u2014 the pillar picker on its own line underneath. (It
+// was a row, left over from when the header was only ever title plus close,
+// which put the picker beside the title instead of below it.)
 const PANEL_HEADER = {
   padding: "16px 18px 12px",
   borderBottom: `1px solid ${HAIRLINE}`,
   flexShrink: 0,
   display: "flex",
-  alignItems: "flex-start",
-  justifyContent: "space-between"
+  flexDirection: "column"
 };
 // The small uppercase rule that divides a sidebar list into sections.
 const SIDEBAR_SECTION_LABEL = {
@@ -918,43 +930,105 @@ const PANEL_CLOSE_BTN = {
 // `band` is a colour string when the panel speaks for one pillar, or an array
 // of colours when it speaks for the whole set.
 // ---------------------------------------------------------------------------
-function PanelHeader({ band, eyebrow, eyebrowColor = INK_3, readOnly, title, titleCaps, subtitle, onClose }) {
-  const stacked = Array.isArray(band);
-  const bandEl = !band ? null : /*#__PURE__*/React.createElement("div", {
-    "aria-hidden": "true",
-    style: {
-      width: 7,
-      alignSelf: "stretch",
-      minHeight: 30,
+function PanelHeader({ eyebrow, readOnly, title, subtitle, picker, onClose }) {
+  // Every sidebar opens the same way: a small label naming the panel, then a
+  // larger serif title naming what you are looking at inside it \u2014 a pillar,
+  // the week, a season, the set. The colour that used to sit in a band beside
+  // the title now lives in the pillar picker, on the two panels that have one.
+  return /*#__PURE__*/React.createElement("div", {
+    style: { ...PANEL_HEADER, paddingBottom: picker ? 14 : 12 }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", flexDirection: "column", minWidth: 0 }
+  }, /*#__PURE__*/React.createElement("div", {
+    "data-panel-eyebrow": "1",
+    style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3, marginBottom: 4 }
+  }, eyebrow, readOnly && /*#__PURE__*/React.createElement("span", {
+    style: { color: MUTED, fontWeight: 500, textTransform: "none", letterSpacing: 0 }
+  }, " \u00b7 read only")), /*#__PURE__*/React.createElement("div", {
+    "data-panel-title": "1",
+    style: { fontFamily: "'Fraunces',Georgia,serif", fontSize: 22, fontWeight: 600, lineHeight: 1.1, color: INK, overflowWrap: "anywhere" }
+  }, title), subtitle && /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 12, color: INK_2, marginTop: 3 }
+  }, subtitle)), /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    "aria-label": "Close",
+    style: PANEL_CLOSE_BTN
+  }, "\u00d7")), picker && /*#__PURE__*/React.createElement("div", {
+    style: { marginTop: 12 }
+  }, picker));
+}
+
+// ---------------------------------------------------------------------------
+// PillarPicker
+//
+// The one pillar focus, reachable from inside the Ideas and Reflections
+// panels. It is not a second filter: it reads and sets the same focus as the
+// chips above the planner, so choosing Connect here dims the planner to
+// Connect too, and clearing it here clears it everywhere.
+//
+// A row of small tiles in each pillar's colour, with only the chosen one
+// wide enough to carry its name \u2014 eight named chips would wrap to two
+// lines in a panel this narrow. Every tile names itself on hover and to a
+// screen reader.
+//
+// Two chosen states, because Ideas can be showing a pillar without that
+// pillar being the focus: after the focus is cleared the panel stays where
+// you were. `focusId` is the focus (filled, deep); `shownId` is a pillar on
+// screen but not focused (its pale wash, a deep outline). Clicking the focus
+// clears it; clicking anything else focuses it.
+// ---------------------------------------------------------------------------
+function PillarPicker({ cats, focusId, shownId, onPick }) {
+  return /*#__PURE__*/React.createElement("div", {
+    "data-pillar-picker": "1",
+    role: "group",
+    "aria-label": "Focus on a pillar",
+    style: { display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }
+  }, cats.map(cat => {
+    const isFocus = cat.id === focusId;
+    const isShown = !isFocus && cat.id === shownId;
+    const named = isFocus || isShown;
+    const deep = catDeep(cat);
+    const base = {
+      height: 22,
+      borderRadius: CHIP_RADIUS,
+      cursor: "pointer",
       flexShrink: 0,
-      background: stacked ? NEUTRAL_OUTLINE : band,
-      ...(stacked ? { display: "flex", flexDirection: "column" } : null)
-    }
-  }, stacked ? band.slice(0, 12).map((c, i) => /*#__PURE__*/React.createElement("i", {
-    key: i,
-    style: { flex: "1 1 0", minHeight: 2, background: c }
-  })) : null);
-
-  const text = /*#__PURE__*/React.createElement("div", null,
-    /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: eyebrowColor, marginBottom: 2 }
-    }, eyebrow, readOnly && /*#__PURE__*/React.createElement("span", {
-      style: { color: MUTED, fontWeight: 500, textTransform: "none", letterSpacing: 0 }
-    }, " · read only")),
-    /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 13, fontWeight: 700, color: INK, ...(titleCaps ? { textTransform: "uppercase", letterSpacing: "0.08em" } : null) }
-    }, title),
-    subtitle && /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 11, color: MUTED, marginTop: 2 }
-    }, subtitle)
-  );
-
-  return /*#__PURE__*/React.createElement("div", { style: PANEL_HEADER },
-    bandEl ? /*#__PURE__*/React.createElement("div", {
-      style: { display: "flex", alignItems: "center", gap: 10 }
-    }, bandEl, text) : text,
-    /*#__PURE__*/React.createElement("button", { onClick: onClose, style: PANEL_CLOSE_BTN }, "\u00d7")
-  );
+      fontFamily: "inherit",
+      transition: "all 0.12s ease"
+    };
+    const style = named ? {
+      ...base,
+      padding: "0 8px",
+      fontSize: 9.5,
+      fontWeight: 700,
+      letterSpacing: "0.07em",
+      textTransform: "uppercase",
+      ...(isFocus ? pillarChip(cat, true) : {
+        background: cat.bg || PLAN_BG,
+        border: `${PLAN_BORDER_W}px solid ${deep}`,
+        color: INK,
+        borderRadius: CHIP_RADIUS
+      })
+    } : {
+      ...base,
+      width: 18,
+      padding: 0,
+      background: isTend(cat.id) ? TILE_PLAN_FILL : cat.color,
+      border: `${PLAN_BORDER_W}px solid ${cat.color}`
+    };
+    return /*#__PURE__*/React.createElement("button", {
+      key: cat.id,
+      "data-picker-cat": cat.id,
+      "data-picker-state": isFocus ? "focus" : isShown ? "shown" : "rest",
+      "aria-pressed": isFocus ? "true" : "false",
+      "aria-label": named ? undefined : cat.label,
+      title: isFocus ? `${cat.label} \u2014 click to clear the focus` : cat.label,
+      onClick: () => onPick(isFocus ? null : cat.id),
+      style
+    }, named ? cat.label : null);
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1527,6 +1601,16 @@ function weekLabel(dates) {
   if (a.getMonth() === b.getMonth()) return `${MONTHS[a.getMonth()]} ${a.getDate()}–${b.getDate()}, ${a.getFullYear()}`;
   return `${MONTHS_S[a.getMonth()]} ${a.getDate()} – ${MONTHS_S[b.getMonth()]} ${b.getDate()}, ${b.getFullYear()}`;
 }
+// The week in as few characters as it takes, for a sidebar's small label:
+// "Sep 14–20", or "Sep 28 – Oct 4" across a month. No year \u2014 the planner
+// header above already says it, and it is what pushed the label onto a
+// second line.
+function weekLabelShort(dates) {
+  const a = dates[0],
+    b = dates[6];
+  if (a.getMonth() === b.getMonth()) return `${MONTHS_S[a.getMonth()]} ${a.getDate()}\u2013${b.getDate()}`;
+  return `${MONTHS_S[a.getMonth()]} ${a.getDate()} \u2013 ${MONTHS_S[b.getMonth()]} ${b.getDate()}`;
+}
 function hasEntry(val) {
   return typeof val === "string" && val.trim().length > 0;
 }
@@ -1907,6 +1991,71 @@ function renderWithLinks(text, color) {
     key: k++
   }, text.slice(last)));
   return parts.length ? parts : text;
+}
+// The pillar's week, as a ring under its name in the By pillar view.
+//
+// One arc per day of the weekly target, so a target of five is five arcs and
+// "two still open" is something you see rather than work out. Dark is a day
+// with something done, light is a day still ahead with something planned,
+// and the plain track is a day with nothing yet. A day that passes without
+// its plan simply goes back to track \u2014 no red, no penalty.
+//
+// The centre is only ever the number of days done. A fraction ("3/5") reads
+// as how far short you are; the target is already there in how many arcs
+// the ring has. And there is no special state for reaching it: a full ring
+// is the whole signal, and a badge on top would turn it into a scoreboard.
+function PillarRing({ goal, done, planned, color, deep, size = 44, title }) {
+  const n = Math.max(1, Math.min(7, Math.round(goal) || 1));
+  const doneN = Math.min(done, n);
+  const planN = Math.max(0, Math.min(planned, n - doneN));
+  const thick = Math.max(3.2, size * 0.16);
+  const c = size / 2;
+  const R = c - 0.5;
+  const r = c - thick + 0.5;
+  const light = lightenHex(color, 0.5);
+  const fillFor = i => i < doneN ? deep : i < doneN + planN ? light : PAPER_LINE_SOFT;
+  const pt = (rad, a) => {
+    const th = (a - 90) * Math.PI / 180;
+    return `${(c + rad * Math.cos(th)).toFixed(2)} ${(c + rad * Math.sin(th)).toFixed(2)}`;
+  };
+  // Wider gaps when there are few arcs, so a target of two still reads as
+  // two days rather than one broken circle.
+  const gap = n <= 3 ? 14 : n <= 5 ? 11 : 9;
+  const arcs = n === 1
+    ? [React.createElement("circle", {
+        key: 0,
+        "data-ring-arc": fillFor(0) === deep ? "done" : fillFor(0) === light ? "planned" : "open",
+        cx: c, cy: c, r: (R + r) / 2,
+        fill: "none", stroke: fillFor(0), strokeWidth: R - r
+      })]
+    : Array.from({ length: n }, (_, i) => {
+        const a0 = i * 360 / n + gap / 2, a1 = (i + 1) * 360 / n - gap / 2;
+        const large = a1 - a0 > 180 ? 1 : 0;
+        const d = `M${pt(R, a0)}A${R} ${R} 0 ${large} 1 ${pt(R, a1)}L${pt(r, a1)}A${r} ${r} 0 ${large} 0 ${pt(r, a0)}Z`;
+        return React.createElement("path", {
+          key: i,
+          "data-ring-arc": i < doneN ? "done" : i < doneN + planN ? "planned" : "open",
+          d, fill: fillFor(i)
+        });
+      });
+  return React.createElement("svg", {
+    width: size, height: size, viewBox: `0 0 ${size} ${size}`,
+    role: "img",
+    "aria-label": title,
+    "data-pillar-ring": "1",
+    style: { display: "block", flexShrink: 0, overflow: "visible" }
+  }, title && React.createElement("title", null, title), arcs, React.createElement("text", {
+    x: c, y: c,
+    textAnchor: "middle",
+    dominantBaseline: "central",
+    style: {
+      fontSize: Math.round(size * 0.4),
+      fontWeight: 700,
+      fill: done > 0 ? INK : FAINT,
+      fontFamily: "inherit",
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, String(done)));
 }
 function GripIcon() {
   return /*#__PURE__*/React.createElement("svg", {
@@ -2643,6 +2792,7 @@ function JournalEntry({
     minute: "2-digit"
   });
   return /*#__PURE__*/React.createElement("div", {
+    "data-journal-entry": entry.id,
     style: {
       marginBottom: 10,
       padding: "10px 12px",
@@ -2810,6 +2960,18 @@ function JournalEntry({
     },
     onBlur: () => {
       setEditing(false);
+      // Clicking away from a reflection nobody wrote in throws it away there
+      // and then, rather than leaving an "Empty reflection" card behind until
+      // the panel closes. Blank means no words and no mood \u2014 the same test
+      // the panel uses when it tidies up on the way out.
+      //
+      // Not when the whole window lost focus, though: switching apps to go
+      // and find something to say shouldn't cost you the entry you opened.
+      const blank = !String(text || "").trim() && !entry.mood;
+      if (blank && !readOnly && onDelete && document.hasFocus()) {
+        onDelete();
+        return;
+      }
       onSave(text);
     },
     placeholder: "Write your reflection...",
@@ -8153,6 +8315,7 @@ function SeasonsPanel({
 function IdeasPanel({
   pillar,
   ideas,
+  picker,
   canEdit,
   viewerName,
   ideasStore,
@@ -8288,12 +8451,10 @@ function IdeasPanel({
   const tendBench = isTend(pillar.id);
   const overFull = tendBench && ideas.length > TEND_SOFT_CAP;
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PanelHeader, {
-      band: pillar.color,
-      eyebrow: tendBench ? "Clears the way" : "Ideas",
-      eyebrowColor: pillar.color,
+      eyebrow: "Ideas",
       readOnly: !canEdit,
       title: pillar.label,
-      titleCaps: true,
+      picker: picker,
       subtitle: !canEdit ? "Viewing " + viewerName.split(" · ")[0] + "'s ideas"
         : tendBench ? "Drop one on a day to quiet it"
         : "Drag an idea onto the planner",
@@ -8710,15 +8871,23 @@ function useJournalStore() {
 // ---------------------------------------------------------------------------
 // ReflectionsPanel
 //
-// The sidebar's reflections tab: quick prompts, a mood row, and the week's
-// entries newest-first. Writes go through the journal store; this component
-// only decides what to show.
+// The sidebar's reflections tab: one way to start a reflection, and the
+// week's entries newest-first. Writes go through the journal store; this
+// component only decides what to show.
+//
+// The quick prompts ("Happiness is\u2026", "I wish\u2026") and the "I feel" mood
+// row are gone \u2014 they went unused. Moods already written still show on their
+// entries; there is just no longer a button for starting one.
 // ---------------------------------------------------------------------------
-// `focusCat` narrows the panel to one pillar's reflections. It is set by the
-// mark on a pillar row, which carries a count: a number on a thing promises
-// that clicking it shows you those things, and landing on a blank composer
-// instead would make the number a small lie. The rail's own button never sets
-// it — from there "reflections" means the week's.
+// `focusCat` is the app's one pillar focus, the same one that dims the planner
+// and chooses the Ideas panel's pillar. With a focus, the list narrows to that
+// pillar's reflections and a new reflection is written about it. Without one,
+// the panel is the whole week.
+//
+// `pinId` is the entry the panel was just opened onto \u2014 a reflection on a
+// particular event or day. It stays in view whatever the focus, because
+// opening something and watching it vanish under a filter is worse than a
+// list that briefly holds one entry outside it. Changing the focus drops it.
 function ReflectionsPanel({
   entries,
   weekStart,
@@ -8727,75 +8896,43 @@ function ReflectionsPanel({
   viewerName,
   journalStore,
   newEntryId,
+  pinId,
   catById,
   focusCat,
-  onClearFocus,
+  picker,
   onClose
 }) {
-  const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
-  const addEntry = (text = "", opts = {}) => journalStore.add(weekStart, text, opts);
+  const addEntry = () => {
+    if (!focusCat) return journalStore.add(weekStart, "");
+    // The same shape the reflection count on a pillar row writes, so the entry
+    // reads as "about this pillar" everywhere entries are shown and counted.
+    return journalStore.add(weekStart, "", {
+      linkedItem: {
+        catId: focusCat.id,
+        catLabel: focusCat.label,
+        catColor: focusCat.color,
+        ...(focusCat.bg ? { catBg: focusCat.bg } : {}),
+        itemText: ""
+      }
+    });
+  };
   // Narrowed by id, so a pillar renamed mid-week keeps everything written
   // about it. An entry being written right now stays in view whatever it is
   // tagged to — it was created by the click that opened this.
   const shown = !focusCat ? entries : entries.filter(e => {
-    if (e.id === newEntryId) return true;
+    if (e.id === newEntryId || (pinId && e.id === pinId)) return true;
     const li = e.linkedItem;
     if (!li) return false;
     if (Array.isArray(li.pillars) && li.pillars.length) return li.pillars.some(x => x && x.id === focusCat.id);
     return li.catId === focusCat.id;
   });
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PanelHeader, {
-      eyebrow: "Reflections",
-      title: weekLabelText,
-      subtitle: "How is your week going?",
+      eyebrow: `Reflections \u00b7 ${weekLabelText}`,
+      readOnly: !canEdit,
+      title: focusCat ? focusCat.label : "This week",
+      picker: picker,
       onClose: onClose
-    }),
-    // One line, always in the same place, naming what the list has been cut
-    // down to and how to get the whole week back. The same shape the focused
-    // week used, because it answers the same question: what am I not seeing?
-    focusCat && /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "7px 18px",
-        borderBottom: `1px solid ${HAIRLINE}`,
-        background: PLAN_BG
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      "aria-hidden": "true",
-      style: {
-        width: 9,
-        height: 9,
-        flexShrink: 0,
-        borderRadius: 2,
-        background: catDeep(focusCat)
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        flex: 1,
-        minWidth: 0,
-        fontSize: 10,
-        color: MUTED,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap"
-      }
-    }, `On ${focusCat.label}`), /*#__PURE__*/React.createElement("button", {
-      onClick: onClearFocus,
-      style: {
-        background: "none",
-        border: "none",
-        cursor: "pointer",
-        fontSize: 10,
-        fontWeight: 600,
-        color: catInk(focusCat),
-        fontFamily: "inherit",
-        padding: 0,
-        flexShrink: 0,
-        textDecoration: "underline"
-      }
-    }, "All reflections")), /*#__PURE__*/React.createElement("div", {
+    }), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         overflowY: "auto",
@@ -8803,69 +8940,25 @@ function ReflectionsPanel({
         display: "flex",
         flexDirection: "column"
       }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        flexWrap: "wrap",
-        gap: 5,
-        marginBottom: 14,
-        flexShrink: 0
-      }
     }, canEdit && /*#__PURE__*/React.createElement("button", {
+      "data-reflect-new": "1",
       onClick: () => addEntry(),
       style: {
+        width: "100%",
+        textAlign: "left",
         background: TILE_PLAN_FILL,
-        border: `${PLAN_BORDER_W}px dashed ${NEUTRAL_OUTLINE}`,
-        borderRadius: CHIP_RADIUS,
-        padding: "5px 10px",
-        fontSize: 11,
-        color: MUTED,
+        border: `${PLAN_BORDER_W}px dashed ${focusCat ? catDeep(focusCat) : NEUTRAL_OUTLINE}`,
+        borderRadius: TILE_RADIUS,
+        padding: "8px 11px",
+        marginBottom: 12,
+        fontSize: 12.5,
+        fontWeight: 500,
+        color: focusCat ? INK_2 : MUTED,
         cursor: "pointer",
         fontFamily: "inherit",
-        fontWeight: 500,
-        lineHeight: 1.2
-      }
-    }, "+ New"), REFLECT_QS.map(q => /*#__PURE__*/React.createElement("button", {
-      key: q,
-      onClick: () => canEdit && addEntry(q.replace(/\.\.\.$/, '').trimEnd() + ' '),
-      style: {
-        padding: "5px 10px",
-        fontSize: 11,
-        cursor: canEdit ? "pointer" : "default",
-        fontFamily: "inherit",
-        fontWeight: 500,
-        lineHeight: 1.2,
-        ...plainChip(false)
-      }
-    }, q)), canEdit && /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 4,
-        ...plainChip(false),
-        padding: "4px 9px",
-        fontSize: 11,
-        fontFamily: "inherit",
-        fontWeight: 500,
-        lineHeight: 1.2,
         flexShrink: 0
       }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: { pointerEvents: "none" }
-    }, "I feel"), ["😩", "😔", "😑", "😊", "😄"].map(emoji => /*#__PURE__*/React.createElement("span", {
-      key: emoji,
-      onClick: () => addEntry("", { type: 'feel', mood: emoji }),
-      style: {
-        fontSize: 14,
-        cursor: "pointer",
-        lineHeight: 1,
-        userSelect: "none",
-        opacity: 0.75,
-        transition: "opacity 0.1s ease"
-      },
-      onMouseEnter: e => e.currentTarget.style.opacity = "1",
-      onMouseLeave: e => e.currentTarget.style.opacity = "0.75"
-    }, emoji)))), shown.length === 0 && /*#__PURE__*/React.createElement("div", {
+    }, focusCat ? `+ Reflect on ${focusCat.label}` : "+ Reflect on this week"), shown.length === 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         textAlign: "center",
         padding: "24px 0",
@@ -10622,7 +10715,8 @@ function Planner() {
   const [sidebarTab, setSidebarTab] = useState('ideas');
   // Set only by the mark on a pillar row. Every other door into Reflections
   // means the week's, so each of them clears it.
-  const [reflectFocusId, setReflectFocusId] = useState(null);
+  // The entry the Reflections panel was just opened onto. See ReflectionsPanel.
+  const [reflectPinId, setReflectPinId] = useState(null);
   const [lastIdeaCatId, setLastIdeaCatId] = useState(null);
   const [nudgeItem, setNudgeItem] = useState(null);
   // Recurrence rules are read once at mount rather than in an effect, because
@@ -10840,6 +10934,20 @@ function Planner() {
     });
     return n;
   }
+  // Days still ahead \u2014 today included \u2014 with something on them for this
+  // pillar and nothing done yet. A past day that never got its tick is not
+  // counted anywhere: it drops back to open rather than lingering as a
+  // promise, and it is never marked as missed.
+  function daysPlanned(catId) {
+    let n = 0;
+    dates.forEach(d => {
+      const ds = ymd(d);
+      if (ds < todayStr) return;
+      const es = entriesForCell(displayEntries, ds, catId);
+      if (es.length && !es.some(e => e.done)) n++;
+    });
+    return n;
+  }
   function handleCellMove(targetDs, targetCatId, cellData) {
     const dc = cellData || draggingCell;
     if (!dc || dc.ds === targetDs && dc.catId === targetCatId) {
@@ -11039,7 +11147,7 @@ function Planner() {
     }
     setSidebarTab('reflections');
     setSidebarOpen(true);
-    setReflectFocusId(null);
+    setReflectPinId(null);
     if (withNewEntry) {
       const entry = {
         id: `jentry_${Date.now()}`,
@@ -11061,7 +11169,8 @@ function Planner() {
           ...(realCats.length > 1 ? { pillars: realCats.map(c => ({ id: c.id, label: c.label, color: c.color, bg: c.bg || null })) } : {})
         };
       }
-      journalStore.add(weekStart, entry.text, entry.linkedItem ? { linkedItem: entry.linkedItem } : {});
+      const made = journalStore.add(weekStart, entry.text, entry.linkedItem ? { linkedItem: entry.linkedItem } : {});
+      setReflectPinId(made.id);
     }
   }
   // `opts.catId` names the pillar outright, for the callers that have it in
@@ -11077,7 +11186,10 @@ function Planner() {
     }
     setSidebarTab('reflections');
     setSidebarOpen(true);
-    setReflectFocusId(opts.focusPillar ? opts.catId || null : null);
+    // A pillar's own reflection count focuses that pillar everywhere \u2014 the
+    // same focus the chips set \u2014 so the planner, Ideas and this panel agree.
+    // Every other way in leaves the focus where it was.
+    if (opts.focusPillar && opts.catId) setPillarFocus(opts.catId);
     const realCats = (allCats || []).filter(c => c.id !== UNTAGGED_CAT.id);
     const pillars = realCats.length > 1 ? realCats.map(c => ({ id: c.id, label: c.label, color: c.color, bg: c.bg || null })) : null;
     const catBg = realCats.length === 1 ? realCats[0].bg || null : null;
@@ -11087,7 +11199,7 @@ function Planner() {
     const namedCat = opts.day ? null
       : (opts.catId ? displayCats.find(c => c.id === opts.catId)
         : (realCats.length === 1 ? realCats[0] : displayCats.find(c => c.label === catLabel)));
-    journalStore.add(weekStart, "", {
+    const made = journalStore.add(weekStart, "", {
       linkedItem: {
         ...(namedCat ? { catId: namedCat.id } : {}),
         catLabel,
@@ -11099,6 +11211,7 @@ function Planner() {
         ...(wasCompleted !== null ? { wasCompleted } : {})
       }
     });
+    if (!opts.focusPillar) setReflectPinId(made.id);
   }
   function openReflectionsOnly(itemText, date = null) {
     setCatTyping(false);
@@ -11111,7 +11224,10 @@ function Planner() {
     setSidebarOpen(true);
     if (itemText) {
       const found = journalStore.findForItem(weekStart, itemText, date);
-      if (found) journalStore.surface(weekStart, found.id);
+      if (found) {
+        journalStore.surface(weekStart, found.id);
+        setReflectPinId(found.id);
+      }
     }
   }
   // Like openReflectionsOnly, but for the day-level reflection (empty
@@ -11126,14 +11242,18 @@ function Planner() {
     }
     setSidebarTab('reflections');
     setSidebarOpen(true);
-    setReflectFocusId(null);
+    setReflectPinId(null);
     const found = journalStore.findForDay(weekStart, ds);
-    if (found) journalStore.surface(weekStart, found.id);
+    if (found) {
+      journalStore.surface(weekStart, found.id);
+      setReflectPinId(found.id);
+    }
   }
   function closeSidebar() {
     // The sidebar (and IdeasPanel with it) unmounts when closed, so any
     // in-progress idea edit is discarded without needing to be reset here.
     setSidebarOpen(false);
+    setReflectPinId(null);
   }
   function saveCats(nc) {
     if (!isOwnView) return;
@@ -11889,10 +12009,29 @@ function Planner() {
   const [selectedPillar, setSelectedPillar] = useState(null);
   // The toolbar's door. Picking a pillar from the top of the week is a move
   // toward doing something with it, so the ideas for it come along.
+  // The app's one pillar focus. Everything that narrows to a pillar reads
+  // it: the planner dims the rest, Ideas shows that pillar's bench, and
+  // Reflections shows what was written about it. Every control that picks a
+  // pillar \u2014 the chips above the planner, a pillar row, a row's reflection
+  // count, the picker at the top of either panel \u2014 sets this, and only this.
+  //
+  // Clearing it leaves Ideas on the pillar it was showing. Focus is how you
+  // narrow the week; the bench you were browsing is just where you were.
+  function setPillarFocus(catId) {
+    setSelectedPillar(catId || null);
+    setReflectPinId(null);
+    if (catId) {
+      setIdeaPanelCatId(catId);
+      setLastIdeaCatId(catId);
+    }
+  }
+  // The chips and the pillar rows. Focusing a pillar still brings its ideas
+  // alongside, because that is the planning move \u2014 unless Reflections is
+  // what's open, in which case the panel simply follows the new focus.
   function togglePillarFilter(catId) {
     const next = selectedPillar === catId ? null : catId;
-    setSelectedPillar(next);
-    if (next) openIdeasSidebar(catId);
+    setPillarFocus(next);
+    if (next && !(sidebarOpen && sidebarTab === 'reflections')) openIdeasSidebar(next);
   }
   // Takes the item's full list of tagged pillars, not just the single pillar
   // row it happened to render under. An item de-duped into one pillar's row is
@@ -12617,11 +12756,13 @@ return /*#__PURE__*/React.createElement("div", {
     const isDragging = isOwnView && dragScope === "grid" && draggedId === cat.id,
       isTarget = isOwnView && dragScope === "grid" && dragOverId === cat.id && !isDragging,
       isHovered = hoveredId === cat.id;
-    const panelOpen = sidebarOpen && sidebarTab === 'ideas' && ideaPanelCatId === cat.id;
+
     // A row's name is the same gesture as its focus chip: one pillar lit, the
     // rest quiet, its ideas open alongside. Two doors into the same room that
     // behaved differently was the odd part, not the coupling.
-    const rowLit = panelOpen || selectedPillar === cat.id;
+    // Lit means focused, nothing else. It used to light for "its ideas are
+    // open" too, which left a row glowing after its focus was cleared.
+    const rowLit = selectedPillar === cat.id;
     // The row that isn't a pillar. It keeps the pillars' geometry — same
     // height, same seven cells, same click-to-focus — and loses their
     // pigment, their handle and their delete. It also sits above a heavier
@@ -12669,7 +12810,7 @@ return /*#__PURE__*/React.createElement("div", {
         cursor: "pointer",
         transition: "background 0.15s ease"
       }
-    }, /*#__PURE__*/React.createElement("span", {
+    }, isTendRow ? /*#__PURE__*/React.createElement("span", {
       "aria-hidden": "true",
       style: {
         position: "absolute",
@@ -12680,37 +12821,57 @@ return /*#__PURE__*/React.createElement("div", {
         // Tend's band is drawn, not filled: the same outline a pillar wears
         // while it is still only a suggestion. That shape already means
         // "pillar-shaped, not a pillar" everywhere else in the app, so it
-        // needs no explaining here.
-        background: isTendRow ? "transparent" : cat.color,
-        boxShadow: isTendRow ? `inset 0 0 0 1px ${cat.color}` : "none",
+        // needs no explaining here. Tend doesn't move, so it has no grip.
+        background: "transparent",
+        boxShadow: `inset 0 0 0 1px ${cat.color}`,
         pointerEvents: "none",
         transition: "width 0.15s ease"
       }
-    }), /*#__PURE__*/React.createElement("div", {
+    }) :
+    // The band is the handle, as it is in the Pillars panel. It is the full
+    // height of the row and belongs to no other control, so making it the
+    // grip costs nothing and frees the name's line. The ticks sit halfway
+    // down, matching the panel. A click on it is swallowed, so reaching for
+    // the handle never lights the pillar by accident.
+    /*#__PURE__*/React.createElement("div", {
+      "data-row-grip": "1",
+      draggable: isOwnView ? true : undefined,
+      onDragStart: isOwnView ? e => handleRowDragStart(e, cat.id, "grid") : undefined,
+      onDragEnd: isOwnView ? resetRowDrag : undefined,
+      onClick: isOwnView ? e => e.stopPropagation() : undefined,
+      title: isOwnView ? "Drag to reorder" : undefined,
+      style: {
+        position: "absolute",
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: PILLAR_ROW_BAND_W,
+        background: catDeep(cat),
+        cursor: isOwnView ? "grab" : "inherit",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 2.5
+      }
+    }, isOwnView && [0, 1, 2].map(i => /*#__PURE__*/React.createElement("span", {
+      key: i,
+      "aria-hidden": "true",
+      style: {
+        width: 6,
+        height: 1.5,
+        borderRadius: 0.5,
+        background: hexA(PAPER, 0.45)
+      }
+    }))), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
         gap: 6,
-        padding: "0 8px 0 20px",
+        padding: `0 8px 0 ${PILLAR_ROW_BAND_W + 12}px`,
         minHeight: 50
       }
-    }, isOwnView && !isTendRow && /*#__PURE__*/React.createElement("div", {
-      draggable: true,
-      onDragStart: e => handleRowDragStart(e, cat.id, "grid"),
-      onDragEnd: resetRowDrag,
-      onClick: e => e.stopPropagation(),
-      style: {
-        cursor: "grab",
-        display: "flex",
-        alignItems: "center",
-        flexShrink: 0
-      }
-    }, /*#__PURE__*/React.createElement(GripIcon, null)), isTendRow && /*#__PURE__*/React.createElement("span", {
-      // Holds the space the grip would occupy, so Tend's label lines up with
-      // every pillar above it instead of sliding left and looking broken.
-      "aria-hidden": "true",
-      style: { width: 10, flexShrink: 0 }
-    }), /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       // Name over capacity, in one column, so the hover buttons stay beside
       // the name rather than floating beside the pair of them.
       style: {
@@ -12740,56 +12901,7 @@ return /*#__PURE__*/React.createElement("div", {
         textOverflow: "ellipsis",
         whiteSpace: "nowrap"
       }
-    }, cat.label), (() => {
-      // The rule: a short track under the name, filled to how much of the
-      // weekly target has actually happened.
-      //
-      // It counts days with something ticked off, not days with something on
-      // the calendar. Two reasons. Giving a planned-but-missed day credit is
-      // exactly what makes a tracker feel like it is flattering you. And a
-      // rule fed by the calendar is set on Monday and never moves again, which
-      // is both untrue and unsatisfying; fed by what got done, it grows across
-      // the week.
-      //
-      // "Is Thursday thin?" is still answered \u2014 by the seven cells to the
-      // right, where planned work already shows as an outlined tile. The row
-      // says what is coming, the rule says what has happened, and they do not
-      // need to be the same measure.
-      //
-      // Nothing is drawn without a target. Naming a number is optional by
-      // design and usually arrives long after the pillar does; an empty track
-      // on every untargeted row would advertise the hole instead of leaving it
-      // alone.
-      const goal = getGoal(cat.id);
-      if (goal == null) return null;
-      const done = daysDone(cat.id);
-      // The track is the same width on every row rather than the width of the
-      // name, so two rows can be read against each other at a glance. Its
-      // length carries no meaning; the proportion does.
-      const pct = Math.min(100, Math.round((done / goal) * 100));
-      return /*#__PURE__*/React.createElement("span", {
-        title: `${cat.label}: ${done} day${done === 1 ? "" : "s"} done, of ${goal} a week`,
-        "aria-label": `${done} of ${goal} days done this week`,
-        style: {
-          display: "block",
-          width: 46,
-          height: 3,
-          borderRadius: 2,
-          background: PAPER_LINE_SOFT,
-          overflow: "hidden"
-        }
-      }, /*#__PURE__*/React.createElement("span", {
-        "aria-hidden": "true",
-        style: {
-          display: "block",
-          width: `${pct}%`,
-          height: 3,
-          borderRadius: 2,
-          background: catDeep(cat),
-          transition: "width 0.2s ease"
-        }
-      }));
-    })()), (() => {
+    }, cat.label)), (() => {
       // The pillar's reflections, on the name's own line.
       //
       // Two states, not one. With something behind it the mark sits there
@@ -12831,7 +12943,37 @@ return /*#__PURE__*/React.createElement("div", {
       }, /*#__PURE__*/React.createElement(ReflectBubble, null), n > 0 && /*#__PURE__*/React.createElement("span", {
         style: { fontSize: 9, fontWeight: 700, color: REFLECT_DEEP }
       }, String(n)));
-    })())), dates.map((d, dateIdx) => {
+    })()), (() => {
+      // The week so far, under the name: days done against the target, with
+      // the days still planned shown lighter. Left-aligned and at the top,
+      // so every ring sits the same distance from its name and the column
+      // can be read straight down, however tall each row grows.
+      //
+      // Nothing is drawn without a target. Naming a number is optional by
+      // design and usually arrives long after the pillar does; an empty ring
+      // on every untargeted row would advertise the hole instead of leaving
+      // it alone.
+      const goal = getGoal(cat.id);
+      if (goal == null) return null;
+      const done = daysDone(cat.id);
+      const planned = daysPlanned(cat.id);
+      const title = `${cat.label}: ${done} day${done === 1 ? "" : "s"} done` +
+        (planned ? `, ${planned} more planned` : "") + `, of ${goal} a week`;
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          padding: `0 8px 14px ${PILLAR_ROW_BAND_W + 12}px`,
+          marginTop: -4
+        }
+      }, /*#__PURE__*/React.createElement(PillarRing, {
+        goal,
+        done,
+        planned,
+        color: cat.color,
+        deep: catDeep(cat),
+        size: 44,
+        title
+      }));
+    })()), dates.map((d, dateIdx) => {
       const ds = ymd(d),
         isToday = ds === todayStr,
         isFuture = ds > todayStr;
@@ -12995,14 +13137,19 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v9.19.4")), (() => {
+  }, "v9.21.4")), (() => {
     // Walking every stored week to size each season is the most expensive
     // read in the app. It only happens while the panel is actually open.
     const seasonShelf = !(sidebarOpen && sidebarTab === 'seasons') ? [] :
       seasonsWithData(todayStr).map(s => ({ ...s, readiness: seasonReadiness(s, todayStr) }));
-    const pc = displayCats.find(c => c.id === ideaPanelCatId) || displayCats[0];
+    const pc = displayCats.find(c => c.id === (selectedPillar || ideaPanelCatId)) || displayCats[0];
+    const panelPicker = shownId => /*#__PURE__*/React.createElement(PillarPicker, {
+      cats: displayCats,
+      focusId: selectedPillar,
+      shownId,
+      onPick: setPillarFocus
+    });
     const pcIdeas = pc ? displayIdeas[pc.id] || [] : [];
-    const REFLECT_QS = ["Happiness is ...", "I'm grateful for...", "I wish..."];
     return /*#__PURE__*/React.createElement("div", {
       style: {
         position: "fixed",
@@ -13042,6 +13189,7 @@ return /*#__PURE__*/React.createElement("div", {
       canEdit: isOwnView,
       viewerName: activeView?.name || "",
       ideasStore: ideasStore,
+      picker: panelPicker(pc.id),
       onClose: closeSidebar,
       onDragActiveChange: setDraggingIdea,
       externalDragActive: !!externalItemDrag,
@@ -13049,10 +13197,11 @@ return /*#__PURE__*/React.createElement("div", {
     }), sidebarTab === 'reflections' && /*#__PURE__*/React.createElement(ReflectionsPanel, {
       entries: displayJournal[weekStart] || [],
       catById: displayCatById,
-      focusCat: displayCats.find(c => c.id === reflectFocusId) || null,
-      onClearFocus: () => setReflectFocusId(null),
+      focusCat: displayCats.find(c => c.id === selectedPillar) || null,
+      pinId: reflectPinId,
+      picker: panelPicker(null),
       weekStart: weekStart,
-      weekLabelText: weekLabel(dates),
+      weekLabelText: weekLabelShort(dates),
       canEdit: isOwnView,
       viewerName: activeView?.name || "",
       journalStore: journalStore,
@@ -13089,17 +13238,12 @@ return /*#__PURE__*/React.createElement("div", {
       .filter(s => !managedCats.some(c => c.label.toLowerCase() === s.label.toLowerCase()));
     return /*#__PURE__*/React.createElement(React.Fragment, null,
     /*#__PURE__*/React.createElement(PanelHeader, {
-    // This panel belongs to no one pillar, so its band is the whole set
-    // stacked — the palette currently in play, growing by a segment every
-    // time a pillar is added below.
-    band: managedCats.map(c => c.color),
     eyebrow: "Pillars",
-    eyebrowColor: PLAN_MUTED,
     // The count is the title. Pillars over 8 Pillars said the word twice; the
     // eyebrow already names the panel, so the title's job is the one number
     // nothing else in the app says out loud.
-    title: managedCats.length + " Active",
-    titleCaps: true,
+    title: managedCats.length + " active",
+    subtitle: "Name each one, and say why if you like",
     onClose: () => { setCatTyping(false); setCatCustomInput(""); setSuggestionNames({}); setPillarEditId(null); closeSidebar(); }
   }),
   /*#__PURE__*/React.createElement("div", {
