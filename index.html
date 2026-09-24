@@ -979,11 +979,16 @@ function PanelHeader({ eyebrow, readOnly, title, subtitle, picker, onClose }) {
 // screen but not focused (its pale wash, a deep outline). Clicking the focus
 // clears it; clicking anything else focuses it.
 // ---------------------------------------------------------------------------
-function PillarPicker({ cats, focusId, shownId, onPick }) {
+// The same row also tags a reflection with its pillar (see JournalEntry).
+// There `ariaLabel` and `clearHint` change the words, and `keepFocus` stops a
+// tile from taking focus on mousedown, so the reflection being written keeps
+// its cursor \u2014 losing it would blur the textarea, and a blank reflection
+// that blurs is thrown away.
+function PillarPicker({ cats, focusId, shownId, onPick, ariaLabel = "Focus on a pillar", clearHint = "click to clear the focus", keepFocus = false }) {
   return /*#__PURE__*/React.createElement("div", {
     "data-pillar-picker": "1",
     role: "group",
-    "aria-label": "Focus on a pillar",
+    "aria-label": ariaLabel,
     style: { display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }
   }, cats.map(cat => {
     const isFocus = cat.id === focusId;
@@ -1024,7 +1029,8 @@ function PillarPicker({ cats, focusId, shownId, onPick }) {
       "data-picker-state": isFocus ? "focus" : isShown ? "shown" : "rest",
       "aria-pressed": isFocus ? "true" : "false",
       "aria-label": named ? undefined : cat.label,
-      title: isFocus ? `${cat.label} \u2014 click to clear the focus` : cat.label,
+      title: isFocus ? `${cat.label} \u2014 ${clearHint}` : cat.label,
+      onMouseDown: keepFocus ? e => e.preventDefault() : undefined,
       onClick: () => onPick(isFocus ? null : cat.id),
       style
     }, named ? cat.label : null);
@@ -2754,7 +2760,9 @@ function JournalEntry({
   onDelete,
   readOnly,
   autoFocus,
-  catById
+  catById,
+  cats,
+  onTag
 }) {
   const [text, setText] = useState(entry.text);
   const [editing, setEditing] = useState(false);
@@ -2765,6 +2773,13 @@ function JournalEntry({
   const mood = entry.mood || null;
   const isFeel = entry.type === 'feel';
   const isLong = text.length > PREVIEW;
+  // A reflection can be tagged with a pillar unless it is already tied to
+  // something more specific \u2014 an event or a day, whose pillar comes from
+  // the thing itself. Untagged and pillar-only reflections are both fair game.
+  const li = entry.linkedItem;
+  const taggable = !li || (!(li.itemText && li.itemText.trim()) && !li.eventDate && !(Array.isArray(li.pillars) && li.pillars.length > 1));
+  const tagId = li && li.catId || null;
+  const showTagger = editing && taggable && !readOnly && !!onTag && Array.isArray(cats) && cats.length > 0;
   useEffect(() => {
     setText(entry.text);
   }, [entry.id]);
@@ -2990,7 +3005,27 @@ function JournalEntry({
       boxSizing: "border-box",
       minHeight: 54
     }
-  }) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+  }) : null, showTagger && /*#__PURE__*/React.createElement("div", {
+    "data-reflect-tagger": "1",
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginTop: 6,
+      paddingTop: 8,
+      borderTop: `1px solid ${WASH}`
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: { fontSize: 11, color: MUTED, flexShrink: 0 }
+  }, "Pillar"), /*#__PURE__*/React.createElement(PillarPicker, {
+    cats: cats,
+    focusId: tagId,
+    shownId: null,
+    ariaLabel: "Tag this reflection with a pillar",
+    clearHint: "click to untag",
+    keepFocus: true,
+    onPick: id => onTag(id ? cats.find(c => c.id === id) || null : null)
+  })), editing ? null : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
     onClick: !readOnly ? () => {
       setEditing(true);
       setExpanded(true);
@@ -8898,10 +8933,30 @@ function ReflectionsPanel({
   newEntryId,
   pinId,
   catById,
+  cats,
   focusCat,
   picker,
   onClose
 }) {
+  // Entries retagged in this panel stay in view until the focus changes, so
+  // moving a reflection from Move to Connect while focused on Move doesn't
+  // make it vanish mid-sentence.
+  const [keepIds, setKeepIds] = useState([]);
+  useEffect(() => { setKeepIds([]); }, [focusCat ? focusCat.id : null]);
+  // Tags (or untags) a reflection with a pillar, in the same shape the
+  // "+ Reflect on <pillar>" button writes.
+  const tagEntry = (entry, cat) => {
+    setKeepIds(ids => ids.includes(entry.id) ? ids : [...ids, entry.id]);
+    journalStore.update(weekStart, entry.id, {
+      linkedItem: cat ? {
+        catId: cat.id,
+        catLabel: cat.label,
+        catColor: cat.color,
+        ...(cat.bg ? { catBg: cat.bg } : {}),
+        itemText: ""
+      } : undefined
+    });
+  };
   const addEntry = () => {
     if (!focusCat) return journalStore.add(weekStart, "");
     // The same shape the reflection count on a pillar row writes, so the entry
@@ -8920,7 +8975,7 @@ function ReflectionsPanel({
   // about it. An entry being written right now stays in view whatever it is
   // tagged to — it was created by the click that opened this.
   const shown = !focusCat ? entries : entries.filter(e => {
-    if (e.id === newEntryId || (pinId && e.id === pinId)) return true;
+    if (e.id === newEntryId || (pinId && e.id === pinId) || keepIds.includes(e.id)) return true;
     const li = e.linkedItem;
     if (!li) return false;
     if (Array.isArray(li.pillars) && li.pillars.length) return li.pillars.some(x => x && x.id === focusCat.id);
@@ -8970,6 +9025,8 @@ function ReflectionsPanel({
       key: entry.id,
       entry: entry,
       catById: catById,
+      cats: cats,
+      onTag: cat => tagEntry(entry, cat),
       onSave: text => journalStore.update(weekStart, entry.id, { text }),
       onSaveMood: mood => journalStore.update(weekStart, entry.id, { mood: mood || undefined }),
       onDelete: () => journalStore.remove(weekStart, entry.id),
@@ -9326,7 +9383,7 @@ const entryOps = {
     return pruneDay({ ...entries, [ds]: bucket }, ds);
   },
   // Removes an entry outright, regardless of how many pillars it's tagged to.
-  // (removeFromPillar is the tag-aware one used by the UI's delete button.)
+  // (removeFromPillar is the tag-aware one used by the By pillar view.)
   removeEntry(entries, ds, entryId) {
     if (!entryOps.get(entries, ds, entryId)) return entries;
     const bucket = { ...(entries[ds] || {}) };
@@ -11720,6 +11777,19 @@ function Planner() {
     }
     entryStore.apply(prev => entryOps.removeFromPillar(prev, ds, catId, entryId));
   }
+  // The calendar shows a multi-pillar event once, so its delete button means
+  // "delete this event" — every tag goes with it in one click. (The By pillar
+  // view keeps deleteEntryTagById, since there each column is its own copy.)
+  function deleteEntryById(ds, entryId) {
+    const e = entryStore.get(ds, entryId);
+    if (!e) return;
+    const rule = ruleFor(e);
+    if (rule) {
+      setSeriesScope({ kind: "delete", ds, catId: null, entryId, ruleId: rule.id, whole: true });
+      return;
+    }
+    entryStore.apply(prev => entryOps.removeEntry(prev, ds, entryId));
+  }
   // `detach`, when true, strips the entry's series membership as part of the
   // same write. It has to happen here rather than in a separate update: the
   // cross-week branch below copies the entry wholesale, and a detach queued
@@ -11922,7 +11992,7 @@ function Planner() {
     if (s.kind === "delete") {
       if (scope === "only") {
         skipOccurrence(s.ruleId, s.ds);
-        entryStore.apply(prev => entryOps.removeFromPillar(prev, s.ds, s.catId, s.entryId));
+        entryStore.apply(prev => s.whole ? entryOps.removeEntry(prev, s.ds, s.entryId) : entryOps.removeFromPillar(prev, s.ds, s.catId, s.entryId));
         return;
       }
       // Deleting from a day forward is a decision about when the series
@@ -12644,7 +12714,7 @@ return /*#__PURE__*/React.createElement("div", {
     onOpenReflections: isOwnView ? openReflectionsOnly : null,
     onReflect: isOwnView ? (text, catLabel, catColor, ds, wasCompleted, allCats) => openReflectWithItem(text, catLabel, catColor, ds, wasCompleted, allCats) : null,
     onSetLink: isOwnView ? setItemLinkById : null,
-    onDeleteItem: isOwnView ? deleteEntryTagById : null,
+    onDeleteItem: isOwnView ? (ds, catId, entryId) => deleteEntryById(ds, entryId) : null,
     canEditItems: isOwnView,
     onCreateItem: isOwnView ? createCalendarItem : null,
     toolbar: toolbar,
@@ -13137,7 +13207,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v9.21.4")), (() => {
+  }, "v9.24.1")), (() => {
     // Walking every stored week to size each season is the most expensive
     // read in the app. It only happens while the panel is actually open.
     const seasonShelf = !(sidebarOpen && sidebarTab === 'seasons') ? [] :
@@ -13197,6 +13267,7 @@ return /*#__PURE__*/React.createElement("div", {
     }), sidebarTab === 'reflections' && /*#__PURE__*/React.createElement(ReflectionsPanel, {
       entries: displayJournal[weekStart] || [],
       catById: displayCatById,
+      cats: displayCats,
       focusCat: displayCats.find(c => c.id === selectedPillar) || null,
       pinId: reflectPinId,
       picker: panelPicker(null),
