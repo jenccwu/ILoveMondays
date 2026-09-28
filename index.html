@@ -1808,6 +1808,11 @@ const SERIES_SCOPE_CHOICES = {
   ]
 };
 const REPEAT_NONE = "none";
+// Daily is stored as every weekday lit, so the one rule check below covers it
+// with no special case. The freq is kept distinct only so the dialog can hide
+// the day chips (there's nothing to choose) and read it back as "Every day".
+const REPEAT_DAILY = "daily";
+const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
 const REPEAT_WEEKLY = "weekly";
 const REPEAT_BIWEEKLY = "biweekly";
 function genRuleId() {
@@ -1854,6 +1859,8 @@ function ruleAppliesOn(rule, ds) {
 // be read back without re-deriving it from a row of day chips.
 function describeRule(rule) {
   if (!rule || rule.freq === REPEAT_NONE) return "Doesn't repeat";
+  const until = rule.endDs ? `, until ${fmtDsShort(rule.endDs)}` : "";
+  if (rule.freq === REPEAT_DAILY) return `Every day${until}`;
   const days = [...(rule.byDay || [])].sort((a, b) => a - b);
   if (!days.length) return "Doesn't repeat";
   const cadence = rule.freq === REPEAT_BIWEEKLY ? "Every other week" : "Every week";
@@ -1861,7 +1868,6 @@ function describeRule(rule) {
   if (days.length === 7) when = "every day";
   else if (days.length === 5 && days.every(d => d >= 1 && d <= 5)) when = "on weekdays";
   else when = "on " + days.map(d => DOW_SHORT[d]).join(", ");
-  const until = rule.endDs ? `, until ${fmtDsShort(rule.endDs)}` : "";
   return `${cadence} ${when}${until}`;
 }
 function fmtDsShort(ds) {
@@ -9834,7 +9840,7 @@ function EventDialog({ dlg, cats, onSave }) {
     editStart, setEditStart,
     editEnd, setEditEnd,
     editRepeat, setEditRepeat,
-    editRepeatDays,
+    editRepeatDays, setEditRepeatDays,
     editRepeatEnd, setEditRepeatEnd,
     togglePillarForEdit, toggleRepeatDay
   } = dlg;
@@ -10100,7 +10106,13 @@ function EventDialog({ dlg, cats, onSave }) {
     }
   }, "Repeat"), /*#__PURE__*/React.createElement("select", {
     value: editRepeat,
-    onChange: e => setEditRepeat(e.target.value),
+    onChange: e => {
+      const next = e.target.value;
+      // Leaving Every day for a weekly repeat starts from the event's own day
+      // rather than all seven lit, which would just be Every day again.
+      if (editRepeat === REPEAT_DAILY && next !== REPEAT_DAILY) setEditRepeatDays([dowOfDs(editDate || editingItem?.ds)]);
+      setEditRepeat(next);
+    },
     style: {
       border: `1px solid ${HAIRLINE}`,
       borderRadius: 8,
@@ -10112,12 +10124,12 @@ function EventDialog({ dlg, cats, onSave }) {
       background: "#fff",
       cursor: "pointer"
     }
-  }, /*#__PURE__*/React.createElement("option", { value: REPEAT_NONE }, "Doesn't repeat"), /*#__PURE__*/React.createElement("option", { value: REPEAT_WEEKLY }, "Every week"), /*#__PURE__*/React.createElement("option", { value: REPEAT_BIWEEKLY }, "Every other week")),
+  }, /*#__PURE__*/React.createElement("option", { value: REPEAT_NONE }, "Doesn't repeat"), /*#__PURE__*/React.createElement("option", { value: REPEAT_DAILY }, "Every day"), /*#__PURE__*/React.createElement("option", { value: REPEAT_WEEKLY }, "Every week"), /*#__PURE__*/React.createElement("option", { value: REPEAT_BIWEEKLY }, "Every other week")),
   // The day picker is what lets one control cover "every weekday", "Tue and
   // Thu" and "just Mondays" without a menu of named presets for each. The
   // event's own day is always lit and can't be turned off, so the setting
   // can never describe a series the event itself isn't part of.
-  editRepeat !== REPEAT_NONE && /*#__PURE__*/React.createElement("div", {
+  editRepeat !== REPEAT_NONE && editRepeat !== REPEAT_DAILY && /*#__PURE__*/React.createElement("div", {
     style: { display: "flex", gap: 4 }
   }, [1, 2, 3, 4, 5, 6, 0].map(dow => {
     const on = editRepeatDays.includes(dow);
@@ -13856,7 +13868,8 @@ function Planner() {
     const draft = {
       text, pillars: finalPillars, sched, targetDs,
       name: editName.trim(), linkUrl: editLinkUrl,
-      freq: editRepeat, byDay: [...editRepeatDays].sort((a, b) => a - b),
+      freq: editRepeat,
+      byDay: editRepeat === REPEAT_DAILY ? [...ALL_DAYS] : [...editRepeatDays].sort((a, b) => a - b),
       endDs: editRepeatEnd || null
     };
     // Changing something that belongs to a series is the one case where the
@@ -13945,7 +13958,10 @@ function Planner() {
       // member. Weeks already behind you keep the shape they had.
       const srcDow = dowOfDs(s.ds);
       const tgtDow = dowOfDs(s.targetDs);
-      const byDay = [...new Set(rule.byDay.filter(dow => dow !== srcDow).concat(tgtDow))].sort((a, b) => a - b);
+      // A daily series already lands on every day, so only the time can move.
+      const byDay = rule.freq === REPEAT_DAILY
+        ? [...ALL_DAYS]
+        : [...new Set(rule.byDay.filter(dow => dow !== srcDow).concat(tgtDow))].sort((a, b) => a - b);
       const movedRule = { ...rule, byDay, sched: s.sched ? sanitizeSched(s.sched) : rule.sched };
       s.apply(false);
       commitRules({ ...rules, [s.ruleId]: movedRule });
@@ -14197,7 +14213,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v9.27.5")), /*#__PURE__*/React.createElement(PlannerSidebar, {
+  }, "v9.27.6")), /*#__PURE__*/React.createElement(PlannerSidebar, {
     pillarsPanel: /*#__PURE__*/React.createElement(PillarsPanel, {
       cats, catTyping, setCatTyping, catCustomInput, setCatCustomInput,
       suggestionNames, setSuggestionNames, pillarEditId, setPillarEditId,
