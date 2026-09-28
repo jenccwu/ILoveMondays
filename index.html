@@ -323,8 +323,41 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     /* A season's evidence tile answers the pointer, so it reads as something
        to open rather than a caption. The band darkens; nothing moves. */
     .season-evidence:focus-visible { outline: 2px solid #C4622F; outline-offset: 2px; }
+    /* A pillar ring reaching its target: the ring swells once and a ring of
+       dots scatters outward, then it settles as the seamless ring. */
+    @keyframes ringBloom {
+      0%   { transform: scale(1); }
+      35%  { transform: scale(1.18); }
+      100% { transform: scale(1); }
+    }
+    @keyframes ringBurst {
+      0%   { opacity: 0; transform: scale(0.6); }
+      30%  { opacity: 1; }
+      100% { opacity: 0; transform: scale(1.35); }
+    }
+    .ring-bloom { animation: ringBloom 0.6s cubic-bezier(.3,1.6,.5,1); }
+    .ring-burst { opacity: 0; animation: ringBurst 0.8s ease-out; }
+    /* The tick in the calendar that completes a pillar's weekly target: the
+       check pops and a halo in the pillar's color spreads from it. */
+    @keyframes checkPop {
+      0%   { transform: scale(1); }
+      35%  { transform: scale(1.7); }
+      100% { transform: scale(1); }
+    }
+    @keyframes checkHalo {
+      0%   { opacity: 0.9; transform: scale(0.5); }
+      100% { opacity: 0; transform: scale(2.6); }
+    }
+    .target-pulse svg { animation: checkPop 0.6s cubic-bezier(.3,1.6,.5,1); }
+    .target-pulse::after {
+      content: ""; position: absolute; inset: -1px; border-radius: 50%;
+      border: 2px solid var(--pulse, #888); opacity: 0; pointer-events: none;
+      animation: checkHalo 0.75s ease-out;
+    }
     @media (prefers-reduced-motion: reduce) {
       @keyframes sciLand { 0%, 100% { background: rgba(255,214,160,0); } }
+      .ring-bloom, .ring-burst, .target-pulse svg { animation: none; }
+      .target-pulse::after { display: none; }
     }
   </style>
 </head>
@@ -366,6 +399,10 @@ const K = {
   rules: "planner:recurring",
   // One entry per season that has been read.
   seasons: "planner:seasons",
+  // Which pillar rings have already bloomed for reaching their target, as
+  // "<week start>|<pillar id>". Interface state, not the user's data, so it
+  // stays out of exports.
+  celebrated: "planner:celebrated",
   userName: "planner:userName",
   importedViews: "planner:importedViews",
   week: ds => WEEK_PREFIX + ds,
@@ -981,19 +1018,22 @@ function PanelHeader({ eyebrow, readOnly, title, subtitle, picker, onClose }) {
 // tile from taking focus on mousedown, so the reflection being written keeps
 // its cursor \u2014 losing it would blur the textarea, and a blank reflection
 // that blurs is thrown away.
-function PillarPicker({ cats, focusId, shownId, onPick, ariaLabel = "Focus on a pillar", clearHint = "click to clear the focus", keepFocus = false }) {
+// `compact` is for tight spots, like the Pillar row inside a reflection card,
+// where the full-size row wrapped onto a second line. Smaller tiles and a
+// capped name keep it on one line; the full name is still in the tooltip.
+function PillarPicker({ cats, focusId, shownId, onPick, ariaLabel = "Focus on a pillar", clearHint = "click to clear the focus", keepFocus = false, compact = false }) {
   return /*#__PURE__*/React.createElement("div", {
     "data-pillar-picker": "1",
     role: "group",
     "aria-label": ariaLabel,
-    style: { display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }
+    style: { display: "flex", gap: compact ? 3 : 4, alignItems: "center", flexWrap: "wrap", minWidth: 0 }
   }, cats.map(cat => {
     const isFocus = cat.id === focusId;
     const isShown = !isFocus && cat.id === shownId;
     const named = isFocus || isShown;
     const deep = catDeep(cat);
     const base = {
-      height: 22,
+      height: compact ? 18 : 22,
       borderRadius: CHIP_RADIUS,
       cursor: "pointer",
       flexShrink: 0,
@@ -1002,11 +1042,12 @@ function PillarPicker({ cats, focusId, shownId, onPick, ariaLabel = "Focus on a 
     };
     const style = named ? {
       ...base,
-      padding: "0 8px",
-      fontSize: 9.5,
+      padding: compact ? "0 6px" : "0 8px",
+      fontSize: compact ? 9 : 9.5,
       fontWeight: 700,
-      letterSpacing: "0.07em",
+      letterSpacing: compact ? "0.05em" : "0.07em",
       textTransform: "uppercase",
+      ...(compact ? { maxWidth: 96, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } : {}),
       ...(isFocus ? pillarChip(cat, true) : {
         background: cat.bg || PLAN_BG,
         border: `${PLAN_BORDER_W}px solid ${deep}`,
@@ -1015,7 +1056,7 @@ function PillarPicker({ cats, focusId, shownId, onPick, ariaLabel = "Focus on a 
       })
     } : {
       ...base,
-      width: 18,
+      width: compact ? 13 : 18,
       padding: 0,
       background: isTend(cat.id) ? TILE_PLAN_FILL : cat.color,
       border: `${PLAN_BORDER_W}px solid ${cat.color}`
@@ -1996,11 +2037,37 @@ function renderWithLinks(text, color) {
 //
 // The centre is only ever the number of days done. A fraction ("3/5") reads
 // as how far short you are; the target is already there in how many arcs
-// the ring has. And there is no special state for reaching it: a full ring
-// is the whole signal, and a badge on top would turn it into a scoreboard.
-function PillarRing({ goal, done, planned, color, deep, size = 44, title }) {
+// the ring has.
+//
+// Reaching the target is marked in the ring's own language rather than with
+// a badge on top, which would turn it into a scoreboard: the gaps between the
+// days close and the ring becomes one piece. Going over looks the same as
+// hitting it \u2014 the number already says how many.
+//
+// The first time a ring is seen whole in the current week it blooms once.
+// Most days are ticked off in the calendar, not here, so the bloom waits for
+// whenever this view is next open rather than needing to be watched live.
+// `celebrateKey` is null for other weeks and imported views, which never
+// bloom. Dropping back below target clears the key, so reaching it again
+// earns the bloom again.
+function PillarRing({ goal, done, planned, color, deep, size = 44, title, celebrateKey = null }) {
   const n = Math.max(1, Math.min(7, Math.round(goal) || 1));
   const doneN = Math.min(done, n);
+  const whole = doneN >= n;
+  const [bloom, setBloom] = useState(false);
+  useEffect(() => {
+    if (!celebrateKey) return;
+    const seen = db.read(K.celebrated, []);
+    const has = seen.includes(celebrateKey);
+    if (whole && !has) {
+      // Only recent weeks matter; keep the list from growing forever.
+      db.write(K.celebrated, [...seen, celebrateKey].slice(-100));
+      setBloom(true);
+      const t = setTimeout(() => setBloom(false), 900);
+      return () => clearTimeout(t);
+    }
+    if (!whole && has) db.write(K.celebrated, seen.filter(k => k !== celebrateKey));
+  }, [whole, celebrateKey]);
   const planN = Math.max(0, Math.min(planned, n - doneN));
   const thick = Math.max(3.2, size * 0.16);
   const c = size / 2;
@@ -2015,7 +2082,7 @@ function PillarRing({ goal, done, planned, color, deep, size = 44, title }) {
   // Wider gaps when there are few arcs, so a target of two still reads as
   // two days rather than one broken circle.
   const gap = n <= 3 ? 14 : n <= 5 ? 11 : 9;
-  const arcs = n === 1
+  const arcs = n === 1 || whole
     ? [React.createElement("circle", {
         key: 0,
         "data-ring-arc": fillFor(0) === deep ? "done" : fillFor(0) === light ? "planned" : "open",
@@ -2038,7 +2105,16 @@ function PillarRing({ goal, done, planned, color, deep, size = 44, title }) {
     "aria-label": title,
     "data-pillar-ring": "1",
     style: { display: "block", flexShrink: 0, overflow: "visible" }
-  }, title && React.createElement("title", null, title), arcs, React.createElement("text", {
+  }, title && React.createElement("title", null, title), bloom && React.createElement("g", {
+    className: "ring-burst",
+    style: { transformOrigin: `${c}px ${c}px`, transformBox: "view-box" }
+  }, Array.from({ length: 8 }, (_, i) => {
+    const [x, y] = pt(R + 4, i * 45).split(" ");
+    return React.createElement("circle", { key: i, cx: x, cy: y, r: Math.max(1.4, size * 0.04), fill: deep });
+  })), React.createElement("g", {
+    className: bloom ? "ring-bloom" : undefined,
+    style: { transformOrigin: `${c}px ${c}px`, transformBox: "view-box" }
+  }, arcs, React.createElement("text", {
     x: c, y: c,
     textAnchor: "middle",
     dominantBaseline: "central",
@@ -2049,7 +2125,7 @@ function PillarRing({ goal, done, planned, color, deep, size = 44, title }) {
       fontFamily: "inherit",
       fontVariantNumeric: "tabular-nums"
     }
-  }, String(done)));
+  }, String(done))));
 }
 function GripIcon() {
   return /*#__PURE__*/React.createElement("svg", {
@@ -3000,7 +3076,7 @@ function JournalEntry({
     style: {
       display: "flex",
       alignItems: "center",
-      gap: 8,
+      gap: 6,
       marginTop: 6,
       paddingTop: 8,
       borderTop: `1px solid ${WASH}`
@@ -3014,6 +3090,7 @@ function JournalEntry({
     ariaLabel: "Tag this reflection with a pillar",
     clearHint: "click to untag",
     keepFocus: true,
+    compact: true,
     onPick: id => onTag(id ? cats.find(c => c.id === id) || null : null)
   })), editing ? null : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
     onClick: !readOnly ? () => {
@@ -4581,6 +4658,7 @@ function CalendarEventTile({
       whiteSpace: "nowrap"
     }
   }, timeLabel), isPastOrToday && onToggleDone && isOwnView && /*#__PURE__*/React.createElement("button", {
+    "data-done-toggle": `${ds}::${it.id}`,
     onClick: e => {
       e.stopPropagation();
       onToggleDone(ds, it.cat.id, it.id);
@@ -4778,6 +4856,7 @@ function UnscheduledItem({
       minWidth: 0
     }
   }, plainOf(it.text)), it.seriesId && repeatGlyph(nameColor, 8), isPastOrToday && onToggleDone && isOwnView && /*#__PURE__*/React.createElement("button", {
+    "data-done-toggle": `${ds}::${it.id}`,
     onClick: e => {
       e.stopPropagation();
       onToggleDone(ds, it.cat.id, it.id);
@@ -9111,6 +9190,7 @@ function ReflectionsPanel({
 const TRANSFER_SKIP_PREFIXES = [
   K.importedViews,
   K.userName,
+  K.celebrated,
   "planner:ai",
   K.legacyApiKey,
   K.legacyApiProvider
@@ -12222,8 +12302,15 @@ function PillarRow({
         gap: 3,
         fontFamily: "inherit"
       }
-    }, /*#__PURE__*/React.createElement(ReflectBubble, null), n > 0 && /*#__PURE__*/React.createElement("span", {
-      style: { fontSize: 9, fontWeight: 700, color: REFLECT_DEEP }
+    }, /*#__PURE__*/React.createElement(ReflectBubble, {
+      // Filled in the pillar's color once there's something written, as on a
+      // reflected calendar item; the hover-only invitation is a gray outline,
+      // like the other hover affordances. The count reads in ink, as the
+      // number inside the ring does.
+      stroke: n > 0 ? cat.color : FAINT,
+      fill: n > 0 ? cat.color : "none"
+    }), n > 0 && /*#__PURE__*/React.createElement("span", {
+      style: { fontSize: 9, fontWeight: 700, color: INK }
     }, String(n)));
   })()), (() => {
     // The week so far, under the name: days done against the target, with
@@ -12253,7 +12340,10 @@ function PillarRow({
       color: cat.color,
       deep: catDeep(cat),
       size: 44,
-      title
+      title,
+      celebrateKey: isOwnView && dates.some(d => ymd(d) === todayStr)
+        ? `${ymd(dates[0])}|${cat.id}`
+        : null
     }));
   })()), dates.map((d, dateIdx) => {
     const ds = ymd(d),
@@ -13112,7 +13202,38 @@ function Planner() {
     const e = entryStore.get(ds, entryId);
     if (!e) return;
     const isChecking = !e.done;
+    // Does this tick complete a pillar's weekly target? Only when it's the
+    // first thing done that day for that pillar (a second tick on a day
+    // already counted adds nothing) and it lands exactly on the target.
+    let completed = null;
+    if (isChecking && dates.some(d => ymd(d) === ds)) {
+      completed = pillarsOrDefault(e.pillars).find(pid => {
+        const goal = getGoal(pid);
+        if (goal == null) return false;
+        const n = Math.max(1, Math.min(7, Math.round(goal) || 1));
+        const dayAlreadyCounted = entriesForCell(displayEntries, ds, pid).some(x => x.done);
+        return !dayAlreadyCounted && daysDone(pid) + 1 === n;
+      }) || null;
+    }
     entryStore.apply(prev => entryOps.setDone(prev, ds, entryId, isChecking));
+    // Celebrate on the check itself, in the calendar, where most ticking
+    // happens \u2014 right after the action, which is when a celebration does its
+    // work. Done through the DOM rather than state: it is a one-off flourish
+    // on a button that already exists, and threading a prop through four
+    // calendar components for it would cost more than it's worth. The pillar
+    // view needs none of this; its ring blooms on its own.
+    if (completed) {
+      const color = displayCatById[completed]?.color;
+      setTimeout(() => {
+        document.querySelectorAll(`[data-done-toggle="${ds}::${entryId}"]`).forEach(btn => {
+          if (color) btn.style.setProperty("--pulse", color);
+          btn.classList.remove("target-pulse");
+          void btn.offsetWidth;
+          btn.classList.add("target-pulse");
+          setTimeout(() => btn.classList.remove("target-pulse"), 800);
+        });
+      }, 0);
+    }
     // Checking something off in the past or today invites a reflection.
     if (isChecking && !(ds > todayStr)) {
       setNudgeItem({ ds, catId, entryId });
@@ -14076,7 +14197,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v9.24.4")), /*#__PURE__*/React.createElement(PlannerSidebar, {
+  }, "v9.27.5")), /*#__PURE__*/React.createElement(PlannerSidebar, {
     pillarsPanel: /*#__PURE__*/React.createElement(PillarsPanel, {
       cats, catTyping, setCatTyping, catCustomInput, setCatCustomInput,
       suggestionNames, setSuggestionNames, pillarEditId, setPillarEditId,
