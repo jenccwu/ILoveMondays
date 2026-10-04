@@ -7,6 +7,7 @@
   <script src="https://cdn.jsdelivr.net/npm/firebase@12.19.0/firebase-app-compat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/firebase@12.19.0/firebase-auth-compat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/firebase@12.19.0/firebase-firestore-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/firebase@12.19.0/firebase-app-check-compat.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
   <script>/**
@@ -540,6 +541,13 @@ const FIREBASE_CONFIG = {
   messagingSenderId: "783626839888",
   appId: "1:783626839888:web:9f4625b9457d6ed89e2e55"
 };
+// App Check proves an AI request came from the real site, so a copied API
+// key can't spend Gemini credit from anywhere else. The site key is public by
+// design. It only works on the domains registered for it, so App Check is
+// switched on only there; anywhere else (a file opened from disk) the planner
+// still works and AI features say why they're unavailable.
+const APP_CHECK_SITE_KEY = "6Lc1EN8tAAAAAC7e7oZ6VrYCGV7tzy4gJlMpDN0j";
+const APP_CHECK_HOSTS = ["ilovemondays.app", "www.ilovemondays.app"];
 const SYNC_OWNER = "ilm-sync:owner";
 const SYNC_DIRTY = "ilm-sync:dirty";
 const SYNC_DEBOUNCE_MS = 800;
@@ -565,8 +573,37 @@ const cloud = {
   init() {
     if (!this.available()) return false;
     if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    this.appCheck = false;
+    if (APP_CHECK_HOSTS.includes(window.location.hostname) && firebase.appCheck) {
+      try {
+        firebase.appCheck().activate(new firebase.appCheck.ReCaptchaEnterpriseProvider(APP_CHECK_SITE_KEY), true);
+        this.appCheck = true;
+      } catch (err) { console.warn("App Check didn't start", err); }
+    }
     this.fs = firebase.firestore();
     return true;
+  },
+
+  // Headers for a Gemini request through Firebase AI Logic: the project's
+  // public Firebase key to address it, an App Check token to prove the site,
+  // and the person's sign-in so requests can later be limited to members.
+  async aiHeaders() {
+    if (!this.user || !firebase.auth().currentUser) throw new Error("Sign in to use AI features.");
+    if (!this.appCheck) throw new Error("AI features only work at ilovemondays.app, where the site's security check is registered.");
+    let check;
+    try { check = await firebase.appCheck().getToken(false); }
+    catch (err) {
+      console.warn("App Check token failed", err);
+      throw new Error("Google's security check didn't pass on this device, so the request wasn't sent. Reload the page and try again.");
+    }
+    const idToken = await firebase.auth().currentUser.getIdToken();
+    return {
+      "content-type": "application/json",
+      "x-goog-api-key": FIREBASE_CONFIG.apiKey,
+      "x-goog-api-client": "gl-js/12.19.0 fire/12.19.0",
+      "X-Firebase-AppCheck": check.token,
+      "Authorization": "Firebase " + idToken
+    };
   },
   subscribe(fn) { this.subs.add(fn); return () => this.subs.delete(fn); },
   notify() { this.subs.forEach(fn => { try { fn(); } catch {} }); },
@@ -6256,9 +6293,56 @@ async function aiFetch(url, options, { onRetry } = {}) {
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
+// The request and response shapes are the same whether Gemini is reached
+// directly with a key or through Firebase, so both providers share them.
+function geminiBody({ system, prompt, maxTokens, wantJson }) {
+  const body = {
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: { maxOutputTokens: maxTokens }
+  };
+  if (wantJson) body.generationConfig.responseMimeType = "application/json";
+  if (system) body.systemInstruction = { parts: [{ text: system }] };
+  return body;
+}
+function geminiResult(res, allowTruncated) {
+  assertComplete(((res.candidates || [])[0] || {}).finishReason, parseGeminiText(res), { allowTruncated });
+  return parseGeminiText(res);
+}
+
+// Gemini through the signed-in account (Firebase AI Logic). No key lives in
+// the browser: Firebase holds it, and only requests from the real site, made
+// by a signed-in person, get through. Billing and privacy follow the Firebase
+// project's plan.
+//
+// Firebase offers no model list to a browser, so this is a starting set taken
+// from Firebase's supported-models page (October 2026), not a fence. The model
+// field accepts any name, because new models arrive faster than releases of
+// this file.
+const FIREBASE_AI_URL = "https://firebasevertexai.googleapis.com/v1beta/projects/";
+const FIREBASE_AI_SUGGESTED = ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.5-flash-lite"];
+
+const firebaseGeminiProvider = {
+  id: "firebase",
+  label: "Gemini through your account",
+  needsKey: false,
+  async listModels() {
+    return FIREBASE_AI_SUGGESTED.map(id => ({ id, label: id }));
+  },
+  async complete({ model, system, prompt, maxTokens = 4096, json: wantJson = false, allowTruncated = false }) {
+    const headers = await cloud.aiHeaders();
+    const url = `${FIREBASE_AI_URL}${encodeURIComponent(FIREBASE_CONFIG.projectId)}/models/${encodeURIComponent(model)}:generateContent`;
+    const res = await aiFetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(geminiBody({ system, prompt, maxTokens, wantJson }))
+    });
+    return geminiResult(res, allowTruncated);
+  }
+};
+
 const geminiProvider = {
   id: "gemini",
-  label: "Google Gemini",
+  label: "Google Gemini (your own key)",
   keyHint: "Starts with AQ.",
   // Google moved from AIza keys to AQ. keys during 2026 and is retiring the old
   // format. Both shapes are accepted here — the check is a nudge against a
@@ -6276,19 +6360,12 @@ const geminiProvider = {
   // to suppress prose and code fences. Left off for the model check, which
   // wants one word back.
   async complete({ key, model, system, prompt, maxTokens = 4096, json: wantJson = false, allowTruncated = false }) {
-    const body = {
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: maxTokens }
-    };
-    if (wantJson) body.generationConfig.responseMimeType = "application/json";
-    if (system) body.systemInstruction = { parts: [{ text: system }] };
     const res = await aiFetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
       method: "POST",
       headers: { "x-goog-api-key": key, "content-type": "application/json" },
-      body: JSON.stringify(body)
+      body: JSON.stringify(geminiBody({ system, prompt, maxTokens, wantJson }))
     });
-    assertComplete(((res.candidates || [])[0] || {}).finishReason, parseGeminiText(res), { allowTruncated });
-    return parseGeminiText(res);
+    return geminiResult(res, allowTruncated);
   }
 };
 
@@ -6334,7 +6411,7 @@ const anthropicProvider = {
   }
 };
 
-const AI_PROVIDERS = [geminiProvider, anthropicProvider];
+const AI_PROVIDERS = [firebaseGeminiProvider, geminiProvider, anthropicProvider];
 
 function aiProviderById(id) {
   return AI_PROVIDERS.find(p => p.id === id) || null;
@@ -6346,7 +6423,18 @@ function readAIConnection() {
   const providerId = db.readRaw(K.aiProvider) || AI_PROVIDERS[0].id;
   const key = db.readRaw(K.aiKey) || "";
   const model = db.readRaw(K.aiModel) || "";
-  return { providerId, key, model, ready: Boolean(key && model && aiProviderById(providerId)) };
+  const provider = aiProviderById(providerId);
+  const keyOk = Boolean(key) || Boolean(provider && provider.needsKey === false);
+  return { providerId, key, model, ready: Boolean(keyOk && model && provider) };
+}
+
+// Moving to Gemini through the account: a saved direct-Gemini connection
+// switches over, keeping its model, and the key is removed from this browser
+// since nothing uses it any more. Runs on every device as it signs in.
+function migrateAIToAccount() {
+  if (db.readRaw(K.aiProvider) !== "gemini") return;
+  db.writeRaw(K.aiProvider, firebaseGeminiProvider.id);
+  db.remove(K.aiKey);
 }
 
 function saveAIConnection({ providerId, key, model }) {
@@ -6368,6 +6456,12 @@ function purgeLegacyCredentials() {
 }
 
 // Enough of the key to recognise which one it is, and not enough to use.
+// A model list with the saved model added if it isn't already on it, so a
+// connection that works today never disappears from its own settings.
+function withModel(list, id) {
+  return id && !list.some(m => m.id === id) ? list.concat([{ id, label: id }]) : list;
+}
+
 function maskKey(key) {
   if (!key) return "";
   if (key.length <= 12) return "•".repeat(key.length);
@@ -10863,11 +10957,15 @@ function AIConnectionDialog({ onClose }) {
   // put a credential on screen for no reason; showing nothing would make a
   // configured connection look empty.
   const [keyDirty, setKeyDirty] = useState(false);
-  const [model, setModel] = useState(saved.model);
-  const [models, setModels] = useState(saved.model ? [{ id: saved.model, label: saved.model }] : []);
+  const savedProvider = aiProviderById(saved.providerId) || AI_PROVIDERS[0];
+  const [model, setModel] = useState(saved.model || (savedProvider.needsKey === false ? FIREBASE_AI_SUGGESTED[0] : ""));
+  const [models, setModels] = useState(savedProvider.needsKey === false
+    ? withModel(FIREBASE_AI_SUGGESTED.map(id => ({ id, label: id })), saved.model)
+    : saved.model ? [{ id: saved.model, label: saved.model }] : []);
   const [status, setStatus] = useState("idle");
   const [message, setMessage] = useState("");
   const provider = aiProviderById(providerId) || AI_PROVIDERS[0];
+  const keyless = provider.needsKey === false;
 
   // Reopening the dialog used to show a list of exactly one model — the saved
   // one — because the list only ever came back from pressing Test. That made
@@ -10898,13 +10996,24 @@ function AIConnectionDialog({ onClose }) {
     // would offer models this key can't reach.
     setKey("");
     setKeyDirty(true);
-    setModel("");
-    setModels([]);
+    const next = aiProviderById(id);
+    if (next && next.needsKey === false) {
+      setModels(FIREBASE_AI_SUGGESTED.map(m => ({ id: m, label: m })));
+      setModel(FIREBASE_AI_SUGGESTED[0]);
+    } else {
+      setModel("");
+      setModels([]);
+    }
     setStatus("idle");
     setMessage("");
   }
 
   async function test() {
+    if (keyless) {
+      if (!model.trim()) { setStatus("error"); setMessage("Choose or type a model first."); return; }
+      await verifyModel(model.trim(), 0);
+      return;
+    }
     if (!key.trim()) {
       setStatus("error");
       setMessage("Paste a key first.");
@@ -10938,7 +11047,7 @@ function AIConnectionDialog({ onClose }) {
   // only after a season reading had been asked for and waited on. A
   // two-token completion settles it in a second instead.
   async function verifyModel(id, modelCount) {
-    if (!id || !key.trim()) return;
+    if (!id || (!keyless && !key.trim())) return;
     setStatus("testing");
     setMessage(`Checking ${id}\u2026`);
     try {
@@ -10968,7 +11077,7 @@ function AIConnectionDialog({ onClose }) {
   }
 
   function save() {
-    saveAIConnection({ providerId, key: key.trim(), model });
+    saveAIConnection({ providerId, key: keyless ? "" : key.trim(), model: model.trim() });
     onClose();
   }
 
@@ -10977,7 +11086,7 @@ function AIConnectionDialog({ onClose }) {
     onClose();
   }
 
-  const canSave = Boolean(key.trim() && model);
+  const canSave = Boolean((keyless || key.trim()) && model.trim());
   const statusColor = status === "ok" ? "#4E7A5E" : status === "error" ? "#A85448" : MUTED;
 
   return /*#__PURE__*/React.createElement(Modal, {
@@ -10988,7 +11097,9 @@ function AIConnectionDialog({ onClose }) {
     }, "AI connection"),
     /*#__PURE__*/React.createElement("div", {
       style: { fontSize: 12, color: INK_3, lineHeight: 1.5, marginBottom: 18 }
-    }, "Powers Seasons. Your key is stored in this browser and sent only to the provider you pick, only when you ask for a season to be read."),
+    }, keyless
+      ? "Powers Seasons. Runs through your I Love Mondays account, so there's no key to paste. Your writing goes to Google's Gemini only when you ask for a season to be read."
+      : "Powers Seasons. Your key is stored in this browser and sent only to the provider you pick, only when you ask for a season to be read."),
 
     /*#__PURE__*/React.createElement("div", { style: { marginBottom: 14 } },
       /*#__PURE__*/React.createElement("div", { style: AI_FIELD_LABEL }, "Provider"),
@@ -10998,7 +11109,7 @@ function AIConnectionDialog({ onClose }) {
         style: { ...AI_INPUT, cursor: "pointer" }
       }, AI_PROVIDERS.map(p => /*#__PURE__*/React.createElement("option", { key: p.id, value: p.id }, p.label)))),
 
-    /*#__PURE__*/React.createElement("div", { style: { marginBottom: 14 } },
+    keyless ? null : /*#__PURE__*/React.createElement("div", { style: { marginBottom: 14 } },
       /*#__PURE__*/React.createElement("div", { style: AI_FIELD_LABEL }, "API key"),
       /*#__PURE__*/React.createElement("input", {
         type: "text",
@@ -11042,7 +11153,23 @@ function AIConnectionDialog({ onClose }) {
 
     /*#__PURE__*/React.createElement("div", { style: { marginBottom: 18 } },
       /*#__PURE__*/React.createElement("div", { style: AI_FIELD_LABEL }, "Model"),
-      models.length
+      keyless
+        // Typed or picked: the suggestions are a starting point, and a newer
+        // model can be named without waiting for a new version of this file.
+        ? /*#__PURE__*/React.createElement(React.Fragment, null,
+            /*#__PURE__*/React.createElement("input", {
+              type: "text",
+              list: "ilm-ai-models",
+              value: model,
+              spellCheck: false,
+              autoComplete: "off",
+              onChange: e => { setModel(e.target.value); setStatus("idle"); setMessage(""); },
+              style: AI_INPUT
+            }),
+            /*#__PURE__*/React.createElement("datalist", { id: "ilm-ai-models" },
+              rankModels(models).map(m => /*#__PURE__*/React.createElement("option", { key: m.id, value: m.id },
+                MODEL_TIER_NOTE[modelTier(m.id)]))))
+        : models.length
         ? /*#__PURE__*/React.createElement("select", {
             value: model,
             // Changing the model re-checks it. Picking from a dropdown and
@@ -14437,7 +14564,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v10.4.1"), /*#__PURE__*/React.createElement(AccountLine, null)), /*#__PURE__*/React.createElement(PlannerSidebar, {
+  }, "v10.4.2"), /*#__PURE__*/React.createElement(AccountLine, null)), /*#__PURE__*/React.createElement(PlannerSidebar, {
     pillarsPanel: /*#__PURE__*/React.createElement(PillarsPanel, {
       cats, catTyping, setCatTyping, catCustomInput, setCatCustomInput,
       suggestionNames, setSuggestionNames, pillarEditId, setPillarEditId,
@@ -14587,6 +14714,7 @@ function AuthGate() {
     try {
       await cloud.start(user);
       migrateTendStorage();
+      migrateAIToAccount();
       setPhase("ready");
     } catch (err) {
       console.warn(err);
