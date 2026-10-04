@@ -575,6 +575,7 @@ const cloud = {
     if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     this.appCheck = false;
     if (APP_CHECK_HOSTS.includes(window.location.hostname) && firebase.appCheck) {
+      this.watchAppCheckExchange();
       try {
         firebase.appCheck().activate(new firebase.appCheck.ReCaptchaEnterpriseProvider(APP_CHECK_SITE_KEY), true);
         this.appCheck = true;
@@ -582,6 +583,27 @@ const cloud = {
     }
     this.fs = firebase.firestore();
     return true;
+  },
+
+  // When Google turns down the App Check exchange, the SDK reports only the
+  // status code. The response body says why (wrong project, unregistered app,
+  // key mismatch), so it's read here and shown with the error.
+  appCheckServerError: "",
+  watchAppCheckExchange() {
+    if (this.fetchWrapped || typeof window.fetch !== "function") return;
+    this.fetchWrapped = true;
+    const original = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const res = await original(input, init);
+      const url = typeof input === "string" ? input : (input && input.url) || "";
+      if (!res.ok && url.indexOf("firebaseappcheck.googleapis.com") !== -1) {
+        try {
+          const body = await res.clone().json();
+          this.appCheckServerError = String((body && body.error && body.error.message) || "").slice(0, 300);
+        } catch {}
+      }
+      return res;
+    };
   },
 
   // Headers for a Gemini request through Firebase AI Logic: the project's
@@ -597,8 +619,8 @@ const cloud = {
       // Google's own reason rides along: it's the only way to tell a key in
       // the wrong project from a blocked script from a domain not on the key.
       const status = err && err.customData && err.customData.httpStatus;
-      const detail = [err && err.code, status ? "HTTP " + status : ""].filter(Boolean).join(", ")
-        || String(err && err.message || "").slice(0, 120);
+      const detail = [err && err.code, status ? "HTTP " + status : "", this.appCheckServerError]
+        .filter(Boolean).join(", ") || String(err && err.message || "").slice(0, 120);
       throw new Error("Google's security check didn't pass on this device, so the request wasn't sent." +
         (detail ? " (Details: " + detail + ")" : ""));
     }
@@ -14570,7 +14592,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v10.4.3"), /*#__PURE__*/React.createElement(AccountLine, null)), /*#__PURE__*/React.createElement(PlannerSidebar, {
+  }, "v10.4.4"), /*#__PURE__*/React.createElement(AccountLine, null)), /*#__PURE__*/React.createElement(PlannerSidebar, {
     pillarsPanel: /*#__PURE__*/React.createElement(PillarsPanel, {
       cats, catTyping, setCatTyping, catCustomInput, setCatCustomInput,
       suggestionNames, setSuggestionNames, pillarEditId, setPillarEditId,
