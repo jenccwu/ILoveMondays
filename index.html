@@ -6263,11 +6263,19 @@ function describeConnectionError(status, body, { retried = false } = {}) {
     const m = body.error && (body.error.message || body.error.status);
     return typeof m === "string" ? m : "";
   })();
+  // Google's wording rides along on the errors where its reason decides what
+  // to do next. A 429 on a first-ever request is an allowance of zero (a
+  // project on the free plan), not a burst of traffic, and only the message
+  // tells the two apart.
+  const said = detail ? ` (Google said: ${detail.slice(0, 260)})` : "";
   if (status === 401 || status === 403) {
-    return "That key was rejected. Check it was copied whole, and that it's a key for the provider selected above.";
+    return "The request was turned away. If you're using your own key, check it was copied whole and matches the provider selected above." + said;
   }
   if (status === 429) {
-    return "The key works, but it's over its rate limit right now. Wait a minute and try again.";
+    if (/limit:\s*0\b|free[_ ]tier|billing/i.test(detail)) {
+      return "This project has no Gemini allowance for that model yet. That usually means the Firebase project is still on the free (Spark) plan." + said;
+    }
+    return "Over the rate limit right now. Wait a minute and try again." + said;
   }
   if (status === 404) {
     // A 404 here is almost always a model the account can't use, and the
@@ -10994,6 +11002,10 @@ function AIConnectionDialog({ onClose }) {
   const [message, setMessage] = useState("");
   const provider = aiProviderById(providerId) || AI_PROVIDERS[0];
   const keyless = provider.needsKey === false;
+  // For the keyless provider the list is a starting set, so "Other model…"
+  // opens a field for any name. A saved model not on the list opens in it.
+  const [otherModel, setOtherModel] = useState(Boolean(saved.model) && savedProvider.needsKey === false
+    && !FIREBASE_AI_SUGGESTED.includes(saved.model));
 
   // Reopening the dialog used to show a list of exactly one model — the saved
   // one — because the list only ever came back from pressing Test. That made
@@ -11182,21 +11194,34 @@ function AIConnectionDialog({ onClose }) {
     /*#__PURE__*/React.createElement("div", { style: { marginBottom: 18 } },
       /*#__PURE__*/React.createElement("div", { style: AI_FIELD_LABEL }, "Model"),
       keyless
-        // Typed or picked: the suggestions are a starting point, and a newer
-        // model can be named without waiting for a new version of this file.
+        // A plain dropdown of the starting set, plus "Other model…" for a name
+        // that isn't on it yet — newer models arrive faster than new versions
+        // of this file. (A text box with suggestions hid every option but the
+        // one already typed, which read as a list of one.)
         ? /*#__PURE__*/React.createElement(React.Fragment, null,
-            /*#__PURE__*/React.createElement("input", {
+            /*#__PURE__*/React.createElement("select", {
+              value: otherModel ? "__other" : model,
+              onChange: e => {
+                const v = e.target.value;
+                if (v === "__other") { setOtherModel(true); setModel(""); setStatus("idle"); setMessage(""); return; }
+                setOtherModel(false);
+                setModel(v);
+                verifyModel(v, 0);
+              },
+              style: { ...AI_INPUT, cursor: "pointer" }
+            },
+              rankModels(FIREBASE_AI_SUGGESTED.map(id => ({ id, label: id }))).map(m => /*#__PURE__*/React.createElement("option", { key: m.id, value: m.id },
+                `${m.label} \u2014 ${MODEL_TIER_NOTE[modelTier(m.id)]}`)),
+              /*#__PURE__*/React.createElement("option", { value: "__other" }, "Other model\u2026")),
+            otherModel ? /*#__PURE__*/React.createElement("input", {
               type: "text",
-              list: "ilm-ai-models",
               value: model,
+              placeholder: "Model name, e.g. gemini-3.8-flash",
               spellCheck: false,
               autoComplete: "off",
               onChange: e => { setModel(e.target.value); setStatus("idle"); setMessage(""); },
-              style: AI_INPUT
-            }),
-            /*#__PURE__*/React.createElement("datalist", { id: "ilm-ai-models" },
-              rankModels(models).map(m => /*#__PURE__*/React.createElement("option", { key: m.id, value: m.id },
-                MODEL_TIER_NOTE[modelTier(m.id)]))))
+              style: { ...AI_INPUT, marginTop: 8 }
+            }) : null)
         : models.length
         ? /*#__PURE__*/React.createElement("select", {
             value: model,
@@ -14592,7 +14617,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v10.4.5"), /*#__PURE__*/React.createElement(AccountLine, null)), /*#__PURE__*/React.createElement(PlannerSidebar, {
+  }, "v10.4.7"), /*#__PURE__*/React.createElement(AccountLine, null)), /*#__PURE__*/React.createElement(PlannerSidebar, {
     pillarsPanel: /*#__PURE__*/React.createElement(PillarsPanel, {
       cats, catTyping, setCatTyping, catCustomInput, setCatCustomInput,
       suggestionNames, setSuggestionNames, pillarEditId, setPillarEditId,
