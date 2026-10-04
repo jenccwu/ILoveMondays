@@ -594,7 +594,13 @@ const cloud = {
     try { check = await firebase.appCheck().getToken(false); }
     catch (err) {
       console.warn("App Check token failed", err);
-      throw new Error("Google's security check didn't pass on this device, so the request wasn't sent. Reload the page and try again.");
+      // Google's own reason rides along: it's the only way to tell a key in
+      // the wrong project from a blocked script from a domain not on the key.
+      const status = err && err.customData && err.customData.httpStatus;
+      const detail = [err && err.code, status ? "HTTP " + status : ""].filter(Boolean).join(", ")
+        || String(err && err.message || "").slice(0, 120);
+      throw new Error("Google's security check didn't pass on this device, so the request wasn't sent." +
+        (detail ? " (Details: " + detail + ")" : ""));
     }
     const idToken = await firebase.auth().currentUser.getIdToken();
     return {
@@ -14564,7 +14570,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v10.4.2"), /*#__PURE__*/React.createElement(AccountLine, null)), /*#__PURE__*/React.createElement(PlannerSidebar, {
+  }, "v10.4.3"), /*#__PURE__*/React.createElement(AccountLine, null)), /*#__PURE__*/React.createElement(PlannerSidebar, {
     pillarsPanel: /*#__PURE__*/React.createElement(PillarsPanel, {
       cats, catTyping, setCatTyping, catCustomInput, setCatCustomInput,
       suggestionNames, setSuggestionNames, pillarEditId, setPillarEditId,
