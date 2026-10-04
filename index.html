@@ -4,6 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>I Love Mondays</title>
+  <script src="https://cdn.jsdelivr.net/npm/firebase@12.19.0/firebase-app-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/firebase@12.19.0/firebase-auth-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/firebase@12.19.0/firebase-firestore-compat.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
   <script>/**
@@ -464,6 +467,7 @@ const db = {
   },
   writeRaw(key, str) {
     try { localStorage.setItem(key, str); } catch {}
+    cloud.noteChange(key);
   },
   read(key, fallback = null) {
     return safeParse(db.readRaw(key), fallback);
@@ -473,6 +477,7 @@ const db = {
   },
   remove(key) {
     try { localStorage.removeItem(key); } catch {}
+    cloud.noteChange(key);
   },
   // Every key under a prefix, sorted. Week keys sort chronologically for free:
   // the date is ISO and fixed-width.
@@ -505,6 +510,225 @@ const db = {
     return out;
   }
 };
+// ---------------------------------------------------------------------------
+// Cloud sync (Firebase)
+//
+// localStorage stays the app's working copy, so every read in the app is
+// still instant and synchronous. This layer keeps that copy in step with the
+// signed-in person's private space in Firestore:
+//
+//   - On sign-in, anything this device changed while offline is sent up
+//     first, then the cloud copy replaces the local one.
+//   - The very first sign-in on a browser that already holds a planner (the
+//     pre-cloud app) moves that planner into the account.
+//   - Every write through `db` is sent up shortly after (debounced per key).
+//     Keys waiting to go up are listed under SYNC_DIRTY, so a closed tab or a
+//     dropped connection only delays them until the next load.
+//   - Changes made on another device arrive live. A hidden tab reloads when
+//     it is next shown; a visible one offers a refresh rather than reloading
+//     under the person's hands.
+//
+// One Firestore document per storage key: users/{uid}/kv/{encoded key}.
+// Bookkeeping lives under "ilm-sync:", outside the planner prefix, so it is
+// never synced, exported or swept up by Start fresh.
+// ---------------------------------------------------------------------------
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyAcckJrB5TsXkBKqS66wkTrT7HqSLeXbFA",
+  authDomain: "i-love-mondays-cf45e.firebaseapp.com",
+  projectId: "i-love-mondays-cf45e",
+  storageBucket: "i-love-mondays-cf45e.firebasestorage.app",
+  messagingSenderId: "783626839888",
+  appId: "1:783626839888:web:9f4625b9457d6ed89e2e55"
+};
+const SYNC_OWNER = "ilm-sync:owner";
+const SYNC_DIRTY = "ilm-sync:dirty";
+const SYNC_DEBOUNCE_MS = 800;
+// The AI key is a credential: it stays on the device that entered it.
+const SYNC_SKIP = new Set([K.aiKey, K.legacyApiKey]);
+
+function lsGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+function lsDel(k) { try { localStorage.removeItem(k); } catch {} }
+
+const cloud = {
+  user: null,
+  fs: null,
+  timers: new Map(),
+  inflight: new Set(),
+  status: "ok",          // "ok" | "offline" | "error"
+  remoteChanged: false,
+  reloadOnShow: false,
+  unsubscribe: null,
+  subs: new Set(),
+
+  available() { return typeof firebase !== "undefined" && !!firebase.apps; },
+  init() {
+    if (!this.available()) return false;
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    this.fs = firebase.firestore();
+    return true;
+  },
+  subscribe(fn) { this.subs.add(fn); return () => this.subs.delete(fn); },
+  notify() { this.subs.forEach(fn => { try { fn(); } catch {} }); },
+  setStatus(s) { if (this.status !== s) { this.status = s; this.notify(); } },
+
+  shouldSync(key) {
+    return !!key && key.startsWith(DB_PREFIX) && !SYNC_SKIP.has(key);
+  },
+  docId(key) { return encodeURIComponent(key); },
+  col() {
+    return this.fs.collection("users").doc(this.user.uid).collection("kv");
+  },
+  dirty() { const d = safeParse(lsGet(SYNC_DIRTY), []); return Array.isArray(d) ? d : []; },
+  markDirty(key) {
+    const d = this.dirty();
+    if (!d.includes(key)) { d.push(key); lsSet(SYNC_DIRTY, JSON.stringify(d)); }
+  },
+  clearDirty(key) {
+    const d = this.dirty().filter(k => k !== key);
+    if (d.length) lsSet(SYNC_DIRTY, JSON.stringify(d)); else lsDel(SYNC_DIRTY);
+  },
+  localPlannerKeys() {
+    const out = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(DB_PREFIX)) out.push(k);
+    }
+    return out;
+  },
+
+  // Called by db on every write or removal.
+  noteChange(key) {
+    if (!this.shouldSync(key)) return;
+    if (!this.user && !lsGet(SYNC_OWNER)) return;
+    this.markDirty(key);
+    if (!this.user) return;
+    clearTimeout(this.timers.get(key));
+    this.timers.set(key, setTimeout(() => { this.timers.delete(key); this.push(key); }, SYNC_DEBOUNCE_MS));
+  },
+  push(key) {
+    if (!this.user) return Promise.resolve();
+    const raw = lsGet(key);
+    const ref = this.col().doc(this.docId(key));
+    const op = raw == null
+      ? ref.delete()
+      : ref.set({ k: key, v: raw, t: firebase.firestore.FieldValue.serverTimestamp() });
+    const p = op.then(() => {
+      // Only clear the mark if nothing newer was written while this was in flight.
+      if (lsGet(key) === raw) this.clearDirty(key);
+      if (navigator.onLine !== false) this.setStatus("ok");
+    }).catch(err => {
+      console.warn("Sync failed for", key, err);
+      this.setStatus(navigator.onLine === false ? "offline" : "error");
+    }).finally(() => this.inflight.delete(p));
+    this.inflight.add(p);
+    return p;
+  },
+  flush() {
+    if (!this.user) return Promise.resolve();
+    this.timers.forEach(t => clearTimeout(t));
+    this.timers.clear();
+    return Promise.all(this.dirty().map(k => this.push(k)).concat([...this.inflight]));
+  },
+
+  // Brings this device in step with the account. Resolves "ready", or
+  // "offline" when the cloud couldn't be reached but this device already
+  // holds this person's planner, so they can carry on. Throws otherwise.
+  async start(user) {
+    this.user = user;
+    const owner = lsGet(SYNC_OWNER);
+    if (owner && owner !== user.uid) {
+      // Someone else's planner is on this device; theirs is safe in their account.
+      this.localPlannerKeys().forEach(lsDel);
+      lsDel(SYNC_DIRTY);
+    }
+    let snap;
+    try {
+      if (owner === user.uid) await this.flush();
+      snap = await this.col().get();
+    } catch (err) {
+      if (owner === user.uid) {
+        this.setStatus("offline");
+        this.listen();
+        return "offline";
+      }
+      throw err;
+    }
+    const remote = new Map();
+    snap.forEach(doc => { const d = doc.data(); if (d && typeof d.k === "string") remote.set(d.k, d.v); });
+
+    if (remote.size === 0) {
+      // Nothing in the account yet: this device's planner (if any) becomes it.
+      const keys = this.localPlannerKeys().filter(k => this.shouldSync(k));
+      for (let i = 0; i < keys.length; i += 400) {
+        const batch = this.fs.batch();
+        keys.slice(i, i + 400).forEach(k => batch.set(this.col().doc(this.docId(k)),
+          { k, v: lsGet(k), t: firebase.firestore.FieldValue.serverTimestamp() }));
+        await batch.commit();
+      }
+      lsDel(SYNC_DIRTY);
+    } else {
+      // The account is the record; this device takes its copy.
+      this.localPlannerKeys().forEach(k => { if (this.shouldSync(k) && !remote.has(k)) lsDel(k); });
+      remote.forEach((v, k) => { if (this.shouldSync(k) && v != null) lsSet(k, v); });
+    }
+    lsSet(SYNC_OWNER, user.uid);
+    this.setStatus("ok");
+    this.listen();
+    return "ready";
+  },
+
+  listen() {
+    if (this.unsubscribe) this.unsubscribe();
+    this.unsubscribe = this.col().onSnapshot(snap => {
+      let changed = false;
+      const dirty = this.dirty();
+      snap.docChanges().forEach(ch => {
+        if (ch.doc.metadata && ch.doc.metadata.hasPendingWrites) return;
+        const d = ch.doc.data() || {};
+        const key = d.k || decodeURIComponent(ch.doc.id);
+        if (!this.shouldSync(key) || dirty.includes(key) || this.timers.has(key)) return;
+        if (ch.type === "removed") {
+          if (lsGet(key) != null) { lsDel(key); changed = true; }
+        } else if (d.v != null && lsGet(key) !== d.v) {
+          lsSet(key, d.v); changed = true;
+        }
+      });
+      if (this.status === "offline" && snap.metadata && !snap.metadata.fromCache) this.setStatus("ok");
+      if (changed) this.onRemoteChange();
+    }, err => {
+      console.warn("Sync listener stopped", err);
+      this.setStatus(navigator.onLine === false ? "offline" : "error");
+    });
+  },
+  reload() { window.location.reload(); },
+  onRemoteChange() {
+    if (document.hidden) { this.reloadOnShow = true; return; }
+    this.remoteChanged = true;
+    this.notify();
+  },
+
+  async signOut() {
+    try { await this.flush(); } catch {}
+    if (this.unsubscribe) this.unsubscribe();
+    this.localPlannerKeys().forEach(lsDel);
+    lsDel(SYNC_DIRTY);
+    lsDel(SYNC_OWNER);
+    this.user = null;
+    await firebase.auth().signOut();
+    this.reload();
+  }
+};
+
+if (typeof window !== "undefined") {
+  window.addEventListener("online", () => { cloud.flush(); });
+  window.addEventListener("offline", () => cloud.setStatus("offline"));
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { cloud.flush(); return; }
+    if (cloud.reloadOnShow) cloud.reload();
+  });
+  window.addEventListener("pagehide", () => { cloud.flush(); });
+}
 const PLAN_BG = "#F4EFE4";
 const PAPER = "#FAF4E8";
 const PAPER_LINE = "#E8DFCC";
@@ -14213,7 +14437,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v9.27.6")), /*#__PURE__*/React.createElement(PlannerSidebar, {
+  }, "v10.4.1"), /*#__PURE__*/React.createElement(AccountLine, null)), /*#__PURE__*/React.createElement(PlannerSidebar, {
     pillarsPanel: /*#__PURE__*/React.createElement(PillarsPanel, {
       cats, catTyping, setCatTyping, catCustomInput, setCatCustomInput,
       suggestionNames, setSuggestionNames, pillarEditId, setPillarEditId,
@@ -14306,12 +14530,177 @@ function Root() {
     plannerHref: plannerHref()
   });
 }
+// ---------------------------------------------------------------------------
+// Sign-in gate, account line and "changed elsewhere" notice.
+// ---------------------------------------------------------------------------
+function useCloud() {
+  const [, bump] = useState(0);
+  useEffect(() => cloud.subscribe(() => bump(n => n + 1)), []);
+  return cloud;
+}
+
+function GateScreen({ title, children }) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: { minHeight: "100vh", background: PLAN_BG, display: "flex", alignItems: "center",
+      justifyContent: "center", padding: 24, boxSizing: "border-box", fontFamily: "'DM Sans',sans-serif" }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { background: PAPER, border: "1px solid " + HAIRLINE, borderRadius: 4, padding: "36px 32px",
+      maxWidth: 380, width: "100%", textAlign: "center", boxSizing: "border-box" }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { fontFamily: "'Fraunces',Georgia,serif", fontSize: 28, fontWeight: 600, color: INK, lineHeight: 1.15 }
+  }, title), children));
+}
+
+function GateText({ children, tone }) {
+  return /*#__PURE__*/React.createElement("p", {
+    style: { fontSize: 14, lineHeight: 1.5, color: tone === "error" ? ACCENT : INK_2, margin: "14px 0 0" }
+  }, children);
+}
+
+function GateButton({ onClick, children, disabled }) {
+  return /*#__PURE__*/React.createElement("button", {
+    onClick, disabled,
+    style: { marginTop: 24, width: "100%", padding: "12px 16px", fontSize: 15, fontWeight: 600,
+      fontFamily: "inherit", color: "#fff", background: ACCENT, border: "none", borderRadius: 4,
+      cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.6 : 1 }
+  }, children);
+}
+
+function describeSyncError(err) {
+  const code = err && err.code || "";
+  if (code === "permission-denied" || code === "firestore/permission-denied")
+    return "Your account was reached, but the database turned the request away. The database rules may not be set up yet.";
+  if (code === "unavailable" || navigator.onLine === false)
+    return "Couldn't reach your planner. Check your connection and try again.";
+  return "Something went wrong loading your planner" + (code ? " (" + code + ")" : "") + ".";
+}
+
+function AuthGate() {
+  const [phase, setPhase] = useState("loading"); // loading | signedOut | syncing | ready | error | unavailable
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const userRef = useRef(null);
+
+  async function begin(user) {
+    setPhase("syncing");
+    setError(null);
+    try {
+      await cloud.start(user);
+      migrateTendStorage();
+      setPhase("ready");
+    } catch (err) {
+      console.warn(err);
+      setError(describeSyncError(err));
+      setPhase("error");
+    }
+  }
+
+  useEffect(() => {
+    if (!cloud.init()) { setPhase("unavailable"); return; }
+    return firebase.auth().onAuthStateChanged(user => {
+      userRef.current = user;
+      if (user) begin(user); else setPhase("signedOut");
+    });
+  }, []);
+
+  async function signIn() {
+    setBusy(true);
+    setError(null);
+    const provider = new firebase.auth.GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account" });
+    try {
+      await firebase.auth().signInWithPopup(provider);
+    } catch (err) {
+      const code = err && err.code || "";
+      if (code === "auth/popup-blocked" || code === "auth/operation-not-supported-in-this-environment") {
+        try { await firebase.auth().signInWithRedirect(provider); return; } catch (e2) { err = e2; }
+      }
+      if (code !== "auth/popup-closed-by-user" && code !== "auth/cancelled-popup-request") {
+        setError(code === "auth/unauthorized-domain"
+          ? "This web address isn't approved for sign-in yet. Add it under Authentication › Settings › Authorized domains."
+          : "Sign-in didn't go through" + (code ? " (" + code + ")" : "") + ". Please try again.");
+      }
+    }
+    setBusy(false);
+  }
+
+  if (phase === "ready") return /*#__PURE__*/React.createElement(React.Fragment, null,
+    /*#__PURE__*/React.createElement(Root, null),
+    /*#__PURE__*/React.createElement(RemoteChangeNotice, null));
+  if (phase === "loading" || phase === "syncing") {
+    return /*#__PURE__*/React.createElement(GateScreen, { title: "I Love Mondays" },
+      /*#__PURE__*/React.createElement(GateText, null, phase === "syncing" ? "Opening your planner…" : "One moment…"));
+  }
+  if (phase === "unavailable") {
+    return /*#__PURE__*/React.createElement(GateScreen, { title: "I Love Mondays" },
+      /*#__PURE__*/React.createElement(GateText, { tone: "error" },
+        "The sign-in service didn't load. Check your connection, then reload the page."));
+  }
+  if (phase === "error") {
+    return /*#__PURE__*/React.createElement(GateScreen, { title: "I Love Mondays" },
+      /*#__PURE__*/React.createElement(GateText, { tone: "error" }, error),
+      /*#__PURE__*/React.createElement(GateButton, { onClick: () => userRef.current && begin(userRef.current) }, "Try again"),
+      /*#__PURE__*/React.createElement("button", {
+        onClick: () => cloud.signOut(),
+        style: { marginTop: 12, background: "none", border: "none", color: INK_3, fontSize: 13,
+          fontFamily: "inherit", cursor: "pointer", textDecoration: "underline" }
+      }, "Sign out"));
+  }
+  return /*#__PURE__*/React.createElement(GateScreen, { title: "I Love Mondays" },
+    /*#__PURE__*/React.createElement(GateText, null, "Sign in to open your planner on any device."),
+    /*#__PURE__*/React.createElement(GateButton, { onClick: signIn, disabled: busy },
+      busy ? "Signing in…" : "Continue with Google"),
+    error && /*#__PURE__*/React.createElement(GateText, { tone: "error" }, error));
+}
+
+// The account line under the version number, plus a quiet note when changes
+// are waiting to go up.
+function AccountLine() {
+  const c = useCloud();
+  if (!c.user) return null;
+  const note = c.status === "offline" ? "Offline · changes are saved on this device"
+    : c.status === "error" ? "Not synced yet · will keep trying" : null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 10, color: FAINT, letterSpacing: "0.04em", marginTop: 4 }
+  }, note && /*#__PURE__*/React.createElement("span", { style: { color: INK_3, marginRight: 8 } }, note),
+    c.user.email || "Signed in", " · ",
+    /*#__PURE__*/React.createElement("button", {
+      onClick: () => cloud.signOut(),
+      style: { background: "none", border: "none", padding: 0, color: FAINT, fontSize: 10,
+        fontFamily: "inherit", letterSpacing: "inherit", cursor: "pointer", textDecoration: "underline" }
+    }, "Sign out"));
+}
+
+function RemoteChangeNotice() {
+  const c = useCloud();
+  if (!c.remoteChanged) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    role: "status",
+    style: { position: "fixed", left: "50%", bottom: 20, transform: "translateX(-50%)", zIndex: 1000,
+      background: PAPER, border: "1px solid " + HAIRLINE, borderLeft: "4px solid " + ACCENT, borderRadius: 4,
+      padding: "10px 14px", display: "flex", alignItems: "center", gap: 14,
+      boxShadow: "0 4px 16px rgba(28,25,23,0.10)", fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: INK_2 }
+  }, "Your planner was updated on another device.",
+    /*#__PURE__*/React.createElement("button", {
+      onClick: () => cloud.reload(),
+      style: { background: ACCENT, color: "#fff", border: "none", borderRadius: 4, padding: "6px 12px",
+        fontSize: 13, fontWeight: 600, fontFamily: "inherit", cursor: "pointer" }
+    }, "Refresh"));
+}
 // Storage repairs run before the first render, not in an effect. The ideas
 // store seeds its state from localStorage during that render, so a migration
 // that fires afterwards would be invisible to React — and worse, the next
 // write would flush the stale in-memory map back over the repair.
-migrateTendStorage();
-ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(Root, null));
+// For the planner that means after sign-in has brought this device's copy in
+// step with the account, so the repair runs inside AuthGate. The science tab
+// only reads what the planner tab already synced, so it skips the gate.
+const ROOT_EL = document.getElementById("root");
+if (scienceRoute()) {
+  migrateTendStorage();
+  ReactDOM.createRoot(ROOT_EL).render(/*#__PURE__*/React.createElement(Root, null));
+} else {
+  ReactDOM.createRoot(ROOT_EL).render(/*#__PURE__*/React.createElement(AuthGate, null));
+}
 </script>
 </body>
 </html>
