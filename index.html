@@ -358,6 +358,13 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       border: 2px solid var(--pulse, #888); opacity: 0; pointer-events: none;
       animation: checkHalo 0.75s ease-out;
     }
+    /* Touch screens. No double-tap zoom delay, and the small tick buttons get
+       a finger-sized target around them without a bigger mark. */
+    html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
+    @media (hover: none) {
+      [data-tap] { position: relative; }
+      [data-tap]::before { content: ""; position: absolute; inset: -10px; }
+    }
     @media (prefers-reduced-motion: reduce) {
       @keyframes sciLand { 0%, 100% { background: rgba(255,214,160,0); } }
       .ring-bloom, .ring-burst, .target-pulse svg { animation: none; }
@@ -548,6 +555,11 @@ const FIREBASE_CONFIG = {
 // still works and AI features say why they're unavailable.
 const APP_CHECK_SITE_KEY = "6Lejr94tAAAAAL1KRLDSEv-32XowpIODn8y8_vbK";
 const APP_CHECK_HOSTS = ["ilovemondays.app", "www.ilovemondays.app"];
+// Preview mode: anywhere other than the real site (a file opened from disk,
+// most often) the app skips sign-in and runs on this browser's storage alone,
+// the way it did before the cloud. That keeps quick local iteration possible,
+// and it means a version under test can't write anything to the account.
+const IS_PREVIEW = typeof window !== "undefined" && !APP_CHECK_HOSTS.includes(window.location.hostname);
 const SYNC_OWNER = "ilm-sync:owner";
 const SYNC_DIRTY = "ilm-sync:dirty";
 const SYNC_DEBOUNCE_MS = 800;
@@ -610,8 +622,10 @@ const cloud = {
   // public Firebase key to address it, an App Check token to prove the site,
   // and the person's sign-in so requests can later be limited to members.
   async aiHeaders() {
-    if (!this.user || !firebase.auth().currentUser) throw new Error("Sign in to use AI features.");
-    if (!this.appCheck) throw new Error("AI features only work at ilovemondays.app, where the site's security check is registered.");
+    if (!IS_PREVIEW && (!this.user || !firebase.auth().currentUser)) throw new Error("Sign in to use AI features.");
+    if (!this.appCheck) throw new Error(IS_PREVIEW
+      ? "In preview, AI through your account isn't available: it only works at ilovemondays.app. To test AI features here, switch AI settings to \u201cGoogle Gemini (your own key)\u201d."
+      : "AI features only work at ilovemondays.app, where the site's security check is registered.");
     let check;
     try { check = await firebase.appCheck().getToken(false); }
     catch (err) {
@@ -664,7 +678,7 @@ const cloud = {
 
   // Called by db on every write or removal.
   noteChange(key) {
-    if (!this.shouldSync(key)) return;
+    if (IS_PREVIEW || !this.shouldSync(key)) return;
     if (!this.user && !lsGet(SYNC_OWNER)) return;
     this.markDirty(key);
     if (!this.user) return;
@@ -1198,6 +1212,16 @@ function hexA(hex, a) {
 // Shared style objects. Only the shapes that genuinely recur live here — most
 // styles in this file are one-offs, and hoisting those would trade a little
 // duplication for a lot of indirection.
+// True on a touch screen (tablet, phone). There is no hover there, so nothing
+// may hide behind it: controls that appear on hover on a computer either show
+// on tap or live in the event dialog instead. Read once at load; Chrome's
+// device toolbar needs a reload to switch it.
+const NO_HOVER = typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(hover: none)").matches;
+// The strip of sidebar icons down the right edge. On a touch screen it is
+// wider, so the icons sit well clear of the edge: Android tablets keep that
+// edge for their own gestures (Back, and Samsung's Edge panel handle), and a
+// tap there could be taken by the tablet instead of the app.
+const RAIL_W = NO_HOVER ? 52 : 28;
 const ICON_BTN = {
   background: "none",
   border: "none",
@@ -2687,6 +2711,7 @@ function Cell({
   };
   function doneToggleButton(row, effectiveDone, markColor = PLAN_RING) {
     return /*#__PURE__*/React.createElement("button", {
+      "data-tap": "1",
       onClick: e => {
         e.stopPropagation();
         onToggleDone(row.id);
@@ -2737,8 +2762,8 @@ function Cell({
         onOpenNewItem?.();
       }
     },
-    onMouseEnter: () => setHovered(true),
-    onMouseLeave: () => {
+    onMouseEnter: NO_HOVER ? undefined : () => setHovered(true),
+    onMouseLeave: NO_HOVER ? undefined : () => {
       setHovered(false);
       setHoveredRowId(null);
     },
@@ -2792,7 +2817,7 @@ function Cell({
     },
     title: "View / edit reflection",
     style: ICON_BTN
-  }, reflectBubbleSvg(cat.color, true)), /*#__PURE__*/React.createElement("button", {
+  }, reflectBubbleSvg(cat.color, true)), onSetRowLink && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       const m = singleRow.text.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
@@ -2916,7 +2941,7 @@ function Cell({
         resetRowDragState();
         onRowDragEnd?.();
       },
-      onMouseEnter: readOnly ? undefined : e => {
+      onMouseEnter: readOnly || NO_HOVER ? undefined : e => {
         e.stopPropagation();
         setHoveredRowId(row.id);
       },
@@ -2982,7 +3007,7 @@ function Cell({
       },
       title: "View / edit reflection",
       style: ICON_BTN
-    }, reflectBubbleSvg(cat.color, true)), /*#__PURE__*/React.createElement("button", {
+    }, reflectBubbleSvg(cat.color, true)), onSetRowLink && /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
         const m = row.text.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
@@ -3222,7 +3247,19 @@ function JournalEntry({
       : entry.linkedItem.catLabel
         ? [asChip({ id: entry.linkedItem.catId, label: entry.linkedItem.catLabel, color: entry.linkedItem.catColor, bg: entry.linkedItem.catBg || null })]
         : [];
-    const accent = pillarAccent(chipPillars.length ? chipPillars : [], chipDone, null, "left", 0, entry.id);
+    // A reflection on a whole day ("reflect on this day") is about no pillar,
+    // so its tag is plain paper with the weekday in ink: no pillar colour,
+    // and no done mark, since a day isn't something you tick off. It used to
+    // flood with the reflection purple as though it were a completed item,
+    // which was far louder than anything else in the panel. Recognised by
+    // shape rather than a flag, so day reflections written before this change
+    // read the same way.
+    const isDayTag = !entry.linkedItem.catId && !entry.linkedItem.itemText
+      && !(entry.linkedItem.pillars && entry.linkedItem.pillars.length > 1)
+      && !!entry.linkedItem.eventDate && entry.linkedItem.catColor === REFLECT;
+    const accent = isDayTag
+      ? pillarAccent([], false, null, "left", 0, entry.id)
+      : pillarAccent(chipPillars.length ? chipPillars : [], chipDone, null, "left", 0, entry.id);
     return /*#__PURE__*/React.createElement("div", {
       style: {
         position: "relative",
@@ -3250,7 +3287,7 @@ function JournalEntry({
       style: {
         fontSize: 9,
         fontWeight: 700,
-        color: accent.faint,
+        color: isDayTag ? accent.text : accent.faint,
         textTransform: "uppercase",
         letterSpacing: "0.08em"
       }
@@ -3266,7 +3303,7 @@ function JournalEntry({
     }, (() => {
       const d = new Date(entry.linkedItem.eventDate + 'T12:00:00');
       return `${d.getMonth() + 1}/${d.getDate()}`;
-    })()), /*#__PURE__*/React.createElement("svg", {
+    })()), !isDayTag && /*#__PURE__*/React.createElement("svg", {
       width: "10",
       height: "10",
       viewBox: "0 0 12 12",
@@ -3519,7 +3556,7 @@ function EditablePillarName({ value, onCommit, textStyle, accentColor, editTitle
       display: "flex",
       alignItems: "center",
       color: MUTED,
-      opacity: hovered ? 1 : 0,
+      opacity: hovered || NO_HOVER ? 1 : 0,
       transition: "opacity 0.1s ease"
     }
   }, /*#__PURE__*/React.createElement("svg", {
@@ -4878,8 +4915,8 @@ function CalendarEventTile({
       const { hour, minute } = computeDropTime(e);
       handleDropOnHour(ds, hour, minute, e);
     } : undefined,
-    onMouseEnter: () => setHoveredKey(itemKey),
-    onMouseLeave: () => setHoveredKey(prev => prev === itemKey ? null : prev),
+    onMouseEnter: NO_HOVER ? undefined : () => setHoveredKey(itemKey),
+    onMouseLeave: NO_HOVER ? undefined : () => setHoveredKey(prev => prev === itemKey ? null : prev),
     onClick: isOwnView && canEditItems ? e => {
       e.stopPropagation();
       openEdit(ds, it.id);
@@ -4954,6 +4991,7 @@ function CalendarEventTile({
     }
   }, timeLabel), isPastOrToday && onToggleDone && isOwnView && /*#__PURE__*/React.createElement("button", {
     "data-done-toggle": `${ds}::${it.id}`,
+    "data-tap": "1",
     onClick: e => {
       e.stopPropagation();
       onToggleDone(ds, it.cat.id, it.id);
@@ -5098,8 +5136,8 @@ function UnscheduledItem({
       }
       handleDropUnscheduled(ds, e, { anchorId: it.id, pos });
     } : undefined,
-    onMouseEnter: () => setHoveredKey(itemKey),
-    onMouseLeave: () => setHoveredKey(prev => prev === itemKey ? null : prev),
+    onMouseEnter: NO_HOVER ? undefined : () => setHoveredKey(itemKey),
+    onMouseLeave: NO_HOVER ? undefined : () => setHoveredKey(prev => prev === itemKey ? null : prev),
     onClick: isOwnView && canEditItems ? e => {
       e.stopPropagation();
       openEdit(ds, it.id);
@@ -5152,6 +5190,7 @@ function UnscheduledItem({
     }
   }, plainOf(it.text)), it.seriesId && repeatGlyph(nameColor, 8), isPastOrToday && onToggleDone && isOwnView && /*#__PURE__*/React.createElement("button", {
     "data-done-toggle": `${ds}::${it.id}`,
+    "data-tap": "1",
     onClick: e => {
       e.stopPropagation();
       onToggleDone(ds, it.cat.id, it.id);
@@ -5407,8 +5446,11 @@ function CalendarDayHeader({
     hasDayReflection = !!dayReflectionDates?.has(ds);
   return /*#__PURE__*/React.createElement("div", {
     key: i,
-    onMouseEnter: isOwnView ? () => setHoveredDayHeader(ds) : undefined,
-    onMouseLeave: isOwnView ? () => setHoveredDayHeader(null) : undefined,
+    onMouseEnter: isOwnView && !NO_HOVER ? () => setHoveredDayHeader(ds) : undefined,
+    onMouseLeave: isOwnView && !NO_HOVER ? () => setHoveredDayHeader(null) : undefined,
+    // On a touch screen a tap on the day stands in for hovering it: it shows
+    // the reflect bubble, and a second tap puts it away.
+    onClick: isOwnView && NO_HOVER ? () => setHoveredDayHeader(prev => prev === ds ? null : ds) : undefined,
     style: {
       position: "relative",
       textAlign: "center",
@@ -5418,6 +5460,7 @@ function CalendarDayHeader({
   }, isDayHovered && onReflectDay && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
+      if (NO_HOVER) setHoveredDayHeader(null);
       if (hasDayReflection && onOpenDayReflection) {
         onOpenDayReflection(ds);
       } else {
@@ -10184,11 +10227,12 @@ function useEventDialog({ entries, rules }) {
 // reaches into entries, rules and series — none of which are this dialog's
 // business.
 // ---------------------------------------------------------------------------
-function EventDialog({ dlg, cats, onSave }) {
+function EventDialog({ dlg, cats, onSave, actions }) {
   const {
     editingItem, setEditingItem,
     editName, setEditName,
     editPillarIds,
+    editLinkUrl, setEditLinkUrl,
     editUnscheduled, setEditUnscheduled,
     editDate, setEditDate,
     editStart, setEditStart,
@@ -10221,6 +10265,94 @@ function EventDialog({ dlg, cats, onSave }) {
     width: "100%",
     boxSizing: "border-box"
   };
+  // This window is the one complete place for an event, on every device:
+  // Reflect beside the title, Link among the fields, and Delete at the
+  // bottom left, well away from Save. On a computer the hover toolbar stays
+  // as a shortcut to the same things.
+  //
+  // The Day field for an untimed event is for touch screens only; on a
+  // computer, moving an untimed event between days is a drag.
+  const fieldLabelStyle = {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    fontSize: 10,
+    color: MUTED,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.06em"
+  };
+  const touchInputStyle = {
+    border: `1px solid ${HAIRLINE}`,
+    borderRadius: 8,
+    padding: "7px 8px",
+    fontSize: 13,
+    fontFamily: "inherit",
+    fontWeight: 400,
+    textTransform: "none",
+    letterSpacing: 0,
+    outline: "none",
+    color: INK
+  };
+  const touchDayField = NO_HOVER && editUnscheduled && /*#__PURE__*/React.createElement("label", {
+    style: fieldLabelStyle
+  }, "Day", /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: editDate || "",
+    onChange: e => setEditDate(e.target.value),
+    style: touchInputStyle
+  }));
+  const linkField = /*#__PURE__*/React.createElement("label", {
+    style: fieldLabelStyle
+  }, "Link", /*#__PURE__*/React.createElement("input", {
+    type: "url",
+    inputMode: "url",
+    autoCapitalize: "off",
+    autoCorrect: "off",
+    value: editLinkUrl || "",
+    placeholder: "https://",
+    onChange: e => setEditLinkUrl(e.target.value.trim() || null),
+    style: touchInputStyle
+  }));
+  // Reflect keeps its verb whether or not something is written yet; the
+  // bubble fills in once there is a reflection, as it does on the calendar.
+  const reflectButton = actions?.onReflect && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: actions.onReflect,
+    title: actions.reflected ? "Open your reflection" : "Reflect on this",
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      background: "none",
+      border: `1px solid ${REFLECT}55`,
+      borderRadius: 8,
+      cursor: "pointer",
+      fontSize: 12,
+      fontWeight: 600,
+      fontFamily: "inherit",
+      color: REFLECT,
+      padding: "5px 10px",
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement(ReflectBubble, {
+    fill: actions.reflected ? REFLECT : "none"
+  }), "Reflect");
+  const deleteButton = actions?.onDelete && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: actions.onDelete,
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12,
+      fontWeight: 600,
+      fontFamily: "inherit",
+      color: "#B91C1C",
+      padding: "7px 0",
+      marginRight: "auto"
+    }
+  }, "Delete");
   return /*#__PURE__*/React.createElement("div", {
     onClick: () => setEditingItem(null),
     style: {
@@ -10248,11 +10380,19 @@ function EventDialog({ dlg, cats, onSave }) {
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 10,
+      minHeight: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
       fontSize: 15,
       fontWeight: 700,
       color: INK
     }
-  }, editingItem?.isNew ? "New event" : "Edit event"), /*#__PURE__*/React.createElement("input", {
+  }, editingItem?.isNew ? "New event" : "Edit event"), reflectButton), /*#__PURE__*/React.createElement("input", {
     value: editName,
     onChange: e => setEditName(e.target.value),
     onKeyDown: e => {
@@ -10357,7 +10497,7 @@ function EventDialog({ dlg, cats, onSave }) {
       boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
       transition: "left 0.15s ease"
     }
-  }))), !editUnscheduled && /*#__PURE__*/React.createElement("div", {
+  }))), touchDayField, !editUnscheduled && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
@@ -10549,14 +10689,17 @@ function EventDialog({ dlg, cats, onSave }) {
     }
   }, "×")), editRepeat !== REPEAT_NONE && /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 11, color: "#8A7F6B", lineHeight: 1.4 }
-  }, describeRule({ freq: editRepeat, byDay: editRepeatDays, endDs: editRepeatEnd || null }), !editRepeatEnd && " — no end date")), /*#__PURE__*/React.createElement("div", {
+  }, describeRule({ freq: editRepeat, byDay: editRepeatDays, endDs: editRepeatEnd || null }), !editRepeatEnd && " — no end date")), linkField, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
+      alignItems: "center",
       justifyContent: "flex-end",
       gap: 8,
-      marginTop: 4
+      marginTop: 4,
+      paddingTop: 12,
+      borderTop: `1px solid ${HAIRLINE}`
     }
-  }, /*#__PURE__*/React.createElement("button", {
+  }, deleteButton, /*#__PURE__*/React.createElement("button", {
     onClick: () => setEditingItem(null),
     style: {
       background: "none",
@@ -11601,7 +11744,7 @@ function SidebarRail({
 }) {
   return React.createElement("div", {
     style: {
-      width: 28,
+      width: RAIL_W,
       background: PLAN_BG,
       borderLeft: `1px solid ${HAIRLINE}`,
       display: "flex",
@@ -12836,7 +12979,9 @@ function PillarRow({
       onReflect: isOwnView ? (text, wasCompleted, row) => openReflectWithItem(text, cat.label, cat.color, ds, wasCompleted, row.allCats, { catId: cat.id }) : null,
       onToggleDone: isOwnView ? entryId => toggleDoneById(ds, cat.id, entryId) : null,
       onDeleteRow: isOwnView ? entryId => deleteEntryTagById(ds, cat.id, entryId) : null,
-      onSetRowLink: isOwnView ? (entryId, url) => setItemLinkById(ds, entryId, url) : null,
+      // Links are added and changed only in the event window now, so the
+      // hover toolbar is left with the quick actions: reflect and delete.
+      onSetRowLink: null,
       nudgeEntryId: isOwnView && nudgeItem?.ds === ds && nudgeItem?.catId === cat.id ? nudgeItem.entryId : null,
       onNudgeClick: isOwnView ? () => openReflectionSidebar(true) : null,
       reflectedItemTexts: isOwnView ? reflectedItemTexts : null,
@@ -12858,8 +13003,11 @@ function PillarDayHeader({
     hasDayReflection = dayReflectionDates.has(ds);
   return /*#__PURE__*/React.createElement("div", {
     key: i,
-    onMouseEnter: isOwnView ? () => setHoveredDayHeader(ds) : undefined,
-    onMouseLeave: isOwnView ? () => setHoveredDayHeader(null) : undefined,
+    onMouseEnter: isOwnView && !NO_HOVER ? () => setHoveredDayHeader(ds) : undefined,
+    onMouseLeave: isOwnView && !NO_HOVER ? () => setHoveredDayHeader(null) : undefined,
+    // On a touch screen a tap on the day stands in for hovering it: it shows
+    // the reflect bubble, and a second tap puts it away.
+    onClick: isOwnView && NO_HOVER ? () => setHoveredDayHeader(prev => prev === ds ? null : ds) : undefined,
     style: {
       position: "relative",
       textAlign: "center",
@@ -12870,6 +13018,7 @@ function PillarDayHeader({
   }, isDayHovered && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
+      if (NO_HOVER) setHoveredDayHeader(null);
       if (hasDayReflection) {
         openDayReflection(ds);
       } else {
@@ -13305,7 +13454,22 @@ function usePlanTransfer({
   };
 }
 
+// Below this width (a tablet held upright) an open sidebar floats over the
+// week instead of pushing it aside: a week squeezed into what's left beside a
+// panel is too narrow to read. Wider screens keep the side-by-side layout.
+const SIDEBAR_OVERLAY_BELOW = 1000;
+function useNarrowScreen() {
+  const read = () => typeof window !== "undefined" && window.innerWidth < SIDEBAR_OVERLAY_BELOW;
+  const [narrow, setNarrow] = useState(read);
+  useEffect(() => {
+    const onResize = () => setNarrow(read());
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return narrow;
+}
 function Planner() {
+  const narrowScreen = useNarrowScreen();
   const [offset, setOffset] = useState(0);
   const [cats, setCats] = useState(DEFAULT_CATS);
   const [ideaOverride, setIdeaOverride] = useState(null);
@@ -13340,6 +13504,30 @@ function Planner() {
   const [hoveredDayHeader, setHoveredDayHeader] = useState(null);
   const importRef = useRef(null);
   const [draggingIdea, setDraggingIdea] = useState(false);
+  // An iPad can start a drag on a press and hold and then never report that
+  // it ended. The app went on believing an item was in the air: the
+  // Reflections icon stayed purple ("drop here") and the panels kept their
+  // drop-target behaviour. On a touch screen, the start of any new touch
+  // means no drag is under way, so leftover drag state is cleared then. A
+  // drag that genuinely starts sets it again on its own, after this.
+  // Computers are untouched.
+  useEffect(() => {
+    if (!NO_HOVER) return;
+    const clear = () => {
+      setDraggingCell(null);
+      setDraggingCalItem(null);
+      setDraggingLine(null);
+      setDraggingIdea(false);
+    };
+    document.addEventListener("pointerdown", clear, true);
+    document.addEventListener("dragend", clear, true);
+    document.addEventListener("drop", clear, true);
+    return () => {
+      document.removeEventListener("pointerdown", clear, true);
+      document.removeEventListener("dragend", clear, true);
+      document.removeEventListener("drop", clear, true);
+    };
+  }, []);
   const [goals, setGoals] = useState({});
   const [importedViews, setImportedViews] = useState([]);
   const [activeViewId, setActiveViewId] = useState("own");
@@ -14298,6 +14486,27 @@ function Planner() {
     }
     setEditingItem(null);
   }
+  // The event dialog's Reflect (or open the reflection already written) and
+  // Delete, on every device. Both close the dialog without saving, as
+  // leaving it would.
+  function eventDialogActions() {
+    const ds = editingItem?.ds;
+    const it = ds ? getItemsForDay(ds).find(x => x.id === editingItem.entryId) : null;
+    if (!it) return null;
+    const reflected = !!reflectedItemTexts?.has(`${plainOf(it.text)}::${ds}`);
+    return {
+      reflected,
+      onReflect: () => {
+        setEditingItem(null);
+        if (reflected) openReflectionsOnly(plainOf(it.text), ds);
+        else openReflectWithItem(plainOf(it.text), it.cat.label, it.cat.color, ds, it.isDone, it.allCats);
+      },
+      onDelete: () => {
+        setEditingItem(null);
+        deleteEntryById(ds, it.id);
+      }
+    };
+  }
   // Creates a rule and lets materialisation lay down the occurrences. When
   // `adoptDs`/`adoptId` are given, that existing entry is stamped with the new
   // seriesId so the first occurrence is the event the user was already editing.
@@ -14485,7 +14694,7 @@ return /*#__PURE__*/React.createElement("div", {
       paddingTop: 28,
       paddingBottom: 40,
       paddingLeft: 20,
-      paddingRight: sidebarOpen ? 320 : 48,
+      paddingRight: (sidebarOpen && !narrowScreen ? 292 : 20) + RAIL_W,
       color: INK,
       transition: "padding-right 0.2s ease"
     }
@@ -14530,7 +14739,8 @@ return /*#__PURE__*/React.createElement("div", {
     reflectedItemTexts: isOwnView ? reflectedItemTexts : null,
     onOpenReflections: isOwnView ? openReflectionsOnly : null,
     onReflect: isOwnView ? (text, catLabel, catColor, ds, wasCompleted, allCats) => openReflectWithItem(text, catLabel, catColor, ds, wasCompleted, allCats) : null,
-    onSetLink: isOwnView ? setItemLinkById : null,
+    // Links live in the event window only; see the By pillar view.
+    onSetLink: null,
     onDeleteItem: isOwnView ? (ds, catId, entryId) => deleteEntryById(ds, entryId) : null,
     canEditItems: isOwnView,
     onCreateItem: isOwnView ? createCalendarItem : null,
@@ -14617,7 +14827,7 @@ return /*#__PURE__*/React.createElement("div", {
       letterSpacing: "0.08em",
       fontWeight: 500
     }
-  }, "v10.4.7"), /*#__PURE__*/React.createElement(AccountLine, null)), /*#__PURE__*/React.createElement(PlannerSidebar, {
+  }, "v10.11.6"), /*#__PURE__*/React.createElement(AccountLine, null)), /*#__PURE__*/React.createElement(PlannerSidebar, {
     pillarsPanel: /*#__PURE__*/React.createElement(PillarsPanel, {
       cats, catTyping, setCatTyping, catCustomInput, setCatCustomInput,
       suggestionNames, setSuggestionNames, pillarEditId, setPillarEditId,
@@ -14682,7 +14892,8 @@ return /*#__PURE__*/React.createElement("div", {
   }), editingItem && /*#__PURE__*/React.createElement(EventDialog, {
     dlg: dlg,
     cats: cats,
-    onSave: saveEdit
+    onSave: saveEdit,
+    actions: isOwnView && !editingItem.isNew ? eventDialogActions() : null
   }), seriesScope && /*#__PURE__*/React.createElement(SeriesScopeDialog, {
     seriesScope, setSeriesScope, resolveSeriesScope
   }));
@@ -14852,6 +15063,16 @@ function AccountLine() {
     }, "Sign out"));
 }
 
+function PreviewNotice() {
+  return /*#__PURE__*/React.createElement("div", {
+    role: "note",
+    style: { position: "fixed", left: 12, bottom: 12, zIndex: 1000, pointerEvents: "none",
+      background: PAPER, border: "1px solid " + HAIRLINE, borderLeft: "4px solid " + ACCENT, borderRadius: 4,
+      padding: "5px 10px", fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: INK_2,
+      boxShadow: "0 2px 8px rgba(28,25,23,0.08)" }
+  }, "Preview on this computer \u00b7 not synced");
+}
+
 function RemoteChangeNotice() {
   const c = useCloud();
   if (!c.remoteChanged) return null;
@@ -14879,6 +15100,11 @@ const ROOT_EL = document.getElementById("root");
 if (scienceRoute()) {
   migrateTendStorage();
   ReactDOM.createRoot(ROOT_EL).render(/*#__PURE__*/React.createElement(Root, null));
+} else if (IS_PREVIEW) {
+  migrateTendStorage();
+  ReactDOM.createRoot(ROOT_EL).render(/*#__PURE__*/React.createElement(React.Fragment, null,
+    /*#__PURE__*/React.createElement(Root, null),
+    /*#__PURE__*/React.createElement(PreviewNotice, null)));
 } else {
   ReactDOM.createRoot(ROOT_EL).render(/*#__PURE__*/React.createElement(AuthGate, null));
 }
