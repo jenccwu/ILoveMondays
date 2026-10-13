@@ -323,6 +323,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 </script>
   
   <style>
+    .ilm-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
     *, *::before, *::after { box-sizing: border-box; }
     /* The phone's day planner slides a little in the direction you moved, so
        a swipe or a tap on the strip reads as going forward or back. */
@@ -659,8 +660,8 @@ const cloud = {
   async aiHeaders() {
     if (!IS_PREVIEW && (!this.user || !firebase.auth().currentUser)) throw new Error("Sign in to use AI features.");
     if (!this.appCheck) throw new Error(IS_PREVIEW
-      ? "In preview, AI through your account isn't available: it only works at ilovemondays.app. To test AI features here, switch AI settings to \u201cGoogle Gemini (your own key)\u201d."
-      : "AI features only work at ilovemondays.app, where the site's security check is registered.");
+      ? "AI only works at ilovemondays.app."
+      : "AI only works at ilovemondays.app.");
     let check;
     try { check = await firebase.appCheck().getToken(false); }
     catch (err) {
@@ -670,7 +671,7 @@ const cloud = {
       const status = err && err.customData && err.customData.httpStatus;
       const detail = [err && err.code, status ? "HTTP " + status : "", this.appCheckServerError]
         .filter(Boolean).join(", ") || String(err && err.message || "").slice(0, 120);
-      throw new Error("Google's security check didn't pass on this device, so the request wasn't sent." +
+      throw new Error("Google's security check failed on this device." +
         (detail ? " (Details: " + detail + ")" : ""));
     }
     const idToken = await firebase.auth().currentUser.getIdToken();
@@ -869,6 +870,16 @@ const FAINT = "#BCB2A0";      // faintest text, resting icons, placeholders
 const HAIRLINE = "#E7DECB";   // borders and dividers
 const WASH = "#F2ECE0";       // recessed fill: empty tiles, inset panels
 const ACCENT = "#C4622F";     // the single action accent
+const ACCENT_LINE = "#E0B296";  // soft accent: underlines, quiet marks
+const ACCENT_WASH = "#F8EADF";
+// The logo's rising heart: gold body, terracotta line where it meets the horizon.
+const HEART = "#EBA33D";
+const HEART_GLOW = "#CD6E36";  // accent-tinted highlight: active rows, drop targets
+const DANGER = "#A63A2B";       // destructive actions only
+const DANGER_WASH = "#F7E7E1";
+const DANGER_LINE = "#E6BCAF";
+const SURFACE = TILE_PLAN_FILL; // raised surfaces: dialogs, menus, day columns
+const ON_DARK = TILE_DONE_TEXT; // text and icons on ink or accent fills
 // Where a season's own words are gathered. A step deeper than WASH so the
 // block reads as a container without taking any colour of its own.
 const EVIDENCE_WASH = "#EDE5D6";
@@ -1391,7 +1402,7 @@ function PillarPicker({ cats, focusId, shownId, onPick, ariaLabel = "Focus on a 
     const style = named ? {
       ...base,
       padding: compact ? "0 6px" : "0 8px",
-      fontSize: compact ? 9 : 9.5,
+      fontSize: compact ? 10 : 10,
       fontWeight: 700,
       letterSpacing: compact ? "0.05em" : "0.07em",
       textTransform: "uppercase",
@@ -1599,7 +1610,7 @@ const NUDGE_ANCHOR = {
 const NUDGE_BUBBLE = {
   background: REFLECT_BG,
   border: `1px solid ${REFLECT_SOFT}`,
-  borderRadius: 20,
+  borderRadius: TILE_RADIUS,
   padding: "4px 12px",
   fontSize: 10,
   fontWeight: 700,
@@ -2723,7 +2734,7 @@ function Cell({
   const singleRowDone = !!(singleRow && isPastOrToday && singleRow.done);
   const singleRowAccent = singleRow ? pillarAccent(singleRow.allCats, singleRowDone, cat, "left", undefined, singleRow.id) : null;
   const singleRowReflected = !!(singleRow && isRowReflected(singleRow.text));
-  const bg = filled && !isFuture ? "#ffffff" : WASH;
+  const bg = filled && !isFuture ? SURFACE : WASH;
   const textColor = isFuture ? MUTED : cat.color;
   const placeholderColor = FAINT;
   const chainIcon = /*#__PURE__*/React.createElement("svg", {
@@ -2957,7 +2968,7 @@ function Cell({
       border: "none",
       cursor: "pointer",
       padding: 0,
-      color: "#EF4444",
+      color: DANGER,
       opacity: 0.7,
       fontSize: 14,
       lineHeight: 1,
@@ -3253,7 +3264,7 @@ function JournalEntry({
     style: {
       marginBottom: 10,
       padding: "10px 12px",
-      background: "#FAFAF9",
+      background: PAPER,
       borderRadius: 10,
       border: `1px solid ${WASH}`
     }
@@ -3341,7 +3352,7 @@ function JournalEntry({
     }, chipPillars.map((p, pi) => /*#__PURE__*/React.createElement("span", {
       key: pi,
       style: {
-        fontSize: 9,
+        fontSize: 10,
         fontWeight: 700,
         color: isDayTag ? accent.text : accent.faint,
         textTransform: "uppercase",
@@ -3351,7 +3362,7 @@ function JournalEntry({
       style: { display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }
     }, entry.linkedItem?.eventDate && /*#__PURE__*/React.createElement("span", {
       style: {
-        fontSize: 9,
+        fontSize: 10,
         fontWeight: 600,
         color: accent.faint,
         flexShrink: 0
@@ -3403,7 +3414,7 @@ function JournalEntry({
     }
   }, /*#__PURE__*/React.createElement("span", {
     style: {
-      fontSize: 9,
+      fontSize: 10,
       fontWeight: 700,
       color: REFLECT,
       textTransform: "uppercase",
@@ -3413,7 +3424,7 @@ function JournalEntry({
   }, "I feel"), mood && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
     style: { fontSize: 10, color: REFLECT_SOFT, flexShrink: 0 }
   }, "·"), /*#__PURE__*/React.createElement("span", {
-    style: { fontSize: 15, lineHeight: 1 }
+    style: { fontSize: 16, lineHeight: 1 }
   }, mood))), editing ? /*#__PURE__*/React.createElement("textarea", {
     ref: taRef,
     value: text,
@@ -3750,7 +3761,7 @@ const navBtn = {
   borderRadius: 8,
   padding: "5px 16px",
   cursor: "pointer",
-  fontSize: 20,
+  fontSize: 18,
   color: INK_3,
   fontFamily: "inherit",
   lineHeight: 1
@@ -4180,7 +4191,7 @@ function SciencePage({
   }) {
     return /*#__PURE__*/React.createElement("span", {
       style: {
-        fontSize: 9,
+        fontSize: 10,
         fontWeight: 700,
         letterSpacing: "0.08em",
         textTransform: "uppercase",
@@ -4204,7 +4215,7 @@ function SciencePage({
       style: tile(paint, { margin: "16px 0", padding: `12px 14px 12px ${TILE_INDENT}px` })
     }, band(paint, true), /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 15,
+        fontSize: 16,
         fontWeight: 700,
         color: INK,
         marginBottom: 3,
@@ -4449,7 +4460,7 @@ function SciencePage({
       }
     }, band(PLAN_PAINT, true), /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 9,
+        fontSize: 10,
         fontWeight: 700,
         letterSpacing: "0.12em",
         textTransform: "uppercase",
@@ -4545,7 +4556,7 @@ function SciencePage({
     }
   }, "The ultimate goal isn't a better week. It's a better life."), /*#__PURE__*/React.createElement("p", {
     style: {
-      fontSize: 15,
+      fontSize: 16,
       color: INK_2,
       lineHeight: 1.8,
       maxWidth: 520,
@@ -4553,7 +4564,7 @@ function SciencePage({
     }
   }, "A life filled with meaning, purpose, and genuine joy. And there's a signal for when you've built one: you wake up eager. You love starting the week. Mondays feel like opportunity, not dread."), /*#__PURE__*/React.createElement("p", {
     style: {
-      fontSize: 15,
+      fontSize: 16,
       color: INK_2,
       lineHeight: 1.8,
       maxWidth: 520
@@ -4676,7 +4687,7 @@ function SciencePage({
     }
   }, "The bigger picture"), /*#__PURE__*/React.createElement("h2", {
     style: {
-      fontSize: 19,
+      fontSize: 18,
       fontWeight: 700,
       letterSpacing: "-0.01em",
       marginBottom: 18,
@@ -4828,8 +4839,8 @@ function TimeField({ value, onChange, inputStyle }) {
   function segStyle(active) {
     return {
       border: "none",
-      background: active ? "#FFF7ED" : "transparent",
-      color: active ? "#C2410C" : INK,
+      background: active ? ACCENT_WASH : "transparent",
+      color: active ? ACCENT : INK,
       fontFamily: "inherit",
       fontSize: 13,
       fontWeight: 600,
@@ -4845,7 +4856,7 @@ function TimeField({ value, onChange, inputStyle }) {
     return {
       border: "none",
       background: selected ? ACCENT : "transparent",
-      color: selected ? "#fff" : INK_2,
+      color: selected ? ON_DARK : INK_2,
       fontFamily: "inherit",
       fontSize: 12,
       fontWeight: selected ? 700 : 500,
@@ -4861,7 +4872,7 @@ function TimeField({ value, onChange, inputStyle }) {
     top: "calc(100% + 5px)",
     left: 0,
     zIndex: 1100,
-    background: "#fff",
+    background: SURFACE,
     border: `1px solid ${HAIRLINE}`,
     borderRadius: 9,
     boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
@@ -4874,7 +4885,7 @@ function TimeField({ value, onChange, inputStyle }) {
       display: "flex",
       alignItems: "center",
       gap: 1,
-      background: "#fff",
+      background: SURFACE,
       cursor: "default"
     }
   }, /*#__PURE__*/React.createElement("span", {
@@ -5155,7 +5166,7 @@ function CalendarEventTile({
       alignItems: "center",
       gap: 3,
       zIndex: 20,
-      background: "#fff",
+      background: SURFACE,
       borderRadius: 8,
       padding: "3px 4px",
       boxShadow: "0 1px 5px rgba(0,0,0,0.18)"
@@ -5322,7 +5333,7 @@ function UnscheduledItem({
       alignItems: "center",
       gap: 3,
       zIndex: 20,
-      background: "#fff",
+      background: SURFACE,
       borderRadius: 8,
       padding: "3px 4px",
       boxShadow: "0 1px 5px rgba(0,0,0,0.18)"
@@ -5380,7 +5391,7 @@ function CalendarDayColumn({
       height: CAL_HOUR_PX,
       borderTop: `1px solid ${WASH}`,
       boxSizing: "border-box",
-      background: dragOverSlot?.ds === ds && dragOverSlot?.hour === hh ? "#FFF7ED" : "transparent",
+      background: dragOverSlot?.ds === ds && dragOverSlot?.hour === hh ? ACCENT_WASH : "transparent",
       position: "relative",
       cursor: isOwnView && onCreateItem ? "pointer" : "default",
       userSelect: "none",
@@ -5403,8 +5414,8 @@ function CalendarDayColumn({
       right: 3,
       top: (dragCreatePreview.startMin - CAL_HOUR_START * 60) / 60 * CAL_HOUR_PX,
       height: Math.max(14, (dragCreatePreview.endMin - dragCreatePreview.startMin) / 60 * CAL_HOUR_PX - 2),
-      background: "rgba(234,88,12,0.12)",
-      border: "1.5px solid #EA580C",
+      background: hexA(ACCENT, 0.12),
+      border: `1.5px solid ${ACCENT}`,
       borderRadius: 6,
       pointerEvents: "none",
       zIndex: 6,
@@ -5416,9 +5427,9 @@ function CalendarDayColumn({
     }
   }, /*#__PURE__*/React.createElement("span", {
     style: {
-      fontSize: 8.5,
+      fontSize: 10,
       fontWeight: 700,
-      color: "#C2410C",
+      color: ACCENT,
       whiteSpace: "nowrap"
     }
   }, `${fmtTime(Math.floor(dragCreatePreview.startMin / 60) % 24, dragCreatePreview.startMin % 60)} \u2013 ${fmtTime(Math.floor(dragCreatePreview.endMin / 60) % 24, dragCreatePreview.endMin % 60)}`)), items.map((it) => /*#__PURE__*/React.createElement(CalendarEventTile, {
@@ -5506,7 +5517,7 @@ function UnscheduledDayCell({
       minWidth: 0,
       minHeight: 30,
       cursor: isOwnView && onCreateItem ? "pointer" : "default",
-      background: isOver ? "#FEF3C7" : "transparent",
+      background: isOver ? ACCENT_WASH : "transparent",
       transition: "background 0.1s ease"
     }
   }, items.map((it) => /*#__PURE__*/React.createElement(UnscheduledItem, {
@@ -5580,7 +5591,7 @@ function CalendarDayHeader({
     style: {
       fontSize: 16,
       fontWeight: isToday ? 700 : 500,
-      color: isToday ? "#fff" : INK,
+      color: isToday ? ON_DARK : INK,
       width: 28,
       height: 28,
       borderRadius: "50%",
@@ -5670,7 +5681,6 @@ function CalendarView({
   reflectedItemTexts,
   onOpenReflections,
   onReflect,
-  onSetLink,
   onDeleteItem,
   canEditItems,
   onCreateItem,
@@ -5686,20 +5696,6 @@ function CalendarView({
   const [dragItem, setDragItem] = useState(null);
   const [hoveredKey, setHoveredKey] = useState(null);
   const [hoveredDayHeader, setHoveredDayHeader] = useState(null);
-  const chainIconSvg = /*#__PURE__*/React.createElement("svg", {
-    width: "10",
-    height: "10",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: "3",
-    strokeLinecap: "round",
-    strokeLinejoin: "round"
-  }, /*#__PURE__*/React.createElement("path", {
-    d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
-  }), /*#__PURE__*/React.createElement("path", {
-    d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
-  }));
   const [dragOverSlot, setDragOverSlot] = useState(null);
   const [resizing, setResizing] = useState(null);
   const [resizePreview, setResizePreview] = useState(null);
@@ -5829,24 +5825,7 @@ function CalendarView({
         },
         title: "View / edit reflection",
         style: ICON_BTN
-      }, reflectBubbleSvg(it.cat.color, true)), onSetLink && /*#__PURE__*/React.createElement("button", {
-        onClick: e => {
-          e.stopPropagation();
-          const m = it.text.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-          const url = window.prompt("Link URL", m ? m[2] : "");
-          if (url !== null) onSetLink(ds, it.id, url.trim());
-        },
-        title: it.text.match(/^\[([^\]]+)\]\(([^)]+)\)$/) ? "Edit link" : "Add link",
-        style: {
-          background: "none",
-          border: "none",
-          cursor: "pointer",
-          padding: 0,
-          color: FAINT,
-          display: "flex",
-          alignItems: "center"
-        }
-      }, chainIconSvg), onDeleteItem && /*#__PURE__*/React.createElement("button", {
+      }, reflectBubbleSvg(it.cat.color, true)), onDeleteItem && /*#__PURE__*/React.createElement("button", {
         onClick: e => {
           e.stopPropagation();
           onDeleteItem(ds, it.cat.id, it.id);
@@ -5918,8 +5897,8 @@ function CalendarView({
   // keeps them.
   const colTemplate = `${CAL_LABEL_W}px repeat(${dates.length},1fr)`;
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    style: compact ? { background: "#fff" } : {
-      background: "#fff",
+    style: compact ? { background: SURFACE } : {
+      background: SURFACE,
       border: `1px solid ${HAIRLINE}`,
       borderRadius: 12,
       overflow: "hidden",
@@ -5934,7 +5913,7 @@ function CalendarView({
       display: "grid",
       gridTemplateColumns: colTemplate,
       borderBottom: `1px solid ${FAINT}`,
-      background: "#fff"
+      background: SURFACE
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -5948,7 +5927,7 @@ function CalendarView({
       style: { height: 30, display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
         borderLeft: `1px solid ${WASH}`, borderBottom: isToday ? `2px solid ${ACCENT}` : "2px solid transparent" }
     }, /*#__PURE__*/React.createElement("span", {
-      style: { fontSize: 10.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: isToday ? ACCENT : INK_3 }
+      style: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: isToday ? ACCENT : INK_3 }
     }, DAY_ABB[i]), /*#__PURE__*/React.createElement("span", {
       style: { fontSize: 14, fontWeight: isToday ? 700 : 500, color: isToday ? INK : INK_2 }
     }, d.getDate()));
@@ -5960,12 +5939,12 @@ function CalendarView({
       display: "grid",
       gridTemplateColumns: colTemplate,
       borderBottom: `1px solid ${HAIRLINE}`,
-      background: "#FBFAF9"
+      background: PAPER
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "6px 6px",
-      fontSize: 8,
+      fontSize: 10,
       color: MUTED,
       letterSpacing: "0.05em",
       textTransform: "uppercase",
@@ -6319,10 +6298,10 @@ const TRUNCATED_REASONS = ["MAX_TOKENS", "max_tokens", "length"];
 // first and can run out of room doing it, having worked perfectly well.
 function assertComplete(finishReason, text, { allowTruncated = false } = {}) {
   if (!allowTruncated && TRUNCATED_REASONS.indexOf(finishReason) !== -1) {
-    throw new Error("The model ran out of room before it finished \u2014 it hit the response limit. Try again, or use a model that spends less on thinking.");
+    throw new Error("The model ran out of room. Try again, or pick another model in Settings.");
   }
   if (!String(text || "").trim() && !(allowTruncated && TRUNCATED_REASONS.indexOf(finishReason) !== -1)) {
-    throw new Error(`The model returned nothing${finishReason ? ` (stopped: ${finishReason})` : ""}. Try again, or try a different model.`);
+    throw new Error(`The model returned nothing${finishReason ? ` (stopped: ${finishReason})` : ""}. Try again.`);
   }
 }
 
@@ -6338,26 +6317,26 @@ function describeConnectionError(status, body, { retried = false } = {}) {
   })();
   const said = detail ? ` (Google said: ${detail.slice(0, 260)})` : "";
   if (status === 401 || status === 403) {
-    return "The request was turned away. Try signing out and back in." + said;
+    return "Request refused. Try signing out and back in." + said;
   }
   if (status === 429) {
     if (/limit:\s*0\b|free[_ ]tier|billing/i.test(detail)) {
-      return "There's no Gemini allowance for that model yet. That usually means the Firebase project is on the free (Spark) plan, or the prepaid credit has run out." + said;
+      return "No Gemini allowance for this model. Check the Firebase plan or credit." + said;
     }
-    return "Over the rate limit right now. Wait a minute and try again." + said;
+    return "Too many requests. Try again in a minute." + said;
   }
   if (status === 400 || status === 404) {
     // Almost always a model name that doesn't exist or has been retired.
     // Google's message names it, so it stays in.
-    return "Google didn't recognise that model \u2014 it may have been retired or the name may be mistyped. Change it at the bottom of the Seasons panel." + said;
+    return "Google didn't recognise that model. Pick another in Settings." + said;
   }
   if (status === 503 || status === 529) {
     return retried
-      ? "Gemini is overloaded right now \u2014 waited and tried again, still busy. Try again in a few minutes."
-      : "Gemini is overloaded right now. Try again in a few minutes.";
+      ? "Gemini is busy. Try again in a few minutes."
+      : "Gemini is busy. Try again in a few minutes.";
   }
   if (status === 0) {
-    return "Couldn't reach Gemini. Check your connection.";
+    return "Couldn't reach Gemini.";
   }
   return detail ? `Google said: ${detail} (${status})` : `Gemini returned an error (${status}).`;
 }
@@ -6420,45 +6399,37 @@ const firebaseGeminiProvider = {
   }
 };
 
-// The model. AI_MODEL is the default; a model chosen in the Seasons panel
+// The model. AI_MODEL is the default; a model chosen in Settings
 // replaces it. Firebase offers no list of models to a browser, so the menu is
 // a short hand-picked list taken from Google's Firebase models page, plus
 // "Other" for any name typed in. Whatever is chosen is tried with a one-word
 // request before it's saved, so a list that has gone stale fails gently.
 //
 // AI_MODEL_CHOICES was checked against that page on 13 Oct 2026, the day
-// Gemini 4 Argon came out. Refresh it when Google's lineup moves on. `note`
-// is what the model is like for a season reading; `catch` is the trade-off.
+// Gemini 4 Argon came out. Refresh it when Google's lineup moves on. `tag`
+// is a few words on what each is like.
 const AI_MODEL = "gemini-3.1-pro-preview";
 const AI_MODELS_PAGE = "https://firebase.google.com/docs/ai-logic/models";
 const AI_MODEL_CHOICES = [
   {
     id: "gemini-4-argon",
     label: "Gemini 4 Argon",
-    tag: "most capable",
-    note: "Google's newest and strongest model, best at the subtle reading a season asks for.",
-    catch: "Slowest, and costs the most per reading. New as of October 2026."
+    tag: "most capable"
   },
   {
     id: "gemini-3.8-flash",
     label: "Gemini 3.8 Flash",
-    tag: "fast, good value",
-    note: "Nearly as sharp at a fraction of the cost, and quicker to answer.",
-    catch: "Google may retire it at short notice when a newer Flash arrives."
+    tag: "fast, good value"
   },
   {
     id: "gemini-3.5-flash-lite",
     label: "Gemini 3.5 Flash-Lite",
-    tag: "fastest, cheapest",
-    note: "Quick and very cheap. Fine for trying things out.",
-    catch: "Readings will be thinner, with fewer of the patterns that cut across pillars."
+    tag: "fastest, cheapest"
   },
   {
     id: "gemini-3.1-pro-preview",
     label: "Gemini 3.1 Pro preview",
-    tag: "older",
-    note: "The model your readings have used so far.",
-    catch: "Google now lists it as an older preview and suggests moving off it. It will be retired."
+    tag: "older"
   }
 ];
 
@@ -7625,7 +7596,7 @@ function SeasonNote({ value, onSave, canEdit, prompt }) {
           cursor: "text",
           textAlign: "left",
           fontFamily: "inherit",
-          fontSize: 12.5,
+          fontSize: 13,
           fontWeight: SIDEBAR_SECTION_LABEL.fontWeight,
           color: SIDEBAR_SECTION_LABEL.color,
           display: "flex",
@@ -7663,7 +7634,7 @@ function SeasonNote({ value, onSave, canEdit, prompt }) {
       resize: "vertical",
       outline: "none",
       fontFamily: "inherit",
-      fontSize: 12.5,
+      fontSize: 13,
       lineHeight: 1.6,
       color: INK_2
     }
@@ -7725,8 +7696,8 @@ function SeasonEvidence({ evidence }) {
   },
     line,
     shown.map((ev, i) => React.createElement("div", { key: i, style: { marginBottom: i === shown.length - 1 ? 0 : 10 } },
-      React.createElement("div", { style: { fontSize: 10.5, fontWeight: 600, color: MUTED } }, fmtShortDate(ev.date)),
-      React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.6, color: INK_2, marginTop: 1 } }, quote(ev.text))
+      React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: MUTED } }, fmtShortDate(ev.date)),
+      React.createElement("div", { style: { fontSize: 13, lineHeight: 1.6, color: INK_2, marginTop: 1 } }, quote(ev.text))
     )),
     // Only the count opens the rest. Clicking anywhere used to collapse a
     // quote mid-sentence, which is a strange thing to have happen while you
@@ -7740,11 +7711,11 @@ function SeasonEvidence({ evidence }) {
         padding: 0,
         cursor: "pointer",
         fontFamily: "inherit",
-        fontSize: 11.5,
+        fontSize: 12,
         fontWeight: 600,
         color: ACCENT,
         textDecoration: "underline",
-        textDecorationColor: "#E0B296",
+        textDecorationColor: ACCENT_LINE,
         textUnderlineOffset: 3
       }
     }, open ? "Show less" : `${rest} more`)
@@ -7810,12 +7781,12 @@ function SeasonPillarRow({ row, cat, note, pillarNote, canEdit, goalFor, onNote,
   },
     React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: INK } }, name),
     purpose && React.createElement("div", {
-      style: { fontSize: 12.5, lineHeight: 1.55, color: INK_2, marginTop: 1 }
+      style: { fontSize: 13, lineHeight: 1.55, color: INK_2, marginTop: 1 }
     }, purpose),
     React.createElement("div", { style: { fontSize: 11, color: MUTED, marginTop: 2 } },
       `${row.perWeek} days/week${target != null ? ` \u00b7 ${target} intended` : ""} \u00b7 ${row.total} day${row.total === 1 ? "" : "s"} in the season`),
     pillarNote && React.createElement("div", {
-      style: { fontSize: 12.5, lineHeight: 1.6, color: INK_2, marginTop: 3 }
+      style: { fontSize: 13, lineHeight: 1.6, color: INK_2, marginTop: 3 }
     }, pillarNote),
 
     React.createElement(SeasonNote, {
@@ -7913,8 +7884,8 @@ function SeasonPillarRow({ row, cat, note, pillarNote, canEdit, goalFor, onNote,
           }
         })
       ),
-      React.createElement("div", { style: { fontSize: 10.5, lineHeight: 1.5, color: FAINT } },
-        "Retiring a pillar altogether lives in Pillars, where the rest of the set is in view.")
+      React.createElement("div", { style: { fontSize: 11, lineHeight: 1.5, color: FAINT } },
+        "Remove pillars in My pillars.")
     )
   );
 }
@@ -7939,7 +7910,7 @@ function SeasonSectionHead({ num, title, blurb }) {
     React.createElement("div", { style: { minWidth: 0, marginTop: 1 } },
       React.createElement("div", { style: { fontSize: 16, fontWeight: 700, color: ACCENT, lineHeight: 1.25 } }, title),
       blurb && React.createElement("div", {
-        style: { fontSize: 11.5, lineHeight: 1.55, color: MUTED, marginTop: 4, maxWidth: "36em" }
+        style: { fontSize: 12, lineHeight: 1.55, color: MUTED, marginTop: 4, maxWidth: "36em" }
       }, blurb)
     )
   );
@@ -7974,7 +7945,7 @@ function selectCaret(color) {
 function PillarChipSelect({ value, cats, isNew, offersNew, disabled, onChange, title, style }) {
   const cat = (cats || []).find(c => c.label === value);
   const tend = cat && isTend(cat.id);
-  const ink = isNew ? ACCENT : (tend ? cat.ink : (cat ? "#FFFFFF" : MUTED));
+  const ink = isNew ? ACCENT : (tend ? cat.ink : (cat ? ON_DARK : MUTED));
   return React.createElement("select", {
     value: isNew ? NEW_PILLAR_OPT : (value || ""),
     disabled: !!disabled,
@@ -8028,7 +7999,7 @@ function SeasonActionRow({ item, cats, canEdit, onApply, onDismiss, onEdit, onRe
       }),
       React.createElement("div", { style: { minWidth: 0, fontSize: 13, color: INK, lineHeight: 1.45 } },
         item.text,
-        React.createElement("span", { style: { fontSize: 11.5, color: MUTED } },
+        React.createElement("span", { style: { fontSize: 12, color: MUTED } },
           isPillar ? " \u2014 added as a new pillar" : ` \u2014 added to your ${item.pillar} ideas`)
       )
     );
@@ -8085,7 +8056,7 @@ function SeasonActionRow({ item, cats, canEdit, onApply, onDismiss, onEdit, onRe
       style: {
         flexShrink: 0,
         border: `${PLAN_BORDER_W}px solid ${ACCENT}`, borderRadius: TILE_RADIUS, background: "transparent",
-        padding: "4px 10px", fontSize: 11.5, fontWeight: 600, fontFamily: "inherit", color: ACCENT, cursor: "pointer"
+        padding: "4px 10px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", color: ACCENT, cursor: "pointer"
       }
     }, isPillar ? (armed ? "Tap again" : "Add as pillar") : "Add"),
     canEdit && React.createElement("button", {
@@ -8094,7 +8065,7 @@ function SeasonActionRow({ item, cats, canEdit, onApply, onDismiss, onEdit, onRe
       "aria-label": "Not this one",
       style: {
         flexShrink: 0, background: "none", border: "none", padding: "0 2px",
-        cursor: "pointer", fontFamily: "inherit", fontSize: 15, lineHeight: 1, color: MUTED
+        cursor: "pointer", fontFamily: "inherit", fontSize: 16, lineHeight: 1, color: MUTED
       }
     }, "\u00D7")
   );
@@ -8128,10 +8099,10 @@ function SeasonActions({ entry, cats, canEdit, busy, error, note, onSuggest, onA
       style: { fontSize: 12, color: ACCENT, marginBottom: 10 }
     }, error),
     !actions && React.createElement("div", { style: { maxWidth: "38em" } },
-      React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.6, color: INK_2, marginBottom: 10 } },
+      React.createElement("div", { style: { fontSize: 13, lineHeight: 1.6, color: INK_2, marginBottom: 10 } },
         answered
-          ? "Now that you've read the season and said what you make of it, a few things may follow."
-          : "Suggestions lean on what you wrote back above, so answering a question or two first will make them better."),
+          ? "Ideas from the reading and your notes."
+          : "Answer a question above first for better ideas."),
       canEdit && aiReady && React.createElement("button", {
         onClick: onSuggest,
         disabled: busy,
@@ -8146,8 +8117,8 @@ function SeasonActions({ entry, cats, canEdit, busy, error, note, onSuggest, onA
     // rows behind it, an empty list means they cleared it, not that the season
     // had nothing in it.
     actions && items.length === 0 && React.createElement("div", {
-      style: { fontSize: 12.5, lineHeight: 1.6, color: INK_2, marginBottom: 12, maxWidth: "38em" }
-    }, "Nothing suggested itself this time. Whatever you want to carry forward, write it below."),
+      style: { fontSize: 13, lineHeight: 1.6, color: INK_2, marginBottom: 12, maxWidth: "38em" }
+    }, "No suggestions this time."),
     added.length > 0 && React.createElement("div", { style: { marginBottom: pending.length ? 18 : 6 } },
       React.createElement("div", { style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 7px" } }, "Carrying forward"),
       added.map(it => React.createElement(SeasonActionRow, {
@@ -8182,8 +8153,8 @@ function SeasonActions({ entry, cats, canEdit, busy, error, note, onSuggest, onA
       disabled: busy,
       style: {
         marginTop: 4, background: "none", border: "none", padding: 0,
-        cursor: busy ? "default" : "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600,
-        color: busy ? MUTED : ACCENT, textDecoration: "underline", textDecorationColor: "#E0B296", textUnderlineOffset: 3
+        cursor: busy ? "default" : "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600,
+        color: busy ? MUTED : ACCENT, textDecoration: "underline", textDecorationColor: ACCENT_LINE, textUnderlineOffset: 3
       }
     }, busy ? "Thinking it over\u2026" : "Suggest more"),
     canEdit && React.createElement("div", { style: { marginTop: 20, maxWidth: "38em" } },
@@ -8215,7 +8186,7 @@ function SeasonActions({ entry, cats, canEdit, busy, error, note, onSuggest, onA
           style: {
             flexShrink: 0,
             border: `${PLAN_BORDER_W}px solid ${ACCENT}`, borderRadius: TILE_RADIUS, background: "transparent",
-            padding: "4px 10px", fontSize: 11.5, fontWeight: 600, fontFamily: "inherit", color: ACCENT, cursor: "pointer"
+            padding: "4px 10px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", color: ACCENT, cursor: "pointer"
           }
         }, "Add")
       )
@@ -8280,7 +8251,7 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
           }),
           React.createElement("div", { style: { minWidth: 0 } },
             React.createElement("div", {
-              style: { fontSize: 9.5, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: ACCENT, marginBottom: 4 }
+              style: { fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: ACCENT, marginBottom: 4 }
             }, partial ? "Seasons \u00b7 Sneak peek" : "Seasons"),
             React.createElement("div", {
               style: { fontSize: 22, fontWeight: 700, color: INK, lineHeight: 1.15, marginBottom: 5 }
@@ -8308,16 +8279,16 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
             padding: "11px 13px",
             marginBottom: 20,
             maxWidth: "38em",
-            fontSize: 12.5,
+            fontSize: 13,
             lineHeight: 1.6,
             color: INK_2
           }
         },
           React.createElement("span", { style: { fontWeight: 700 } }, "A sneak peek. "),
           entry.counts
-            ? `Read early, from ${entry.counts.weeks} weeks and ${entry.counts.reflections} reflections \u2014 the rest of the season hasn't happened yet. `
-            : "Read early, from part of a season \u2014 the rest of it hasn't happened yet. ",
-          "Nothing to write back on here: read the season properly once it's done, and answer it then."),
+            ? `Read early, from ${entry.counts.weeks} weeks and ${entry.counts.reflections} reflections. `
+            : "Read early, from part of a season. ",
+          "Notes open when the season ends."),
 
         // The season in a few sentences, tinted and banded so it reads as the
         // one thing to stop on. Warmer and larger than the body, still unbolded
@@ -8331,10 +8302,10 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
           }
         },
           React.createElement("div", {
-            style: { fontSize: 9.5, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: ACCENT, marginBottom: 7 }
+            style: { fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: ACCENT, marginBottom: 7 }
           }, "The season, briefly"),
           React.createElement("div", {
-            style: { fontSize: 16.5, fontWeight: 400, color: INK, lineHeight: 1.7, maxWidth: "34em" }
+            style: { fontSize: 16, fontWeight: 400, color: INK, lineHeight: 1.7, maxWidth: "34em" }
           }, r.headline)
         ),
 
@@ -8393,7 +8364,7 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
               // the sentence, not after.
               hunch && React.createElement("div", {
                 className: "season-hunch",
-                title: "Only one or two entries behind this so far. Worth watching.",
+                title: "Only one or two entries so far.",
                 style: { fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: MUTED, marginBottom: 4 }
               }, "Just a hunch"),
               // Title and pillars on one line. The chips label the claim rather
@@ -8403,7 +8374,7 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
                 style: { display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8, marginBottom: 5 }
               },
                 heading && React.createElement("span", {
-                  style: { fontSize: 14.5, fontWeight: 700, color: INK, lineHeight: 1.3 }
+                  style: { fontSize: 14, fontWeight: 700, color: INK, lineHeight: 1.3 }
                 }, heading),
                 chips.map((pl, pi) => {
                 const cat = (cats || []).find(c => c.label === pl);
@@ -8415,13 +8386,13 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
                     padding: "2px 7px",
                     borderRadius: 3,
                     whiteSpace: "nowrap",
-                    color: cat ? "#FFFFFF" : MUTED,
+                    color: cat ? ON_DARK : MUTED,
                     background: cat ? catDeep(cat) : WASH
                   }
                 }, pl);
               })),
               React.createElement("div", {
-                style: { fontSize: 13.5, lineHeight: 1.68, color: INK_2, maxWidth: "38em" }
+                style: { fontSize: 13, lineHeight: 1.68, color: INK_2, maxWidth: "38em" }
               }, en.body || ""),
               React.createElement(SeasonEvidence, { evidence: en.evidence }),
               // The reader's own read comes first, and what to DO about the
@@ -8450,7 +8421,7 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
             style: { marginBottom: 14 }
           },
             React.createElement("div", {
-              style: { fontSize: 13.5, lineHeight: 1.68, color: INK_2, maxWidth: "38em" }
+              style: { fontSize: 13, lineHeight: 1.68, color: INK_2, maxWidth: "38em" }
             }, typeof q === "string" ? q : q.text),
             React.createElement(SeasonNote, {
               value: (entry.notes || {})[`q:${i}`] || "",
@@ -8472,7 +8443,7 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
             title: "Your life pillars",
             // The only line kept: this section asks for a decision rather than
             // a read, and nothing else on screen says so.
-            blurb: "Decide whether each gave you what you wanted, and what to change before next season."
+            blurb: "Did each give you what you wanted?"
           }),
           (entry.ledger || []).map((row, i) => {
             // Readings written before rows carried an id still resolve by the
@@ -8550,7 +8521,7 @@ function SeasonFooter({ entry, canEdit, busy, error, noteCount, onRegenerate }) 
     border: "none",
     padding: 0,
     fontFamily: "inherit",
-    fontSize: 11.5,
+    fontSize: 12,
     fontWeight: 600,
     color: busy ? FAINT : INK_3,
     cursor: busy ? "default" : "pointer"
@@ -8568,7 +8539,7 @@ function SeasonFooter({ entry, canEdit, busy, error, noteCount, onRegenerate }) 
     }
   },
     error && React.createElement("div", {
-      style: { background: WASH, borderRadius: TILE_RADIUS, padding: "8px 10px", fontSize: 11.5, lineHeight: 1.5, color: INK_2 }
+      style: { background: WASH, borderRadius: TILE_RADIUS, padding: "8px 10px", fontSize: 12, lineHeight: 1.5, color: INK_2 }
     }, error),
 
     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 } },
@@ -8601,7 +8572,7 @@ function SeasonFooter({ entry, canEdit, busy, error, noteCount, onRegenerate }) 
             borderRadius: TILE_RADIUS,
             background: "transparent",
             padding: "5px 12px",
-            fontSize: 11.5,
+            fontSize: 12,
             fontWeight: 600,
             fontFamily: "inherit",
             color: busy ? FAINT : ACCENT,
@@ -8621,7 +8592,7 @@ function SeasonFooter({ entry, canEdit, busy, error, noteCount, onRegenerate }) 
       // behind, and the reader is told before, not after.
       React.createElement("div", {
         className: "season-reread-warning",
-        style: { fontSize: 11.5, lineHeight: 1.55, color: hasNotes ? INK_2 : INK_3 }
+        style: { fontSize: 12, lineHeight: 1.55, color: hasNotes ? INK_2 : INK_3 }
       }, hasNotes
         ? `${aiModelLabel(currentAIModel())} will write a new reading to replace this one, and your ${noteCount === 1 ? "note on it" : `${noteCount} notes on it`} won't be kept.`
         : `${aiModelLabel(currentAIModel())} will write a new reading to replace this one.`)
@@ -8667,12 +8638,12 @@ function SeasonsPanel({
         }
       },
         React.createElement("div", { style: { fontSize: 12, lineHeight: 1.5, color: INK_2, marginBottom: 0 } },
-          "Season readings work once you're signed in. This preview on your computer isn't, so it can't ask for one.")
+          "Sign in to read seasons.")
       ),
 
       seasons.length === 0 && React.createElement("div", {
-        style: { fontSize: 12.5, lineHeight: 1.6, color: MUTED, padding: "8px 0" }
-      }, "Nothing to look back on yet. A season fills up over three months \u2014 keep planning and reflecting, and this is where it gets read."),
+        style: { fontSize: 13, lineHeight: 1.6, color: MUTED, padding: "8px 0" }
+      }, "Nothing to read yet. Seasons fill up over three months."),
 
       seasons.map(s => {
         const saved = store.get(s.id);
@@ -8704,19 +8675,19 @@ function SeasonsPanel({
           React.createElement("div", {
             style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }
           },
-            React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: INK } }, s.label),
+            React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: INK } }, s.label),
             canEdit && (!saved || peek) && aiReady && (() => {
               const rest = busy ? FAINT : (st.ready ? ACCENT : MUTED);
               // A finished season is offering something; an unfinished one is
               // only allowing it. So the underline — the thing that reads as
               // "click me" — belongs to "Read" and not to "Sneak peek", which
               // picks it up on hover instead.
-              const restLine = busy || !st.ready ? "transparent" : "#FDBA74";
+              const restLine = busy || !st.ready ? "transparent" : ACCENT_LINE;
               return React.createElement("button", {
                 className: "season-read-link",
                 onClick: e => { e.stopPropagation(); onGenerate(s.id); },
                 disabled: busy,
-                onMouseEnter: e => { if (busy) return; e.currentTarget.style.color = ACCENT; e.currentTarget.style.textDecorationColor = "#FDBA74"; },
+                onMouseEnter: e => { if (busy) return; e.currentTarget.style.color = ACCENT; e.currentTarget.style.textDecorationColor = ACCENT_LINE; },
                 onMouseLeave: e => { e.currentTarget.style.color = rest; e.currentTarget.style.textDecorationColor = restLine; },
                 style: {
                   background: "none",
@@ -8737,11 +8708,11 @@ function SeasonsPanel({
           ),
           read && headline && React.createElement("div", {
             className: "season-shelf-headline",
-            style: { fontSize: 12.5, lineHeight: 1.55, color: INK_2, marginTop: 4 }
+            style: { fontSize: 13, lineHeight: 1.55, color: INK_2, marginTop: 4 }
           }, headline),
           // Once a season has been read, the headline speaks for the tile; the
           // status line only earns its place while a season is still unread.
-          !read && React.createElement("div", { style: { fontSize: 10.5, color: MUTED, marginTop: 2 } },
+          !read && React.createElement("div", { style: { fontSize: 11, color: MUTED, marginTop: 2 } },
             (peek ? "Sneak peek read \u00b7 " : "") + (st.complete
                 ? (st.thin ? `Too little to work with \u00b7 ${st.weeks} weeks, ${st.reflections} reflections` : `Ready \u00b7 ${st.weeks} weeks, ${st.reflections} reflections`)
                 : `In progress \u00b7 ${st.weeks} weeks, ${st.reflections} reflections so far`)),
@@ -8759,206 +8730,7 @@ function SeasonsPanel({
             }
           }, error.message)
         );
-      }),
-
-      canEdit && React.createElement(SeasonModelControl, { canChange: aiReady })
-    )
-  );
-}
-
-// ---------------------------------------------------------------------------
-// SeasonModelControl
-//
-// Which Gemini model writes readings and next-season suggestions, and the
-// way to change it. Google retires models between one season and the next,
-// so this lives where the reading is asked for, as a quiet line at the foot
-// of the shelf. Changing it is a short menu of current models, each with a
-// line on what it's like, plus "Other" for a name from Google's page. The
-// pick is tried with a one-word request before it's saved: a retired model
-// or a typo is caught here, not three months from now in a reading.
-// ---------------------------------------------------------------------------
-const OTHER_MODEL = "__other__";
-
-function SeasonModelControl({ canChange }) {
-  const [model, setModelState] = useState(currentAIModel);
-  const [editing, setEditing] = useState(false);
-  const [pick, setPick] = useState("");
-  const [typed, setTyped] = useState("");
-  const [checking, setChecking] = useState(false);
-  const [problem, setProblem] = useState(null);
-  const otherRef = useRef(null);
-  useEffect(() => {
-    if (editing && pick === OTHER_MODEL && otherRef.current) otherRef.current.focus();
-  }, [editing, pick]);
-
-  function open() {
-    const now = currentAIModel();
-    setModelState(now);
-    // A model typed in earlier shows as its own line in the menu rather
-    // than as "Other", so reopening never looks like the choice was lost.
-    setPick(now);
-    setTyped("");
-    setProblem(null);
-    setEditing(true);
-  }
-  function close() {
-    if (checking) return;
-    setEditing(false);
-    setProblem(null);
-  }
-  const chosen = (pick === OTHER_MODEL ? typed : pick).trim().replace(/^models\//, "");
-  async function trySave() {
-    if (!chosen || checking) return;
-    if (chosen === model) { close(); return; }
-    setChecking(true);
-    setProblem(null);
-    try {
-      await checkAIModel(chosen);
-      saveAIModel(chosen);
-      setModelState(currentAIModel());
-      setEditing(false);
-    } catch (err) {
-      setProblem(String((err && err.message) || "That model didn't answer."));
-    } finally {
-      setChecking(false);
-    }
-  }
-
-  const choice = pick === OTHER_MODEL ? null : aiModelChoice(pick);
-  const listed = AI_MODEL_CHOICES.some(c => c.id === model);
-  const canSave = Boolean(chosen) && !checking;
-
-  const linkBtn = {
-    background: "none",
-    border: "none",
-    padding: 0,
-    fontFamily: "inherit",
-    fontSize: 11,
-    fontWeight: 600,
-    color: INK_3,
-    cursor: "pointer"
-  };
-  const field = {
-    width: "100%",
-    boxSizing: "border-box",
-    border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
-    borderRadius: TILE_RADIUS,
-    background: TILE_PLAN_FILL,
-    padding: "6px 8px",
-    fontFamily: "inherit",
-    fontSize: 13,
-    color: INK,
-    outline: "none"
-  };
-
-  return React.createElement("div", {
-    className: "season-model",
-    style: { borderTop: `1px solid ${HAIRLINE}`, marginTop: 14, paddingTop: 10 }
-  },
-    !editing && React.createElement("div", {
-      style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }
-    },
-      React.createElement("div", { style: { fontSize: 11, lineHeight: 1.5, color: MUTED, minWidth: 0, overflowWrap: "anywhere" } },
-        "Model ",
-        React.createElement("span", { className: "season-model-name", style: { color: INK_2 } }, aiModelLabel(model))),
-      canChange && React.createElement("button", {
-        className: "season-model-change",
-        onClick: open,
-        style: { ...linkBtn, flexShrink: 0 }
-      }, "Change")
-    ),
-
-    editing && React.createElement("div", {
-      style: { background: WASH, borderRadius: TILE_RADIUS, padding: "10px 11px", display: "flex", flexDirection: "column", gap: 8 }
-    },
-      React.createElement("label", {
-        htmlFor: "season-model-select",
-        style: { fontSize: 11.5, fontWeight: 600, color: INK_2 }
-      }, "Model for season readings"),
-      React.createElement("select", {
-        id: "season-model-select",
-        className: "season-model-select",
-        value: pick,
-        disabled: checking,
-        onChange: e => { setPick(e.target.value); setProblem(null); },
-        style: { ...field, cursor: checking ? "default" : "pointer" }
-      },
-        AI_MODEL_CHOICES.map(c => React.createElement("option", { key: c.id, value: c.id },
-          `${c.label} (${c.tag})${c.id === model ? " \u2713" : ""}`)),
-        !listed && React.createElement("option", { key: model, value: model }, `${model} \u2713`),
-        React.createElement("option", { key: OTHER_MODEL, value: OTHER_MODEL }, "Other\u2026")
-      ),
-
-      choice && React.createElement("div", {
-        className: "season-model-note",
-        style: { fontSize: 11.5, lineHeight: 1.5, color: INK_2 }
-      },
-        choice.note,
-        React.createElement("div", { style: { color: INK_3, marginTop: 2 } }, choice.catch)),
-
-      pick === OTHER_MODEL && React.createElement(React.Fragment, null,
-        React.createElement("input", {
-          ref: otherRef,
-          className: "season-model-input",
-          "aria-label": "Model name",
-          value: typed,
-          disabled: checking,
-          spellCheck: false,
-          autoCapitalize: "off",
-          autoCorrect: "off",
-          placeholder: "e.g. gemini-4-argon",
-          onChange: e => { setTyped(e.target.value); setProblem(null); },
-          onKeyDown: e => {
-            if (e.key === "Enter") { e.preventDefault(); trySave(); }
-            if (e.key === "Escape") { e.preventDefault(); close(); }
-          },
-          style: field
-        }),
-        React.createElement("div", { style: { fontSize: 11, lineHeight: 1.5, color: INK_3 } },
-          "For a model that isn't listed. Copy its name from ",
-          React.createElement("a", {
-            href: AI_MODELS_PAGE,
-            target: "_blank",
-            rel: "noopener noreferrer",
-            style: { color: INK_2, textDecoration: "underline", textUnderlineOffset: 2 }
-          }, "Google's list of current models"),
-          ".")
-      ),
-
-      !choice && pick !== OTHER_MODEL && React.createElement("div", {
-        style: { fontSize: 11.5, lineHeight: 1.5, color: INK_3 }
-      }, "A model you typed in earlier."),
-
-      problem && React.createElement("div", {
-        className: "season-model-problem",
-        style: { fontSize: 11, lineHeight: 1.5, color: INK_2, borderTop: `1px solid ${HAIRLINE}`, paddingTop: 8 }
-      }, problem),
-
-      React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" } },
-        React.createElement("button", {
-          className: "season-model-save",
-          onClick: trySave,
-          disabled: !canSave,
-          style: {
-            border: `${PLAN_BORDER_W}px solid ${canSave ? ACCENT : NEUTRAL_OUTLINE}`,
-            borderRadius: TILE_RADIUS,
-            background: "transparent",
-            padding: "5px 12px",
-            fontSize: 11.5,
-            fontWeight: 600,
-            fontFamily: "inherit",
-            color: canSave ? ACCENT : FAINT,
-            cursor: canSave ? "pointer" : "default"
-          }
-        }, checking ? "Trying it\u2026" : "Try it and save"),
-        React.createElement("button", {
-          onClick: close,
-          disabled: checking,
-          style: { ...linkBtn, color: MUTED }
-        }, "Cancel")
-      ),
-      React.createElement("div", { style: { fontSize: 10.5, lineHeight: 1.5, color: MUTED } },
-        "List checked October 2026. Saving sends one tiny test request first.")
+      })
     )
   );
 }
@@ -9092,12 +8864,12 @@ function IdeasPanel({
         limit: 4
       });
       if (!texts || !texts.length) {
-        setSuggestNote("No new ideas to add right now — try adding your own.");
+        setSuggestNote("No new ideas. Add your own.");
       } else {
         ideasStore.addMany(pillar.id, texts);
       }
     } catch {
-      setSuggestNote("Couldn't fetch ideas just now.");
+      setSuggestNote("Couldn't get ideas.");
     } finally {
       setSuggesting(false);
     }
@@ -9130,7 +8902,7 @@ function IdeasPanel({
         lineHeight: 1.45,
         color: TEND_CAT.ink
       }
-    }, "That's a lot to carry. Give a few of these a day — that's what quiets them."), /*#__PURE__*/React.createElement("div", {
+    }, "A lot waiting. Give a few a day."), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         overflowY: "auto",
@@ -9346,7 +9118,7 @@ function IdeasPanel({
           border: "none",
           cursor: "pointer",
           padding: 0,
-          color: "#EF4444",
+          color: DANGER,
           opacity: 0.7,
           fontSize: 14,
           lineHeight: 1,
@@ -9631,7 +9403,7 @@ function ReflectionsPanel({
         borderRadius: TILE_RADIUS,
         padding: "8px 11px",
         marginBottom: 12,
-        fontSize: 12.5,
+        fontSize: 13,
         fontWeight: 500,
         color: focusCat ? INK_2 : MUTED,
         cursor: "pointer",
@@ -9776,7 +9548,7 @@ function PlanAvatar({ size = 24, name, color = PLAN_OWN_AVATAR }) {
     style: {
       ...base,
       background: color,
-      color: "#fff",
+      color: ON_DARK,
       fontSize: Math.round(size * 0.42),
       fontWeight: 700,
       letterSpacing: "0.02em"
@@ -10434,7 +10206,7 @@ function EventDialog({ dlg, cats, onSave, actions }) {
       fontSize: 12,
       fontWeight: 600,
       fontFamily: "inherit",
-      color: "#B91C1C",
+      color: DANGER,
       padding: "7px 0",
       marginRight: "auto"
     }
@@ -10455,7 +10227,7 @@ function EventDialog({ dlg, cats, onSave, actions }) {
     className: "ilm-sheet",
     onClick: e => e.stopPropagation(),
     style: {
-      background: "#fff",
+      background: SURFACE,
       borderRadius: 14,
       padding: 22,
       width: 340,
@@ -10476,7 +10248,7 @@ function EventDialog({ dlg, cats, onSave, actions }) {
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 15,
+      fontSize: 16,
       fontWeight: 700,
       color: INK
     }
@@ -10568,7 +10340,7 @@ function EventDialog({ dlg, cats, onSave, actions }) {
       borderRadius: 10,
       border: "none",
       cursor: "pointer",
-      background: editUnscheduled ? "#DCD2BF" : ACCENT,
+      background: editUnscheduled ? NEUTRAL_OUTLINE : ACCENT,
       transition: "background 0.15s ease",
       padding: 0,
       flexShrink: 0
@@ -10581,7 +10353,7 @@ function EventDialog({ dlg, cats, onSave, actions }) {
       width: 16,
       height: 16,
       borderRadius: "50%",
-      background: "#fff",
+      background: SURFACE,
       boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
       transition: "left 0.15s ease"
     }
@@ -10703,7 +10475,7 @@ function EventDialog({ dlg, cats, onSave, actions }) {
       fontFamily: "inherit",
       outline: "none",
       color: INK,
-      background: "#fff",
+      background: SURFACE,
       cursor: "pointer"
     }
   }, /*#__PURE__*/React.createElement("option", { value: REPEAT_NONE }, "Doesn't repeat"), /*#__PURE__*/React.createElement("option", { value: REPEAT_DAILY }, "Every day"), /*#__PURE__*/React.createElement("option", { value: REPEAT_WEEKLY }, "Every week"), /*#__PURE__*/React.createElement("option", { value: REPEAT_BIWEEKLY }, "Every other week")),
@@ -10727,8 +10499,8 @@ function EventDialog({ dlg, cats, onSave, actions }) {
         height: 30,
         borderRadius: 15,
         border: `1px solid ${on ? ACCENT : HAIRLINE}`,
-        background: on ? ACCENT : "#fff",
-        color: on ? "#fff" : MUTED,
+        background: on ? ACCENT : SURFACE,
+        color: on ? ON_DARK : MUTED,
         fontSize: 11,
         fontWeight: 700,
         fontFamily: "inherit",
@@ -10776,7 +10548,7 @@ function EventDialog({ dlg, cats, onSave, actions }) {
       lineHeight: 1
     }
   }, "×")), editRepeat !== REPEAT_NONE && /*#__PURE__*/React.createElement("div", {
-    style: { fontSize: 11, color: "#8A7F6B", lineHeight: 1.4 }
+    style: { fontSize: 11, color: INK_3, lineHeight: 1.4 }
   }, describeRule({ freq: editRepeat, byDay: editRepeatDays, endDs: editRepeatEnd || null }), !editRepeatEnd && " — no end date")), linkField, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -10806,7 +10578,7 @@ function EventDialog({ dlg, cats, onSave, actions }) {
       cursor: "pointer",
       fontSize: 12,
       fontWeight: 600,
-      color: "#fff",
+      color: ON_DARK,
       fontFamily: "inherit",
       padding: "7px 16px",
       borderRadius: 8
@@ -10861,7 +10633,7 @@ function Modal({ onClose, maxWidth = 400, padding = "28px 28px 24px", children }
       className: "ilm-sheet",
       onClick: e => e.stopPropagation(),
       style: {
-        background: "#fff",
+        background: SURFACE,
         borderRadius: 18,
         border: `1px solid ${HAIRLINE}`,
         boxShadow: "0 12px 48px rgba(0,0,0,0.18)",
@@ -10871,6 +10643,61 @@ function Modal({ onClose, maxWidth = 400, padding = "28px 28px 24px", children }
       }
     }, children)
   );
+}
+
+// In-app confirm, in place of the browser's own box (which on an installed
+// phone app shows the site address and none of the app's look). One at a
+// time, opened from anywhere with appConfirm(), shown by AppDialogHost.
+const appDialog = {
+  current: null,
+  listeners: new Set(),
+  emit() { this.listeners.forEach(f => f()); },
+  open(spec) {
+    return new Promise(resolve => { this.current = { ...spec, resolve }; this.emit(); });
+  },
+  close(value) {
+    const c = this.current;
+    this.current = null;
+    this.emit();
+    if (c) c.resolve(value);
+  }
+};
+function appConfirm({ title, message = null, confirmLabel = "OK", danger = false }) {
+  return appDialog.open({ title, message, confirmLabel, danger });
+}
+function AppDialogHost() {
+  const [, bump] = useState(0);
+  useEffect(() => {
+    const f = () => bump(n => n + 1);
+    appDialog.listeners.add(f);
+    return () => appDialog.listeners.delete(f);
+  }, []);
+  const d = appDialog.current;
+  useEffect(() => {
+    if (!d) return;
+    const onKey = e => { if (e.key === "Escape") appDialog.close(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [d]);
+  if (!d) return null;
+  return React.createElement(Modal, { onClose: () => appDialog.close(false), maxWidth: 360, padding: "22px 22px 18px" },
+    React.createElement("div", { className: "app-dialog-title", style: { fontSize: 16, fontWeight: 700, color: INK, marginBottom: d.message ? 6 : 16 } }, d.title),
+    d.message && React.createElement("div", { style: { fontSize: 13, color: INK_2, lineHeight: 1.5, marginBottom: 18 } }, d.message),
+    React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 14 } },
+      React.createElement("button", {
+        className: "app-dialog-cancel",
+        onClick: () => appDialog.close(false),
+        style: { background: "none", border: "none", cursor: "pointer", fontSize: 13, color: MUTED, fontFamily: "inherit", padding: "6px 2px" }
+      }, "Cancel"),
+      React.createElement("button", {
+        className: "app-dialog-confirm",
+        autoFocus: true,
+        onClick: () => appDialog.close(true),
+        style: {
+          background: d.danger ? DANGER : INK, color: ON_DARK, border: "none", borderRadius: TILE_RADIUS,
+          padding: "8px 16px", fontSize: 13, fontWeight: 600, fontFamily: "inherit", cursor: "pointer"
+        }
+      }, d.confirmLabel)));
 }
 
 // The confirm step before wiping everything the app has stored.
@@ -10900,14 +10727,14 @@ function StartFreshDialog({ onClose, onConfirm }) {
       marginBottom: 20,
       lineHeight: 1.5
     }
-  }, "Erases My Plan across all weeks \u2014 entries, ideas, reflections, weekly targets \u2014 and resets your pillars. Shared plans aren't affected. Back it up first if you want to keep any of it."), /*#__PURE__*/React.createElement("button", {
+  }, "Erases your plan, ideas, reflections and pillars. Back up first to keep anything."), /*#__PURE__*/React.createElement("button", {
     onClick: onConfirm,
     style: {
       width: "100%",
       padding: "14px 16px",
       borderRadius: 12,
-      border: "1.5px solid #FECACA",
-      background: "#FFF5F5",
+      border: `1.5px solid ${DANGER_LINE}`,
+      background: DANGER_WASH,
       cursor: "pointer",
       textAlign: "left",
       fontFamily: "inherit"
@@ -10916,16 +10743,9 @@ function StartFreshDialog({ onClose, onConfirm }) {
     style: {
       fontSize: 13,
       fontWeight: 700,
-      color: "#DC2626",
-      marginBottom: 3
+      color: DANGER
     }
-  }, "Yes, start fresh"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: INK_3,
-      lineHeight: 1.4
-    }
-  }, "You'll land on a blank week.")), /*#__PURE__*/React.createElement("button", {
+  }, "Yes, start fresh")), /*#__PURE__*/React.createElement("button", {
     onClick: () => onClose(),
     style: {
       marginTop: 16,
@@ -10977,7 +10797,7 @@ function ImportDialog({ pendingImport, onClose, doImport }) {
       padding: "14px 16px",
       borderRadius: 12,
       border: `1.5px solid ${HAIRLINE}`,
-      background: "#FAFAF9",
+      background: PAPER,
       cursor: "pointer",
       textAlign: "left",
       fontFamily: "inherit"
@@ -11000,8 +10820,8 @@ function ImportDialog({ pendingImport, onClose, doImport }) {
     style: {
       padding: "14px 16px",
       borderRadius: 12,
-      border: "1.5px solid #FECACA",
-      background: "#FFF5F5",
+      border: `1.5px solid ${DANGER_LINE}`,
+      background: DANGER_WASH,
       cursor: "pointer",
       textAlign: "left",
       fontFamily: "inherit"
@@ -11010,7 +10830,7 @@ function ImportDialog({ pendingImport, onClose, doImport }) {
     style: {
       fontSize: 13,
       fontWeight: 700,
-      color: "#DC2626",
+      color: DANGER,
       marginBottom: 3
     }
   }, "Replace My Plan"), /*#__PURE__*/React.createElement("div", {
@@ -11019,7 +10839,7 @@ function ImportDialog({ pendingImport, onClose, doImport }) {
       color: INK_3,
       lineHeight: 1.4
     }
-  }, "Overwrites everything. Back mine up first."))), /*#__PURE__*/React.createElement("button", {
+  }, "Overwrites everything. Back up first."))), /*#__PURE__*/React.createElement("button", {
     onClick: () => onClose(),
     style: {
       marginTop: 16,
@@ -11062,7 +10882,7 @@ function NamePromptDialog({ namePromptVal, setNamePromptVal, namePromptNext, onC
       marginBottom: 20,
       lineHeight: 1.5
     }
-  }, namePromptNext === "export" ? "We'll use your name in the export file name, so you can find the data backup and share it with friends." : "We'll show your initials on your plan, and use your name to label any plan you share with someone."), /*#__PURE__*/React.createElement("input", {
+  }, namePromptNext === "export" ? "Used to name your backup file." : "Used for your initials and shared plans."), /*#__PURE__*/React.createElement("input", {
     autoFocus: true,
     value: namePromptVal,
     onChange: e => setNamePromptVal(e.target.value),
@@ -11093,7 +10913,7 @@ function NamePromptDialog({ namePromptVal, setNamePromptVal, namePromptNext, onC
       border: "none",
       cursor: "pointer",
       fontSize: 13,
-      color: "#fff",
+      color: ON_DARK,
       fontWeight: 600,
       fontFamily: "inherit",
       opacity: namePromptVal.trim() ? 1 : 0.4
@@ -11143,7 +10963,7 @@ function ExportDialog({ pendingExportName, exportIncludeReflections, setExportIn
       marginTop: 2,
       lineHeight: 1.4
     }
-  }, "Your private journal. Leave off when sharing.")), /*#__PURE__*/React.createElement("button", {
+  }, "Private. Leave off when sharing.")), /*#__PURE__*/React.createElement("button", {
     onClick: () => setExportIncludeReflections(v => !v),
     style: {
       width: 42,
@@ -11152,7 +10972,7 @@ function ExportDialog({ pendingExportName, exportIncludeReflections, setExportIn
       border: "none",
       cursor: "pointer",
       padding: 0,
-      background: exportIncludeReflections ? REFLECT : "#D1CCCA",
+      background: exportIncludeReflections ? REFLECT : NEUTRAL_OUTLINE,
       transition: "background 0.2s ease",
       position: "relative",
       flexShrink: 0
@@ -11162,7 +10982,7 @@ function ExportDialog({ pendingExportName, exportIncludeReflections, setExportIn
       width: 18,
       height: 18,
       borderRadius: "50%",
-      background: "#fff",
+      background: SURFACE,
       position: "absolute",
       top: 3,
       left: exportIncludeReflections ? 21 : 3,
@@ -11182,7 +11002,7 @@ function ExportDialog({ pendingExportName, exportIncludeReflections, setExportIn
       border: "none",
       cursor: "pointer",
       fontSize: 13,
-      color: "#fff",
+      color: ON_DARK,
       fontWeight: 600,
       fontFamily: "inherit"
     }
@@ -11387,7 +11207,7 @@ function PillarsPanel({
           background: PAPER,
           padding: "6px 8px",
           fontFamily: "inherit",
-          fontSize: 11.5,
+          fontSize: 12,
           lineHeight: 1.5,
           color: INK_2,
           outline: "none",
@@ -11432,7 +11252,7 @@ function PillarsPanel({
         padding: "2px 0 0",
         cursor: "pointer",
         fontFamily: "inherit",
-        fontSize: 10.5,
+        fontSize: 11,
         color: MUTED,
         textDecoration: "underline"
       }
@@ -11508,8 +11328,7 @@ function PillarsPanel({
 // SettingsPanel
 //
 // Everything about the app rather than your life: your name, backing up and
-// starting fresh, and the account. (The AI model is set in the Seasons panel,
-// where its only work happens.) These used to be
+// starting fresh, the AI model, and the account. These used to be
 // tucked into the avatar menu and the footer, which left the avatar menu doing
 // two jobs. That menu is now only about whose plan is showing; this panel is
 // the one place for settings, and the phone's More > Settings will open the
@@ -11528,7 +11347,7 @@ function SettingsSection({ label, children }) {
   return /*#__PURE__*/React.createElement("div", {
     style: { padding: "14px 14px 4px" }
   }, /*#__PURE__*/React.createElement("div", {
-    style: { fontSize: 9, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3, margin: "0 2px 6px" }
+    style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3, margin: "0 2px 6px" }
   }, label), /*#__PURE__*/React.createElement("div", {
     style: { display: "flex", flexDirection: "column", gap: 6 }
   }, children));
@@ -11541,25 +11360,129 @@ function SettingsRow({ label, detail, onClick, danger, chevron = true, detailTon
     onClick: onClick,
     style: {
       width: "100%", minHeight: 48, display: "flex", alignItems: "center", gap: 10,
-      padding: "8px 12px", background: "#FFFDF8", border: `1px solid ${HAIRLINE}`,
+      padding: "8px 12px", background: SURFACE, border: `1px solid ${HAIRLINE}`,
       borderRadius: 4, cursor: "pointer", fontFamily: "inherit", textAlign: "left"
     }
   }, /*#__PURE__*/React.createElement("span", {
     style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }
   }, /*#__PURE__*/React.createElement("span", {
-    style: { fontSize: 13, fontWeight: 600, color: danger ? "#B91C1C" : INK }
+    style: { fontSize: 13, fontWeight: 600, color: danger ? DANGER : INK }
   }, label), detail && /*#__PURE__*/React.createElement("span", {
-    style: { fontSize: 11.5, color: detailTone || INK_3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
+    style: { fontSize: 12, color: detailTone || INK_3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
   }, detail)), chevron && /*#__PURE__*/React.createElement("svg", {
     width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: MUTED,
     strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", style: { flexShrink: 0 }, "aria-hidden": "true"
   }, /*#__PURE__*/React.createElement("path", { d: "M9 6l6 6-6 6" })));
 }
+// The model every AI feature uses. A plain menu that saves the moment it
+// changes. "Other…" takes any name from Google's list, for models newer than
+// this menu. After saving, one tiny request checks the model answers; the
+// row only says anything if it doesn't, so a retired or mistyped model shows
+// up here rather than in the middle of a season reading.
+const OTHER_MODEL = "__other__";
+
+function SettingsModelRow() {
+  const [model, setModel] = useState(currentAIModel);
+  const [other, setOther] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [problem, setProblem] = useState(null);
+  const listed = AI_MODEL_CHOICES.some(c => c.id === model);
+
+  function choose(id) {
+    const m = String(id || "").trim().replace(/^models\//, "");
+    if (!m) return;
+    saveAIModel(m);
+    setModel(currentAIModel());
+    setOther(false);
+    setTyped("");
+    setProblem(null);
+    if (!cloud.user) return;
+    checkAIModel(m).catch(err => {
+      if (currentAIModel() === m) setProblem(String((err && err.message) || "That model didn't answer."));
+    });
+  }
+
+  const quiet = { fontSize: 12, lineHeight: 1.5, color: INK_2, padding: "0 2px" };
+  return React.createElement(React.Fragment, null,
+    React.createElement("label", {
+      className: "settings-model",
+      style: {
+        position: "relative", width: "100%", minHeight: 48, boxSizing: "border-box",
+        display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+        background: TILE_PLAN_FILL, border: `1px solid ${HAIRLINE}`, borderRadius: TILE_RADIUS, cursor: "pointer"
+      }
+    },
+      React.createElement("span", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 } },
+        React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: INK } }, "AI model"),
+        React.createElement("span", {
+          className: "settings-model-name",
+          style: { fontSize: 12, color: INK_3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
+        }, aiModelLabel(model))),
+      React.createElement("svg", {
+        width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: MUTED, strokeWidth: "2",
+        strokeLinecap: "round", strokeLinejoin: "round", style: { flexShrink: 0 }, "aria-hidden": "true"
+      }, React.createElement("path", { d: "M6 9l6 6 6-6" })),
+      // The native menu, stretched invisibly over the whole row: one tap
+      // anywhere opens the phone's or browser's own picker.
+      React.createElement("select", {
+        className: "settings-model-select",
+        "aria-label": "AI model",
+        value: other ? OTHER_MODEL : model,
+        onChange: e => {
+          if (e.target.value === OTHER_MODEL) { setOther(true); setProblem(null); }
+          else choose(e.target.value);
+        },
+        style: { position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer", fontSize: 16 }
+      },
+        AI_MODEL_CHOICES.map(c => React.createElement("option", { key: c.id, value: c.id }, `${c.label} (${c.tag})`)),
+        !listed && React.createElement("option", { key: model, value: model }, model),
+        React.createElement("option", { value: OTHER_MODEL }, "Other\u2026"))
+    ),
+    other && React.createElement("div", { style: { display: "flex", gap: 6 } },
+      React.createElement("input", {
+        className: "settings-model-input",
+        "aria-label": "Model name",
+        autoFocus: true,
+        value: typed,
+        spellCheck: false, autoCapitalize: "off", autoCorrect: "off",
+        placeholder: "Model name",
+        onChange: e => setTyped(e.target.value),
+        onKeyDown: e => {
+          if (e.key === "Enter") { e.preventDefault(); choose(typed); }
+          if (e.key === "Escape") { e.preventDefault(); setOther(false); }
+        },
+        style: {
+          flex: 1, minWidth: 0, boxSizing: "border-box", border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+          borderRadius: TILE_RADIUS, background: TILE_PLAN_FILL, padding: "6px 8px",
+          fontFamily: "inherit", fontSize: 13, color: INK, outline: "none"
+        }
+      }),
+      React.createElement("button", {
+        className: "settings-model-save",
+        onClick: () => choose(typed),
+        disabled: !typed.trim(),
+        style: {
+          border: `${PLAN_BORDER_W}px solid ${typed.trim() ? ACCENT : NEUTRAL_OUTLINE}`, borderRadius: TILE_RADIUS,
+          background: "transparent", padding: "0 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit",
+          color: typed.trim() ? ACCENT : FAINT, cursor: typed.trim() ? "pointer" : "default"
+        }
+      }, "Save")),
+    problem && React.createElement("div", { className: "settings-model-problem", style: quiet }, problem),
+    // Google's own list, for a model newer than the menu ("Other…").
+    React.createElement("a", {
+      className: "settings-model-link",
+      href: AI_MODELS_PAGE, target: "_blank", rel: "noopener noreferrer",
+      style: { ...quiet, color: INK_3, textDecoration: "underline", textUnderlineOffset: 2, alignSelf: "flex-start" }
+    }, "Latest models")
+  );
+}
+
 function SettingsPanel({ userName, openNamePrompt, exportData, setShowStartFreshConfirm, onClose }) {
   const c = useCloud();
-  const syncNote = !c.user ? "Preview on this computer \u00b7 not synced"
-    : c.status === "offline" ? "Offline \u00b7 changes are saved on this device"
-    : c.status === "error" ? "Not synced yet \u00b7 will keep trying" : "Synced across your devices";
+  // Silent when all is well; a few words only when changes aren't syncing.
+  const syncNote = !c.user ? "Preview, not synced"
+    : c.status === "offline" ? "Offline, will sync later"
+    : c.status === "error" ? "Not synced, retrying" : null;
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PanelHeader, {
     eyebrow: "Settings",
     title: userName || "Your planner",
@@ -11576,15 +11499,15 @@ function SettingsPanel({ userName, openNamePrompt, exportData, setShowStartFresh
     })), /*#__PURE__*/React.createElement(SettingsSection, { label: "Your plan" },
     /*#__PURE__*/React.createElement(SettingsRow, {
       label: "Back up my plan",
-      detail: "Save a copy as a file",
       onClick: exportData
     }), /*#__PURE__*/React.createElement(SettingsRow, {
       label: "Start fresh",
-      detail: "Clear this planner and begin again",
       danger: true,
       onClick: () => setShowStartFreshConfirm(true)
-    })), /*#__PURE__*/React.createElement(SettingsSection, { label: "Account" },
-    /*#__PURE__*/React.createElement("div", {
+    })), /*#__PURE__*/React.createElement(SettingsSection, { label: "AI" },
+    /*#__PURE__*/React.createElement(SettingsModelRow, null)), /*#__PURE__*/React.createElement(SettingsSection, { label: "Account" },
+    syncNote && /*#__PURE__*/React.createElement("div", {
+      className: "settings-sync-note",
       style: { fontSize: 12, color: INK_2, padding: "2px 2px 4px" }
     }, syncNote), c.user && /*#__PURE__*/React.createElement(SettingsRow, {
       label: "Sign out",
@@ -11861,7 +11784,7 @@ function ViewToolbar({ viewMode, setViewMode, displayCats, selectedPillar, toggl
     key: "view-label",
     id: "view-switch-label",
     style: {
-      fontSize: 9,
+      fontSize: 10,
       fontWeight: 600,
       letterSpacing: "0.1em",
       textTransform: "uppercase",
@@ -11884,7 +11807,7 @@ function ViewToolbar({ viewMode, setViewMode, displayCats, selectedPillar, toggl
     onClick: () => setViewMode(mode),
     "aria-pressed": viewMode === mode ? "true" : "false",
     style: {
-      background: viewMode === mode ? "#fff" : "none",
+      background: viewMode === mode ? SURFACE : "none",
       border: "none",
       borderRadius: 6,
       padding: "4px 11px",
@@ -11893,7 +11816,7 @@ function ViewToolbar({ viewMode, setViewMode, displayCats, selectedPillar, toggl
       fontWeight: 600,
       fontFamily: "inherit",
       whiteSpace: "nowrap",
-      color: viewMode === mode ? INK : "#8A7F6C",
+      color: viewMode === mode ? INK : INK_3,
       boxShadow: viewMode === mode ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
       transition: "all 0.15s ease"
     }
@@ -11915,7 +11838,7 @@ function ViewToolbar({ viewMode, setViewMode, displayCats, selectedPillar, toggl
   }, /*#__PURE__*/React.createElement("span", {
     key: "focus-label",
     style: {
-      fontSize: 9,
+      fontSize: 10,
       fontWeight: 600,
       letterSpacing: "0.1em",
       textTransform: "uppercase",
@@ -11945,6 +11868,33 @@ function ViewToolbar({ viewMode, setViewMode, displayCats, selectedPillar, toggl
 }
 // The page title, or, when reading someone else's shared plan, whose plan it is
 // and that it's read-only.
+// The rising heart from the app icon: a heart cut off at the baseline, like a
+// sun coming up. Sized in em so it scales with the text it sits in; as the "o"
+// in Mondays it sits on the baseline. `halo` adds the soft warm glow behind it.
+const HEART_PATH = "M50 19 C46 8 40 0 30 0 C13 0 0 13 0 31 C0 48 10 64 19 79 L81 79 C90 64 100 48 100 31 C100 13 87 0 70 0 C60 0 54 8 50 19 Z";
+function RisingHeart({ width = "0.5em", height = "0.395em", margin = "0 0.03em", halo = false, line = 2 }) {
+  return React.createElement("span", {
+    "aria-hidden": "true",
+    style: { position: "relative", display: "inline-block", width, height, margin, verticalAlign: "baseline" }
+  }, halo && React.createElement("span", {
+    style: { position: "absolute", left: "-90%", right: "-90%", top: "-110%", bottom: "-40%",
+      background: "radial-gradient(closest-side, rgba(235,163,61,0.30), rgba(235,163,61,0.10) 55%, rgba(235,163,61,0))" }
+  }), React.createElement("svg", {
+    viewBox: "0 0 100 79",
+    style: { position: "relative", display: "block", width: "100%", height: "100%", overflow: "visible" }
+  }, React.createElement("path", { d: HEART_PATH, fill: HEART })), React.createElement("span", {
+    style: { position: "absolute", left: "-35%", right: "-35%", bottom: "-0.06em", height: line, borderRadius: 2,
+      background: "linear-gradient(90deg, rgba(205,110,54,0), " + HEART_GLOW + " 50%, rgba(205,110,54,0))" }
+  }));
+}
+// "I Love Mondays" with the rising heart as the o. Screen readers get the
+// plain name; the drawn version is hidden from them.
+function Wordmark() {
+  return React.createElement(React.Fragment, null,
+    React.createElement("span", { className: "ilm-sr-only" }, "I Love Mondays"),
+    React.createElement("span", { "aria-hidden": "true", style: { whiteSpace: "nowrap" } },
+      "I Love M", React.createElement(RisingHeart, null), "ndays"));
+}
 function PlannerTitle({ activeView, isOwnView }) {
   return React.createElement("div", {
     style: {
@@ -11956,7 +11906,7 @@ function PlannerTitle({ activeView, isOwnView }) {
       fontSize: 11,
       letterSpacing: "0.15em",
       textTransform: "uppercase",
-      color: "#A08F76",
+      color: MUTED,
       marginBottom: 6,
       fontWeight: 600
     }
@@ -11965,25 +11915,25 @@ function PlannerTitle({ activeView, isOwnView }) {
       fontSize: 33,
       fontWeight: 600,
       fontFamily: "'Fraunces',Georgia,serif",
-      color: "#4A4136",
+      color: INK,
       letterSpacing: "-0.01em"
     }
-  }, isOwnView ? "I Love Mondays" : splitViewName(activeView.name).who + "'s Plan"), !isOwnView && /*#__PURE__*/React.createElement("div", {
+  }, isOwnView ? React.createElement(Wordmark, null) : splitViewName(activeView.name).who + "'s Plan"), !isOwnView && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "inline-flex",
       alignItems: "center",
       gap: 5,
       marginTop: 8,
       padding: "3px 9px",
-      borderRadius: 999,
+      borderRadius: TILE_RADIUS,
       background: WASH,
       fontSize: 10,
       fontWeight: 600,
       letterSpacing: "0.06em",
       textTransform: "uppercase",
-      color: "#8A7F6C"
+      color: INK_3
     }
-  }, "Read only \u00b7 ", splitViewName(activeView.name).when), /*#__PURE__*/React.createElement("div", {
+  }, "Read only \u00b7 ", splitViewName(activeView.name).when), !isOwnView && /*#__PURE__*/React.createElement("div", {
     style: {
       width: 44,
       height: 3,
@@ -12054,7 +12004,7 @@ function PlanSwitcher({
       position: "absolute",
       top: "calc(100% + 6px)",
       left: 0,
-      background: "#fff",
+      background: SURFACE,
       border: `1px solid ${HAIRLINE}`,
       borderRadius: 10,
       boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
@@ -12078,7 +12028,7 @@ function PlanSwitcher({
       alignItems: "center",
       gap: 9,
       padding: "10px 14px",
-      background: isOwnView ? "#F5F4F3" : "#fff",
+      background: isOwnView ? WASH : SURFACE,
       border: "none",
       cursor: "pointer",
       fontFamily: "inherit",
@@ -12110,7 +12060,7 @@ function PlanSwitcher({
       cursor: "pointer",
       color: userName ? FAINT : ACCENT,
       textDecoration: "underline",
-      textDecorationColor: userName ? HAIRLINE : "#FDBA74",
+      textDecorationColor: userName ? HAIRLINE : ACCENT_LINE,
       textUnderlineOffset: 2,
       overflow: "hidden",
       textOverflow: "ellipsis",
@@ -12132,7 +12082,7 @@ function PlanSwitcher({
     points: "20 6 9 17 4 12"
   }))), importedViews.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 9,
+      fontSize: 10,
       fontWeight: 600,
       letterSpacing: "0.1em",
       textTransform: "uppercase",
@@ -12161,7 +12111,7 @@ function PlanSwitcher({
         alignItems: "center",
         gap: 9,
         padding: "8px 14px",
-        background: active ? "#F5F4F3" : "#fff",
+        background: active ? WASH : SURFACE,
         border: "none",
         cursor: "pointer",
         fontFamily: "inherit",
@@ -12236,7 +12186,7 @@ function PlanSwitcher({
       alignItems: "center",
       gap: 9,
       padding: "9px 14px",
-      background: "#fff",
+      background: SURFACE,
       border: "none",
       cursor: "pointer",
       fontFamily: "inherit",
@@ -12275,7 +12225,7 @@ function PlanSwitcher({
       alignItems: "center",
       gap: 9,
       padding: "9px 14px",
-      background: "#fff",
+      background: SURFACE,
       border: "none",
       cursor: "pointer",
       fontFamily: "inherit",
@@ -12343,7 +12293,7 @@ function WeekNav({ offset, setOffset, dates }) {
       padding: "5px 14px",
       letterSpacing: "0.06em",
       color: ACCENT,
-      borderColor: "#FDBA74",
+      borderColor: ACCENT_LINE,
       fontWeight: 600
     }
   }, "Today"));
@@ -12367,7 +12317,7 @@ function SeriesScopeDialog({ seriesScope, setSeriesScope, resolveSeriesScope }) 
     className: "ilm-sheet",
     onClick: e => e.stopPropagation(),
     style: {
-      background: "#fff",
+      background: SURFACE,
       borderRadius: 14,
       padding: 22,
       width: 340,
@@ -12380,7 +12330,7 @@ function SeriesScopeDialog({ seriesScope, setSeriesScope, resolveSeriesScope }) 
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 15,
+      fontSize: 16,
       fontWeight: 700,
       color: INK
     }
@@ -12394,7 +12344,7 @@ function SeriesScopeDialog({ seriesScope, setSeriesScope, resolveSeriesScope }) 
     onClick: () => resolveSeriesScope(scope),
     style: {
       textAlign: "left",
-      background: "#FBFAF9",
+      background: PAPER,
       border: `1px solid ${HAIRLINE}`,
       borderRadius: 10,
       padding: "11px 12px",
@@ -12404,7 +12354,7 @@ function SeriesScopeDialog({ seriesScope, setSeriesScope, resolveSeriesScope }) 
       fontSize: 13,
       fontWeight: 600,
       lineHeight: 1.35,
-      color: seriesScope.kind === "delete" && scope === "future" ? "#B91C1C" : INK
+      color: seriesScope.kind === "delete" && scope === "future" ? DANGER : INK
     }
   }, label)), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -12434,7 +12384,7 @@ function ImportToast({ importConfirm, setImportConfirm }) {
       transform: "translateX(-50%)",
       zIndex: 400,
       background: INK,
-      color: "#fff",
+      color: ON_DARK,
       borderRadius: 12,
       padding: "12px 20px",
       fontSize: 13,
@@ -12446,12 +12396,12 @@ function ImportToast({ importConfirm, setImportConfirm }) {
       maxWidth: 420,
       whiteSpace: "nowrap"
     }
-  }, /*#__PURE__*/React.createElement("svg", {
+  }, importConfirm.type !== "error" && /*#__PURE__*/React.createElement("svg", {
     width: "15",
     height: "15",
     viewBox: "0 0 24 24",
     fill: "none",
-    stroke: importConfirm.type === "replace" ? "#FCA5A5" : "#6EE7B7",
+    stroke: ACCENT_LINE,
     strokeWidth: "2.5",
     strokeLinecap: "round",
     strokeLinejoin: "round"
@@ -12686,7 +12636,7 @@ function PillarRow({
       stroke: n > 0 ? cat.color : FAINT,
       fill: n > 0 ? cat.color : "none"
     }), n > 0 && /*#__PURE__*/React.createElement("span", {
-      style: { fontSize: 9, fontWeight: 700, color: INK }
+      style: { fontSize: 10, fontWeight: 700, color: INK }
     }, String(n)));
   })()), (() => {
     // The week so far, under the name: days done against the target, with
@@ -12830,7 +12780,7 @@ function PillarDayHeader({
       textAlign: "center",
       padding: "10px 4px 8px",
       borderLeft: `1px solid ${HAIRLINE}`,
-      background: isFuture && !isFutureWeek ? WASH : "#fff"
+      background: isFuture && !isFutureWeek ? WASH : SURFACE
     }
   }, isDayHovered && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
@@ -12873,7 +12823,7 @@ function PillarDayHeader({
     style: {
       fontSize: 16,
       fontWeight: isToday ? 700 : 500,
-      color: isToday ? "#fff" : isFuture ? MUTED : INK,
+      color: isToday ? ON_DARK : isFuture ? MUTED : INK,
       width: 28,
       height: 28,
       borderRadius: "50%",
@@ -12904,7 +12854,7 @@ function PillarWeekGrid({
 }) {
   return React.createElement("div", {
     style: {
-      background: "#fff",
+      background: SURFACE,
       overflow: "hidden",
       marginBottom: 18
     },
@@ -13030,9 +12980,9 @@ function useSeasonFlow({
       const msg = String((err && err.message) || err);
       setSeasonError({ id: seasonId, message:
         msg === "no-connection"
-          ? "No AI connection set up yet."
+          ? "Sign in to use AI."
           : /JSON|object/i.test(msg)
-            ? "The model answered with something this couldn't read. Try again, or pick a different model."
+            ? "Couldn't read the reply. Try again."
             : msg
       });
     } finally {
@@ -13068,16 +13018,16 @@ function useSeasonFlow({
       seasonsStore.setActions(seasonId, { generatedAt: actions.generatedAt, items: keptItems.concat(fresh) });
       if (!fresh.length) {
         setSeasonActionsNote(actions.dropped
-          ? "Nothing new this time \u2014 what came back was things you'd already added or passed on."
-          : "Nothing more worth suggesting for this season. That's an answer in itself, and a better one than a thin idea. Add your own below whenever something occurs to you.");
+          ? "Nothing new this time."
+          : "Nothing more to suggest this season.");
       }
     } catch (err) {
       const msg = String((err && err.message) || err);
       setSeasonActionsError(
         msg === "no-connection"
-          ? "No AI connection set up yet."
+          ? "Sign in to use AI."
           : /JSON|bad-json|object/i.test(msg)
-            ? "The model answered with something this couldn't read. Try again."
+            ? "Couldn't read the reply. Try again."
             : msg
       );
     } finally {
@@ -13192,7 +13142,8 @@ function usePlanTransfer({
         const obj = JSON.parse(e.target.result);
         setPendingImport(obj);
       } catch {
-        alert("Could not read file — make sure it's a valid planner backup.");
+        setImportConfirm({ msg: "Couldn't read that file.", type: "error" });
+        setTimeout(() => setImportConfirm(null), 4000);
       }
     };
     reader.readAsText(file);
@@ -13237,7 +13188,7 @@ function usePlanTransfer({
       setActiveViewId("own");
       setPendingImport(null);
       setImportConfirm({
-        msg: "My Plan replaced. Edit as normal.",
+        msg: "My Plan replaced.",
         type: "replace"
       });
       setTimeout(() => setImportConfirm(null), 4000);
@@ -13376,7 +13327,7 @@ function PhoneHeader({ dates, dayIdx, offset, todayStr, isOwnView, onWeek, onTod
   const arrow = (dir, label) => React.createElement("button", {
     onClick: () => onWeek(dir),
     "aria-label": label,
-    style: { position: "relative", width: 32, height: 32, border: `1px solid ${HAIRLINE}`, borderRadius: 4, background: "#FFFDF8",
+    style: { position: "relative", width: 32, height: 32, border: `1px solid ${HAIRLINE}`, borderRadius: 4, background: SURFACE,
       display: "flex", alignItems: "center", justifyContent: "center", padding: 0, color: INK_2, cursor: "pointer" }
   }, hitArea("-6px"), React.createElement(PhoneIcon, { name: dir < 0 ? "left" : "right", size: 16 }));
   return React.createElement("div", {
@@ -13390,7 +13341,7 @@ function PhoneHeader({ dates, dayIdx, offset, todayStr, isOwnView, onWeek, onTod
       viewMode === "calendar" ? React.createElement("span", {
         style: { fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: INK_3, minWidth: 0 }
       }, weekLabelShort(dates)) : React.createElement("h1", {
-        style: { margin: 0, minWidth: 0, fontFamily: "'Fraunces',Georgia,serif", fontSize: 21, fontWeight: 600, lineHeight: 1.1, color: INK, whiteSpace: "nowrap" }
+        style: { margin: 0, minWidth: 0, fontFamily: "'Fraunces',Georgia,serif", fontSize: 22, fontWeight: 600, lineHeight: 1.1, color: INK, whiteSpace: "nowrap" }
       }, `${MONTHS[dates[0].getMonth()]} ${dates[0].getDate()}\u2013${dates[0].getMonth() === dates[6].getMonth() ? "" : MONTHS[dates[6].getMonth()].slice(0, 3) + " "}${dates[6].getDate()}`),
       arrow(1, "Next week"),
       awayFromToday && React.createElement("button", {
@@ -13402,15 +13353,15 @@ function PhoneHeader({ dates, dayIdx, offset, todayStr, isOwnView, onWeek, onTod
       isOwnView && onAdd && React.createElement("button", {
         onClick: onAdd,
         "aria-label": viewMode === "calendar" ? `Add to ${PHONE_WEEKDAY[dayIdx]}` : "Add an activity",
-        style: { position: "relative", width: 34, height: 34, border: "none", borderRadius: 4, background: ACCENT, color: "#fff",
+        style: { position: "relative", width: 34, height: 34, border: "none", borderRadius: 4, background: ACCENT, color: ON_DARK,
           display: "flex", alignItems: "center", justifyContent: "center", padding: 0, cursor: "pointer", flexShrink: 0 }
-      }, hitArea("-5px"), React.createElement(PhoneIcon, { name: "plus", size: 18, color: "#fff" }))),
+      }, hitArea("-5px"), React.createElement(PhoneIcon, { name: "plus", size: 18, color: ON_DARK }))),
     viewMode === "calendar" && React.createElement(React.Fragment, null,
       React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, margin: "6px 0 10px" } },
         React.createElement("h1", {
           style: { margin: 0, fontFamily: "'Fraunces',Georgia,serif", fontSize: 28, fontWeight: 600, lineHeight: 1.1, color: INK }
         }, PHONE_WEEKDAY[dayIdx]),
-        React.createElement("span", { style: { fontSize: 15, color: INK_2 } }, `${MONTHS[d.getMonth()]} ${d.getDate()}`)),
+        React.createElement("span", { style: { fontSize: 16, color: INK_2 } }, `${MONTHS[d.getMonth()]} ${d.getDate()}`)),
       React.createElement("div", { ...stripSwipe, style: { display: "flex", gap: 4 } },
         dates.map((x, i) => {
           const on = i === dayIdx;
@@ -13421,7 +13372,7 @@ function PhoneHeader({ dates, dayIdx, offset, todayStr, isOwnView, onWeek, onTod
             "aria-pressed": on ? "true" : "false",
             "aria-label": `${PHONE_WEEKDAY[i]} ${MONTHS[x.getMonth()]} ${x.getDate()}`,
             style: { flex: 1, minWidth: 0, height: 50, borderRadius: 4, padding: 0, cursor: "pointer", fontFamily: "inherit",
-              border: on ? `2px solid ${INK}` : "1px solid transparent", background: on ? "#FFFDF8" : "transparent",
+              border: on ? `2px solid ${INK}` : "1px solid transparent", background: on ? SURFACE : "transparent",
               display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3 }
           },
             React.createElement("span", { style: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", color: on || isToday ? INK : INK_3 } }, PHONE_DAY_LETTER[i]),
@@ -13438,7 +13389,7 @@ function PhoneTray({ viewMode, setViewMode, onReflect, onMore, reflectActive, mo
       onClick: () => setViewMode(mode),
       "aria-pressed": on ? "true" : "false",
       style: { position: "relative", flex: 1, height: 30, border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "inherit",
-        fontSize: 13, fontWeight: on ? 700 : 600, color: on ? INK : INK_3, background: on ? "#fff" : "transparent",
+        fontSize: 13, fontWeight: on ? 700 : 600, color: on ? INK : INK_3, background: on ? SURFACE : "transparent",
         boxShadow: on ? "0 1px 3px rgba(28,25,23,0.14)" : "none", padding: 0 }
     }, hitArea("-9px 0"), label);
   };
@@ -13450,13 +13401,13 @@ function PhoneTray({ viewMode, setViewMode, onReflect, onMore, reflectActive, mo
       fontSize: 11, fontWeight: active ? 700 : 500, color: active ? activeColor : INK_3 }
   }, React.createElement(PhoneIcon, { name }), label);
   return React.createElement("nav", {
-    style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, background: "#FFFDF8",
+    style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, background: SURFACE,
       borderTop: `1px solid ${HAIRLINE}`, padding: "6px 12px max(10px, env(safe-area-inset-bottom))" }
   },
     React.createElement("div", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 } },
       React.createElement("span", {
         id: "phone-view-label",
-        style: { fontSize: 9, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3, paddingLeft: 4 }
+        style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3, paddingLeft: 4 }
       }, "View"),
       React.createElement("div", {
         role: "group", "aria-labelledby": "phone-view-label",
@@ -13500,7 +13451,7 @@ function PhoneMoreSheet({ onClose, isOwnView, activeViewId, importedViews, setAc
     style: { width: "100%", minHeight: 48, display: "flex", alignItems: "center", gap: 10, padding: "6px 12px",
       border: "none", borderTop: `1px solid ${WASH}`, background: "transparent", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }
   }, React.createElement("span", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 } },
-      React.createElement("span", { style: { fontSize: 15, fontWeight: selected ? 700 : 500, color: INK } }, label),
+      React.createElement("span", { style: { fontSize: 16, fontWeight: selected ? 700 : 500, color: INK } }, label),
       sub && React.createElement("span", { style: { fontSize: 12, color: INK_3 } }, sub)),
     selected && React.createElement(PhoneIcon, { name: "check", size: 18, color: INK }));
   const placeRow = (glyph, label, onClick) => React.createElement("button", {
@@ -13519,19 +13470,19 @@ function PhoneMoreSheet({ onClose, isOwnView, activeViewId, importedViews, setAc
     style: { width: "100%", maxHeight: "88dvh", overflowY: "auto", background: PAPER, borderRadius: "14px 14px 0 0",
       padding: "8px 18px max(14px, env(safe-area-inset-bottom))", boxShadow: "0 -8px 30px rgba(28,25,23,0.18)" }
   },
-    React.createElement("div", { style: { width: 40, height: 4, borderRadius: 2, background: "#CFC5B0", margin: "2px auto 10px" } }),
+    React.createElement("div", { style: { width: 40, height: 4, borderRadius: 2, background: PLAN_RING, margin: "2px auto 10px" } }),
     React.createElement("div", { style: { paddingBottom: 10, borderBottom: `1px solid ${HAIRLINE}` } },
       React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
         React.createElement("span", {
           id: "phone-plan-label",
-          style: { fontSize: 9, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3 }
+          style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3 }
         }, "Plan"),
         React.createElement("button", {
           "aria-labelledby": "phone-plan-label", "aria-haspopup": "listbox", "aria-expanded": planOpen ? "true" : "false",
           onClick: () => setPlanOpen(o => !o),
           style: { flex: 1, height: 44, display: "flex", alignItems: "center", gap: 8, padding: "0 12px",
-            border: `1px solid ${HAIRLINE}`, borderRadius: planOpen ? "4px 4px 0 0" : 4, background: "#FFFDF8", cursor: "pointer",
-            fontFamily: "inherit", fontSize: 15, fontWeight: 600, color: INK, textAlign: "left" }
+            border: `1px solid ${HAIRLINE}`, borderRadius: planOpen ? "4px 4px 0 0" : 4, background: SURFACE, cursor: "pointer",
+            fontFamily: "inherit", fontSize: 16, fontWeight: 600, color: INK, textAlign: "left" }
         }, React.createElement("span", { style: { flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, currentName),
           React.createElement("svg", {
             width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: INK_3, strokeWidth: 2, strokeLinecap: "round",
@@ -13539,7 +13490,7 @@ function PhoneMoreSheet({ onClose, isOwnView, activeViewId, importedViews, setAc
           }, React.createElement("path", { d: "M6 9l6 6 6-6" })))),
       planOpen && React.createElement("div", {
         role: "listbox", "aria-labelledby": "phone-plan-label",
-        style: { marginLeft: 37, border: `1px solid ${HAIRLINE}`, borderTop: "none", borderRadius: "0 0 4px 4px", background: "#FFFDF8", overflow: "hidden" }
+        style: { marginLeft: 37, border: `1px solid ${HAIRLINE}`, borderTop: "none", borderRadius: "0 0 4px 4px", background: SURFACE, overflow: "hidden" }
       },
         planItem("own", "My Plan", userName || null, activeViewId === "own", go(() => setActiveViewId("own"))),
         importedViews.map(v => {
@@ -13562,7 +13513,7 @@ function PhoneMoreSheet({ onClose, isOwnView, activeViewId, importedViews, setAc
     placeRow("settings", "Settings", openSettings),
     React.createElement("div", { style: { textAlign: "center", padding: "12px 0 2px" } },
       React.createElement("span", { style: { fontSize: 10, color: FAINT, letterSpacing: "0.08em", fontWeight: 500 } }, version),
-      !cloud.user && React.createElement("div", { style: { fontSize: 10, color: INK_3, marginTop: 4 } }, "Preview on this computer \u00b7 not synced"),
+      !cloud.user && React.createElement("div", { style: { fontSize: 10, color: INK_3, marginTop: 4 } }, "Preview, not synced"),
       React.createElement(AccountLine, null))));
 }
 // Pillars, upright: one pillar at a time, chosen from the tabs across the top,
@@ -13596,7 +13547,7 @@ function PhonePillars({ dates, todayStr, cats, pillarId, setPillarId, getItemsFo
     // finger-sized target without drawing any bigger.
     return on ? React.createElement("button", {
       key: c.id, role: "tab", "aria-selected": "true",
-      style: { position: "relative", height: 22, padding: "0 8px", flexShrink: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 9.5,
+      style: { position: "relative", height: 22, padding: "0 8px", flexShrink: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 10,
         fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", ...pillarChip(c, true), borderRadius: CHIP_RADIUS }
     }, hitArea("-11px -2.5px"), c.label) : React.createElement("button", {
       key: c.id, role: "tab", "aria-selected": "false", "aria-label": c.label, title: c.label,
@@ -13618,8 +13569,8 @@ function PhonePillars({ dates, todayStr, cats, pillarId, setPillarId, getItemsFo
       celebrateKey: isOwnView && thisWeek ? `${ymd(dates[0])}|${cat.id}` : null
     }),
     React.createElement("div", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 } },
-      React.createElement("span", { style: { fontFamily: "'Fraunces',Georgia,serif", fontSize: 21, fontWeight: 600, color: INK } }, cat.label),
-      React.createElement("span", { style: { fontSize: 12.5, color: INK_2 } }, status)));
+      React.createElement("span", { style: { fontFamily: "'Fraunces',Georgia,serif", fontSize: 22, fontWeight: 600, color: INK } }, cat.label),
+      React.createElement("span", { style: { fontSize: 13, color: INK_2 } }, status)));
   const rows = dates.map((d, i) => {
     const ds = ymd(d);
     const isToday = ds === todayStr;
@@ -13627,12 +13578,12 @@ function PhonePillars({ dates, todayStr, cats, pillarId, setPillarId, getItemsFo
     return React.createElement("div", {
       key: ds,
       style: { display: "flex", alignItems: "center", gap: 10, minHeight: 56, padding: "6px 14px",
-        borderBottom: `1px solid ${HAIRLINE}`, background: isToday ? "#FFFDF8" : "transparent" }
+        borderBottom: `1px solid ${HAIRLINE}`, background: isToday ? SURFACE : "transparent" }
     }, React.createElement("div", { style: { width: 40, flexShrink: 0, display: "flex", flexDirection: "column", gap: 1 } },
         React.createElement("span", {
           style: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: isToday ? ACCENT : INK_3 }
         }, DAY_ABB[i]),
-        React.createElement("span", { style: { fontSize: 15, fontWeight: isToday ? 700 : 500, color: isToday ? INK : INK_2 } }, d.getDate())),
+        React.createElement("span", { style: { fontSize: 16, fontWeight: isToday ? 700 : 500, color: isToday ? INK : INK_2 } }, d.getDate())),
       React.createElement("div", { style: { flex: 1, minWidth: 0, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" } },
         items.map(it => {
           const [hh, mm] = it.sched ? it.sched.start.split(":").map(Number) : [null, null];
@@ -13646,7 +13597,7 @@ function PhonePillars({ dates, todayStr, cats, pillarId, setPillarId, getItemsFo
               style: { minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", gap: 1, padding: "4px 2px 4px 10px",
                 border: "none", background: "transparent", cursor: isOwnView ? "pointer" : "default", fontFamily: "inherit", textAlign: "left" }
             }, React.createElement("span", {
-                style: { fontSize: 13.5, fontWeight: 600, lineHeight: 1.2, color: it.isDone ? doneInk : INK,
+                style: { fontSize: 13, fontWeight: 600, lineHeight: 1.2, color: it.isDone ? doneInk : INK,
                   overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }
               }, stripLinks(it.text)),
               hh != null && React.createElement("span", {
@@ -13659,7 +13610,7 @@ function PhonePillars({ dates, todayStr, cats, pillarId, setPillarId, getItemsFo
                 display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 }
             }, React.createElement("span", {
               style: { width: 18, height: 18, borderRadius: "50%", boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center",
-                border: `2px solid ${it.isDone ? doneInk : "#CFC5B0"}`, background: it.isDone ? "transparent" : "#FFFDF8" }
+                border: `2px solid ${it.isDone ? doneInk : PLAN_RING}`, background: it.isDone ? "transparent" : SURFACE }
             }, it.isDone && React.createElement(PhoneIcon, { name: "check", size: 11, color: doneInk }))));
         }),
         isOwnView && React.createElement("button", {
@@ -13680,7 +13631,7 @@ function PhoneWeekArrow({ dir, onWeek }) {
   return React.createElement("button", {
     onClick: () => onWeek(dir),
     "aria-label": dir < 0 ? "Previous week" : "Next week",
-    style: { position: "relative", width: 30, height: 30, border: `1px solid ${HAIRLINE}`, borderRadius: 4, background: "#FFFDF8",
+    style: { position: "relative", width: 30, height: 30, border: `1px solid ${HAIRLINE}`, borderRadius: 4, background: SURFACE,
       display: "flex", alignItems: "center", justifyContent: "center", padding: 0, color: INK_2, cursor: "pointer", flexShrink: 0 }
   }, hitArea("-7px"), React.createElement(PhoneIcon, { name: dir < 0 ? "left" : "right", size: 15 }));
 }
@@ -13692,7 +13643,7 @@ function PhoneRail({ viewMode, setViewMode, onReflect, onMore, reflectActive, mo
       onClick: () => setViewMode(mode),
       "aria-pressed": on ? "true" : "false",
       style: { position: "relative", height: 30, border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "inherit",
-        fontSize: 11, fontWeight: on ? 700 : 600, color: on ? INK : INK_3, background: on ? "#fff" : "transparent",
+        fontSize: 11, fontWeight: on ? 700 : 600, color: on ? INK : INK_3, background: on ? SURFACE : "transparent",
         boxShadow: on ? "0 1px 3px rgba(28,25,23,0.14)" : "none", padding: 0 }
     }, hitArea("-6px"), label);
   };
@@ -13701,16 +13652,16 @@ function PhoneRail({ viewMode, setViewMode, onReflect, onMore, reflectActive, mo
     "aria-label": label,
     style: { height: 54, border: "none", background: "transparent", cursor: "pointer", fontFamily: "inherit",
       display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, padding: 0,
-      fontSize: 10.5, fontWeight: active ? 700 : 500, color: active ? activeColor : INK_3 }
+      fontSize: 11, fontWeight: active ? 700 : 500, color: active ? activeColor : INK_3 }
   }, React.createElement(PhoneIcon, { name, size: 20 }), label);
   return React.createElement("nav", {
     style: { flexShrink: 0, width: 72, boxSizing: "content-box", display: "flex", flexDirection: "column", gap: 6,
       padding: "70px 0 8px", paddingRight: "calc(env(safe-area-inset-right) + 6px)",
-      background: "#FFFDF8", borderLeft: `1px solid ${HAIRLINE}` }
+      background: SURFACE, borderLeft: `1px solid ${HAIRLINE}` }
   },
     React.createElement("span", {
       id: "phone-rail-view-label",
-      style: { fontSize: 9, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3, textAlign: "center" }
+      style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3, textAlign: "center" }
     }, "View"),
     React.createElement("div", {
       role: "group", "aria-labelledby": "phone-rail-view-label",
@@ -14335,13 +14286,16 @@ function Planner() {
     const ownIdeas = (ideasStore.forPillar(id) || []).filter(i => !i.seeded);
     const planned = pillarHasPlannedWork(id);
     if (planned || ownIdeas.length) {
-      const parts = [`Remove "${cat.label}"?`];
-      if (planned) parts.push("Anything you planned under it stays in your calendar, just untagged.");
-      if (ownIdeas.length) {
-        parts.push(`Its ${ownIdeas.length} idea${ownIdeas.length === 1 ? "" : "s"} move${ownIdeas.length === 1 ? "s" : ""} to Tend.`);
-      }
-      if (!window.confirm(parts.join(" "))) return;
+      const parts = [];
+      if (planned) parts.push("Planned items stay, untagged.");
+      if (ownIdeas.length) parts.push(`${ownIdeas.length === 1 ? "Its idea moves" : `Its ${ownIdeas.length} ideas move`} to Tend.`);
+      appConfirm({ title: `Remove ${cat.label}?`, message: parts.join(" "), confirmLabel: "Remove", danger: true })
+        .then(ok => { if (ok) removeCatNow(id, ownIdeas); });
+      return;
     }
+    removeCatNow(id, ownIdeas);
+  }
+  function removeCatNow(id, ownIdeas) {
     untagPillarEverywhere(id);
     // The bug this fixes: dropPillar was written and never called, so a
     // removed pillar's ideas sat in storage under a dead id forever. Now the
@@ -14989,8 +14943,6 @@ function Planner() {
     reflectedItemTexts: isOwnView ? reflectedItemTexts : null,
     onOpenReflections: isOwnView ? openReflectionsOnly : null,
     onReflect: isOwnView ? (text, catLabel, catColor, ds, wasCompleted, allCats) => openReflectWithItem(text, catLabel, catColor, ds, wasCompleted, allCats) : null,
-    // Links live in the event window only; see the By pillar view.
-    onSetLink: null,
     onDeleteItem: isOwnView ? (ds, catId, entryId) => deleteEntryById(ds, entryId) : null,
     canEditItems: isOwnView,
     onCreateItem: isOwnView ? createCalendarItem : null,
@@ -15001,7 +14953,7 @@ function Planner() {
     openEdit: isOwnView ? openEditById : null,
     openCreate: isOwnView ? openCreate : null
   };
-  const APP_VERSION = "v10.13.8";
+  const APP_VERSION = "v10.13.13";
   function phoneStepDay(delta) {
     setPhoneSlide(delta > 0 ? "next" : "prev");
     const i = phoneDay + delta;
@@ -15027,7 +14979,7 @@ function Planner() {
   }), viewMode === "calendar" ? /*#__PURE__*/React.createElement("div", {
     ref: phoneScrollRef,
     ...swipeHandlers(phoneDaySwipeRef, () => phoneStepDay(1), () => phoneStepDay(-1)),
-    style: { flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", borderTop: `1px solid ${HAIRLINE}`, background: "#fff" }
+    style: { flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", borderTop: `1px solid ${HAIRLINE}`, background: SURFACE }
   }, /*#__PURE__*/React.createElement("div", {
     key: phoneDayKey,
     className: phoneSlide ? "ilm-slide-" + phoneSlide : undefined
@@ -15087,7 +15039,7 @@ function Planner() {
     style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 8, padding: "6px 12px" }
   }, /*#__PURE__*/React.createElement(PhoneWeekArrow, { dir: -1, onWeek: phoneStepWeek }),
     /*#__PURE__*/React.createElement("h1", {
-      style: { margin: 0, fontFamily: "'Fraunces',Georgia,serif", fontSize: 19, fontWeight: 600, color: INK, whiteSpace: "nowrap" }
+      style: { margin: 0, fontFamily: "'Fraunces',Georgia,serif", fontSize: 18, fontWeight: 600, color: INK, whiteSpace: "nowrap" }
     }, phoneWeekTitle),
     /*#__PURE__*/React.createElement(PhoneWeekArrow, { dir: 1, onWeek: phoneStepWeek }),
     offset !== 0 && /*#__PURE__*/React.createElement("button", {
@@ -15102,11 +15054,11 @@ function Planner() {
       "aria-label": "Add an activity",
       style: { position: "relative", width: 30, height: 30, border: "none", borderRadius: 4, background: ACCENT,
         display: "flex", alignItems: "center", justifyContent: "center", padding: 0, cursor: "pointer" }
-    }, hitArea("-7px"), /*#__PURE__*/React.createElement(PhoneIcon, { name: "plus", size: 16, color: "#fff" }))),
+    }, hitArea("-7px"), /*#__PURE__*/React.createElement(PhoneIcon, { name: "plus", size: 16, color: ON_DARK }))),
   viewMode === "calendar" ? /*#__PURE__*/React.createElement("div", {
     ref: phoneScrollRef,
     ...swipeHandlers(phoneWeekSwipeRef, () => phoneStepWeek(1), () => phoneStepWeek(-1)),
-    style: { flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", borderTop: `1px solid ${HAIRLINE}`, background: "#fff" }
+    style: { flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", borderTop: `1px solid ${HAIRLINE}`, background: SURFACE }
   }, /*#__PURE__*/React.createElement("div", {
     key: phoneDayKey,
     className: phoneSlide ? "ilm-slide-" + phoneSlide : undefined
@@ -15242,7 +15194,7 @@ return /*#__PURE__*/React.createElement("div", {
     },
     onMouseEnter: e => {
       e.currentTarget.style.color = ACCENT;
-      e.currentTarget.style.textDecorationColor = "#FDBA74";
+      e.currentTarget.style.textDecorationColor = ACCENT_LINE;
     },
     onMouseLeave: e => {
       e.currentTarget.style.color = INK_3;
@@ -15344,7 +15296,7 @@ return /*#__PURE__*/React.createElement("div", {
     actions: isOwnView && !editingItem.isNew ? eventDialogActions() : null
   }), seriesScope && /*#__PURE__*/React.createElement(SeriesScopeDialog, {
     seriesScope, setSeriesScope, resolveSeriesScope
-  }));
+  }), /*#__PURE__*/React.createElement(AppDialogHost, null));
 }
 // One document, two routes. A tab landing on "#science" renders the page
 // instead of the planner; everything else gets the app. The hashchange
@@ -15386,7 +15338,11 @@ function GateScreen({ title, children }) {
     style: { background: PAPER, border: "1px solid " + HAIRLINE, borderRadius: 4, padding: "36px 32px",
       maxWidth: 380, width: "100%", textAlign: "center", boxSizing: "border-box" }
   }, /*#__PURE__*/React.createElement("div", {
-    style: { fontFamily: "'Fraunces',Georgia,serif", fontSize: 28, fontWeight: 600, color: INK, lineHeight: 1.15 }
+    style: { fontSize: 120, lineHeight: 0, margin: "18px 0 30px" }
+  }, React.createElement(RisingHeart, { width: "0.62em", height: "0.49em", margin: "0", halo: true, line: 3 })),
+  /*#__PURE__*/React.createElement("h1", {
+    style: { fontFamily: "'Fraunces',Georgia,serif", fontSize: 34, fontWeight: 600, color: INK, lineHeight: 1.15,
+      letterSpacing: "-0.01em", margin: 0 }
   }, title), children));
 }
 
@@ -15399,8 +15355,8 @@ function GateText({ children, tone }) {
 function GateButton({ onClick, children, disabled }) {
   return /*#__PURE__*/React.createElement("button", {
     onClick, disabled,
-    style: { marginTop: 24, width: "100%", padding: "12px 16px", fontSize: 15, fontWeight: 600,
-      fontFamily: "inherit", color: "#fff", background: ACCENT, border: "none", borderRadius: 4,
+    style: { marginTop: 40, minHeight: 44, padding: "10px 22px", fontSize: 14, fontWeight: 600,
+      fontFamily: "inherit", color: INK_2, background: "transparent", border: "1px solid " + FAINT, borderRadius: 4,
       cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.6 : 1 }
   }, children);
 }
@@ -15410,7 +15366,7 @@ function describeSyncError(err) {
   if (code === "permission-denied" || code === "firestore/permission-denied")
     return "Your account was reached, but the database turned the request away. The database rules may not be set up yet.";
   if (code === "unavailable" || navigator.onLine === false)
-    return "Couldn't reach your planner. Check your connection and try again.";
+    return "Couldn't reach your planner. Try again.";
   return "Something went wrong loading your planner" + (code ? " (" + code + ")" : "") + ".";
 }
 
@@ -15474,7 +15430,7 @@ function AuthGate() {
   if (phase === "unavailable") {
     return /*#__PURE__*/React.createElement(GateScreen, { title: "I Love Mondays" },
       /*#__PURE__*/React.createElement(GateText, { tone: "error" },
-        "The sign-in service didn't load. Check your connection, then reload the page."));
+        "Sign-in didn't load. Reload the page."));
   }
   if (phase === "error") {
     return /*#__PURE__*/React.createElement(GateScreen, { title: "I Love Mondays" },
@@ -15487,7 +15443,6 @@ function AuthGate() {
       }, "Sign out"));
   }
   return /*#__PURE__*/React.createElement(GateScreen, { title: "I Love Mondays" },
-    /*#__PURE__*/React.createElement(GateText, null, "Sign in to open your planner on any device."),
     /*#__PURE__*/React.createElement(GateButton, { onClick: signIn, disabled: busy },
       busy ? "Signing in…" : "Continue with Google"),
     error && /*#__PURE__*/React.createElement(GateText, { tone: "error" }, error));
@@ -15498,8 +15453,8 @@ function AuthGate() {
 function AccountLine() {
   const c = useCloud();
   if (!c.user) return null;
-  const note = c.status === "offline" ? "Offline · changes are saved on this device"
-    : c.status === "error" ? "Not synced yet · will keep trying" : null;
+  const note = c.status === "offline" ? "Offline, will sync later"
+    : c.status === "error" ? "Not synced, retrying" : null;
   return /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 10, color: FAINT, letterSpacing: "0.04em", marginTop: 4 }
   }, note && /*#__PURE__*/React.createElement("span", { style: { color: INK_3, marginRight: 8 } }, note),
@@ -15514,7 +15469,7 @@ function PreviewNotice() {
       background: PAPER, border: "1px solid " + HAIRLINE, borderLeft: "4px solid " + ACCENT, borderRadius: 4,
       padding: "5px 10px", fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: INK_2,
       boxShadow: "0 2px 8px rgba(28,25,23,0.08)" }
-  }, "Preview on this computer \u00b7 not synced");
+  }, "Preview, not synced");
 }
 
 function RemoteChangeNotice() {
@@ -15526,10 +15481,10 @@ function RemoteChangeNotice() {
       background: PAPER, border: "1px solid " + HAIRLINE, borderLeft: "4px solid " + ACCENT, borderRadius: 4,
       padding: "10px 14px", display: "flex", alignItems: "center", gap: 14,
       boxShadow: "0 4px 16px rgba(28,25,23,0.10)", fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: INK_2 }
-  }, "Your planner was updated on another device.",
+  }, "Updated on another device.",
     /*#__PURE__*/React.createElement("button", {
       onClick: () => cloud.reload(),
-      style: { background: ACCENT, color: "#fff", border: "none", borderRadius: 4, padding: "6px 12px",
+      style: { background: ACCENT, color: ON_DARK, border: "none", borderRadius: 4, padding: "6px 12px",
         fontSize: 13, fontWeight: 600, fontFamily: "inherit", cursor: "pointer" }
     }, "Refresh"));
 }
