@@ -449,12 +449,15 @@ const K = {
   userName: "planner:userName",
   importedViews: "planner:importedViews",
   week: ds => WEEK_PREFIX + ds,
-  // The AI connection. All three share the `planner:ai` prefix so one entry in
-  // TRANSFER_SKIP_PREFIXES keeps the whole group — key included — out of every
-  // export. A credential must never ride along in a file meant for sharing.
-  aiProvider: "planner:aiProvider",
-  aiKey: "planner:aiKey",
-  aiModel: "planner:aiModel",
+  // The model the AI features use, when one has been chosen in the Seasons
+  // panel. Syncs, so every device uses the same one. Shares the `planner:ai`
+  // prefix, which keeps it out of exports: a backup shouldn't change the model.
+  aiModel: "planner:aiModelName",
+  // Written by the old AI connection dialog (provider, pasted key, model).
+  // Nothing reads them any more. Purged on load.
+  legacyAiProvider: "planner:aiProvider",
+  legacyAiKey: "planner:aiKey",
+  legacyAiModel: "planner:aiModel",
   // Written by a pre-v9 settings panel that no longer exists in the code. The
   // value outlived its UI and kept appearing in exports. Purged on load.
   legacyApiKey: "planner:apiKey",
@@ -595,8 +598,8 @@ const IS_PREVIEW = typeof window !== "undefined" && !APP_CHECK_HOSTS.includes(wi
 const SYNC_OWNER = "ilm-sync:owner";
 const SYNC_DIRTY = "ilm-sync:dirty";
 const SYNC_DEBOUNCE_MS = 800;
-// The AI key is a credential: it stays on the device that entered it.
-const SYNC_SKIP = new Set([K.aiKey, K.legacyApiKey]);
+// Old AI keys were credentials: they never left the device that entered them.
+const SYNC_SKIP = new Set([K.legacyAiKey, K.legacyApiKey]);
 
 function lsGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
@@ -6282,87 +6285,22 @@ function activeSuggestionSource() {
 }
 
 // ---------------------------------------------------------------------------
-// AI providers
+// AI
 //
-// One interface, two implementations, and the choice is a stored setting
-// rather than something baked into the code. That matters more than it looks:
-// this field moves fast enough that anything hardcoded today is wrong by
-// winter — Google shipped three Flash models between July and September 2026
-// and retired a whole API key format in the same stretch.
+// One path: Gemini through I Love Mondays' own Firebase project, as the
+// signed-in person. No provider to pick and no key in the browser. The one
+// thing that does need changing now and then is the model, because Google
+// retires and replaces models faster than a season comes round. So the model
+// is a stored setting with a default, changed from the Seasons panel, and it
+// syncs with the rest of the plan so every device uses the same one.
 //
-// Which is also why the model list is fetched rather than written down. Asking
-// the provider what this key can reach gives a list that is current by
-// construction and accurate to the user's own account, not to a docs page.
-// The cost is that the dropdown is empty until Test connection has run, which
-// reads honestly enough: nothing connected yet.
-//
-//   { id, label, keyHint, keyPattern,
-//     listModels(key) -> Promise<[{id, label}]>,
-//     complete({key, model, system, prompt, maxTokens}) -> Promise<string> }
-//
-// Parsing is split out of every network call below so the shapes can be
-// exercised against fixtures without a fetch.
+// Parsing is split out of the network call so the shapes can be exercised
+// against fixtures without a fetch.
 // ---------------------------------------------------------------------------
 
-// Gemini returns every model the key can see, including embedding and image
-// models that can't hold a conversation. `generateContent` in the supported
-// methods is what marks the ones that can.
-function parseGeminiModels(json) {
-  const raw = (json && json.models) || [];
-  return raw
-    .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
-    .map(m => ({
-      id: String(m.name || "").replace(/^models\//, ""),
-      label: m.displayName || String(m.name || "").replace(/^models\//, "")
-    }))
-    .filter(m => m.id);
-}
-
-// Providers name their tiers rather than publishing them as a field, and the
-// names follow a stable convention even as the models behind them churn
-// weekly: a "lite"/"mini"/"haiku" is the cheap end, a "pro"/"opus"/"ultra" is
-// the capable end, and everything else sits between. Reading the tier off the
-// name keeps the list ordered without a hardcoded table that would be wrong
-// by winter — the same reason the list is fetched rather than written down.
-//
-// This ranks; it does not filter. A model that looks light is still offered,
-// because the person whose key it is knows things this heuristic does not.
-function modelTier(id) {
-  const s = String(id || "").toLowerCase();
-  if (/\b(lite|mini|nano|haiku|small|8b|4b)\b/.test(s) || /-lite|-mini|-nano/.test(s)) return 2;
-  if (/\b(pro|opus|ultra|max)\b/.test(s) || /-pro|-opus|-ultra/.test(s)) return 0;
-  return 1;
-}
-
-const MODEL_TIER_NOTE = ["most capable", "balanced", "fastest, least depth"];
-
-// The version number inside the id, so 3.8 sorts ahead of 3.5 and 10 ahead
-// of 9. Absent a number, sorts last within its tier rather than first.
-function modelVersion(id) {
-  const m = /(\d+(?:\.\d+)?)/.exec(String(id || ""));
-  return m ? parseFloat(m[1]) : -1;
-}
-
-function rankModels(models) {
-  return (models || []).slice().sort((a, b) => {
-    const ta = modelTier(a.id), tb = modelTier(b.id);
-    if (ta !== tb) return ta - tb;
-    const va = modelVersion(a.id), vb = modelVersion(b.id);
-    if (va !== vb) return vb - va;
-    return String(a.id).localeCompare(String(b.id));
-  });
-}
-
-function parseAnthropicModels(json) {
-  const raw = (json && json.data) || [];
-  return raw
-    .map(m => ({ id: m.id, label: m.display_name || m.id }))
-    .filter(m => m.id);
-}
-
-// Both providers answer with a list of content blocks rather than a string,
-// and both can return a block with no text in it (a safety stop, a tool call).
-// Joining the text blocks and ignoring the rest is right for both shapes.
+// Gemini answers with a list of content parts rather than a string, and a
+// part can have no text in it (a safety stop). Joining the text parts and
+// ignoring the rest is right for every shape it sends.
 function parseGeminiText(json) {
   const parts = ((((json || {}).candidates || [])[0] || {}).content || {}).parts || [];
   return parts.map(p => p.text || "").join("").trim();
@@ -6373,82 +6311,62 @@ function parseGeminiText(json) {
 // and fixable by raising it; coming back empty usually means the model
 // stopped for a reason of its own. Reasoning models make the first one much
 // more likely, because their thinking is billed against the same ceiling as
-// their answer — a model can think for 4,000 tokens and have nothing left to
-// write with.
+// their answer.
 const TRUNCATED_REASONS = ["MAX_TOKENS", "max_tokens", "length"];
 
-// allowTruncated is for the pre-flight check, where the question is only
-// whether this key can reach this model at all. A reasoning model asked for
-// one word will still think first, and its thinking is charged against the
-// same tiny ceiling — so it truncates every time, having answered perfectly
-// well. Treating that as a failure would rule out the most capable models on
-// the list, which is the opposite of what the check is for.
+// allowTruncated is for the model check, where the only question is whether
+// the model answers at all. A reasoning model asked for one word still thinks
+// first and can run out of room doing it, having worked perfectly well.
 function assertComplete(finishReason, text, { allowTruncated = false } = {}) {
   if (!allowTruncated && TRUNCATED_REASONS.indexOf(finishReason) !== -1) {
     throw new Error("The model ran out of room before it finished \u2014 it hit the response limit. Try again, or use a model that spends less on thinking.");
   }
-  // A truncated reply has no text to show for itself, and that is expected
-  // when it was cut off mid-thought rather than mid-sentence.
   if (!String(text || "").trim() && !(allowTruncated && TRUNCATED_REASONS.indexOf(finishReason) !== -1)) {
-    throw new Error(`The model returned nothing${finishReason ? ` (stopped: ${finishReason})` : ""}. Try again, or pick a different model.`);
+    throw new Error(`The model returned nothing${finishReason ? ` (stopped: ${finishReason})` : ""}. Try again, or try a different model.`);
   }
 }
 
-function parseAnthropicText(json) {
-  const blocks = (json && json.content) || [];
-  return blocks.filter(b => b.type === "text").map(b => b.text || "").join("").trim();
-}
-
-// What went wrong, in words worth reading. The provider's own message is
-// usually either absent or written for somebody debugging their own service,
-// so the status code carries most of the meaning here.
+// What went wrong, in words worth reading. Google's own message is usually
+// written for somebody debugging their own service, so the status code
+// carries most of the meaning, and Google's words ride along where they
+// decide what to do next.
 function describeConnectionError(status, body, { retried = false } = {}) {
   const detail = (() => {
     if (!body) return "";
     const m = body.error && (body.error.message || body.error.status);
     return typeof m === "string" ? m : "";
   })();
-  // Google's wording rides along on the errors where its reason decides what
-  // to do next. A 429 on a first-ever request is an allowance of zero (a
-  // project on the free plan), not a burst of traffic, and only the message
-  // tells the two apart.
   const said = detail ? ` (Google said: ${detail.slice(0, 260)})` : "";
   if (status === 401 || status === 403) {
-    return "The request was turned away. If you're using your own key, check it was copied whole and matches the provider selected above." + said;
+    return "The request was turned away. Try signing out and back in." + said;
   }
   if (status === 429) {
     if (/limit:\s*0\b|free[_ ]tier|billing/i.test(detail)) {
-      return "This project has no Gemini allowance for that model yet. That usually means the Firebase project is still on the free (Spark) plan." + said;
+      return "There's no Gemini allowance for that model yet. That usually means the Firebase project is on the free (Spark) plan, or the prepaid credit has run out." + said;
     }
     return "Over the rate limit right now. Wait a minute and try again." + said;
   }
-  if (status === 404) {
-    // A 404 here is almost always a model the account can't use, and the
-    // provider says which one. Swallowing that in favour of a tidy sentence
-    // left the one person who could act on it with nothing to go on.
-    return detail
-      ? `The provider rejected that request: ${detail} \u2014 usually this means the selected model isn't available to your key. Try another model.`
-      : "The provider didn't recognise that request \u2014 usually the selected model isn't available to your key. Try another model.";
+  if (status === 400 || status === 404) {
+    // Almost always a model name that doesn't exist or has been retired.
+    // Google's message names it, so it stays in.
+    return "Google didn't recognise that model \u2014 it may have been retired or the name may be mistyped. Change it at the bottom of the Seasons panel." + said;
   }
   if (status === 503 || status === 529) {
     return retried
-      ? "The provider is overloaded right now \u2014 waited and tried again, still busy. This one is on their end; try again in a few minutes."
-      : "The provider is overloaded right now. Try again in a few minutes.";
+      ? "Gemini is overloaded right now \u2014 waited and tried again, still busy. Try again in a few minutes."
+      : "Gemini is overloaded right now. Try again in a few minutes.";
   }
   if (status === 0) {
-    return "Couldn't reach the provider. Check your connection.";
+    return "Couldn't reach Gemini. Check your connection.";
   }
-  return detail ? `The provider said: ${detail} (${status})` : `The provider returned an error (${status}).`;
+  return detail ? `Google said: ${detail} (${status})` : `Gemini returned an error (${status}).`;
 }
 
-// Wraps fetch so every failure arrives as one kind of thing. A network error
-// and a 500 are the same event from the dialog's point of view: it didn't work,
-// and here's the sentence to show.
-// Providers shed load under demand spikes, and a season reading is three
-// months of text in a single request — the most expensive call this app makes
-// and the worst one to lose to a transient 503. Overload is waited out rather
-// than reported. Rejections that won't change on a retry (a bad key, an
-// unavailable model, a rate limit the user has to sit out) fail immediately.
+// Wraps fetch so every failure arrives as one kind of thing: an Error with
+// the sentence to show. A season reading is three months of text in one
+// request, the most expensive call this app makes and the worst one to lose
+// to a passing overload, so overload is waited out rather than reported.
+// Rejections that won't change on a retry fail immediately.
 const AI_OVERLOAD_STATUSES = [503, 529];
 const AI_RETRY_DELAYS_MS = [2000, 6000];
 
@@ -6472,10 +6390,6 @@ async function aiFetch(url, options, { onRetry } = {}) {
   }
 }
 
-const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
-
-// The request and response shapes are the same whether Gemini is reached
-// directly with a key or through Firebase, so both providers share them.
 function geminiBody({ system, prompt, maxTokens, wantJson }) {
   const body = {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -6485,30 +6399,14 @@ function geminiBody({ system, prompt, maxTokens, wantJson }) {
   if (system) body.systemInstruction = { parts: [{ text: system }] };
   return body;
 }
-function geminiResult(res, allowTruncated) {
-  assertComplete(((res.candidates || [])[0] || {}).finishReason, parseGeminiText(res), { allowTruncated });
-  return parseGeminiText(res);
-}
 
-// Gemini through the signed-in account (Firebase AI Logic). No key lives in
-// the browser: Firebase holds it, and only requests from the real site, made
-// by a signed-in person, get through. Billing and privacy follow the Firebase
-// project's plan.
-//
-// Firebase offers no model list to a browser, so this is a starting set taken
-// from Firebase's supported-models page (October 2026), not a fence. The model
-// field accepts any name, because new models arrive faster than releases of
-// this file.
+// Firebase AI Logic. Firebase holds the credential, and only requests from
+// the real site, made by a signed-in person, get through. Billing follows
+// the Firebase project's plan.
 const FIREBASE_AI_URL = "https://firebasevertexai.googleapis.com/v1beta/projects/";
-const FIREBASE_AI_SUGGESTED = ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.5-flash-lite"];
 
 const firebaseGeminiProvider = {
   id: "firebase",
-  label: "Gemini through your account",
-  needsKey: false,
-  async listModels() {
-    return FIREBASE_AI_SUGGESTED.map(id => ({ id, label: id }));
-  },
   async complete({ model, system, prompt, maxTokens = 4096, json: wantJson = false, allowTruncated = false }) {
     const headers = await cloud.aiHeaders();
     const url = `${FIREBASE_AI_URL}${encodeURIComponent(FIREBASE_CONFIG.projectId)}/models/${encodeURIComponent(model)}:generateContent`;
@@ -6517,141 +6415,96 @@ const firebaseGeminiProvider = {
       headers,
       body: JSON.stringify(geminiBody({ system, prompt, maxTokens, wantJson }))
     });
-    return geminiResult(res, allowTruncated);
+    assertComplete(((res.candidates || [])[0] || {}).finishReason, parseGeminiText(res), { allowTruncated });
+    return parseGeminiText(res);
   }
 };
 
-const geminiProvider = {
-  id: "gemini",
-  label: "Google Gemini (your own key)",
-  keyHint: "Starts with AQ.",
-  // Google moved from AIza keys to AQ. keys during 2026 and is retiring the old
-  // format. Both shapes are accepted here — the check is a nudge against a
-  // half-pasted key, not a gate.
-  keyPattern: /^(AQ\.|AIza)/,
-  async listModels(key) {
-    const json = await aiFetch(`${GEMINI_BASE}/models?pageSize=200`, {
-      headers: { "x-goog-api-key": key }
-    });
-    return parseGeminiModels(json);
-  },
-  // The key goes in a header, not the query string. Same authentication either
-  // way, but a URL is the part of a request that ends up in logs and history.
-  // `json` asks the provider for JSON natively rather than trusting a prompt
-  // to suppress prose and code fences. Left off for the model check, which
-  // wants one word back.
-  async complete({ key, model, system, prompt, maxTokens = 4096, json: wantJson = false, allowTruncated = false }) {
-    const res = await aiFetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
-      method: "POST",
-      headers: { "x-goog-api-key": key, "content-type": "application/json" },
-      body: JSON.stringify(geminiBody({ system, prompt, maxTokens, wantJson }))
-    });
-    return geminiResult(res, allowTruncated);
-  }
-};
-
-const ANTHROPIC_BASE = "https://api.anthropic.com/v1";
-
-// The dangerous-direct-browser-access header is the API's opt-in for being
-// called from a page. The warning in its name is about shipping *your* key
-// inside an app other people load. Here the key belongs to the person typing
-// it into their own browser, so there is nothing exposed to them that they
-// don't already own.
-const ANTHROPIC_HEADERS = key => ({
-  "x-api-key": key,
-  "anthropic-version": "2023-06-01",
-  "anthropic-dangerous-direct-browser-access": "true",
-  "content-type": "application/json"
-});
-
-const anthropicProvider = {
-  id: "anthropic",
-  label: "Anthropic Claude",
-  keyHint: "Starts with sk-ant-",
-  keyPattern: /^sk-ant-/,
-  async listModels(key) {
-    const json = await aiFetch(`${ANTHROPIC_BASE}/models?limit=100`, {
-      headers: ANTHROPIC_HEADERS(key)
-    });
-    return parseAnthropicModels(json);
-  },
-  async complete({ key, model, system, prompt, maxTokens = 4096, allowTruncated = false }) {
-    const body = {
-      model,
-      max_tokens: maxTokens,
-      messages: [{ role: "user", content: prompt }]
-    };
-    if (system) body.system = system;
-    const res = await aiFetch(`${ANTHROPIC_BASE}/messages`, {
-      method: "POST",
-      headers: ANTHROPIC_HEADERS(key),
-      body: JSON.stringify(body)
-    });
-    assertComplete(res.stop_reason, parseAnthropicText(res), { allowTruncated });
-    return parseAnthropicText(res);
-  }
-};
-
-const AI_PROVIDERS = [firebaseGeminiProvider, geminiProvider, anthropicProvider];
-
-function aiProviderById(id) {
-  return AI_PROVIDERS.find(p => p.id === id) || null;
-}
-
-// The one AI path. Every request goes to Gemini through I Love Mondays' own
-// Firebase project, as the signed-in person, so nobody sets anything up: no
-// provider to pick, no key, no model. To change the model for everyone, change
-// AI_MODEL. (The other providers and the old AI connection dialog are still in
-// this file, unreachable, in case a choice is ever wanted again.)
+// The model. AI_MODEL is the default; a model chosen in the Seasons panel
+// replaces it. Firebase offers no list of models to a browser, so the menu is
+// a short hand-picked list taken from Google's Firebase models page, plus
+// "Other" for any name typed in. Whatever is chosen is tried with a one-word
+// request before it's saved, so a list that has gone stale fails gently.
 //
-// `ready` is the question every AI-backed feature actually wants answered: can
-// a call be made? Only when signed in — the preview mode on a computer has no
-// account to send the request as.
+// AI_MODEL_CHOICES was checked against that page on 13 Oct 2026, the day
+// Gemini 4 Argon came out. Refresh it when Google's lineup moves on. `note`
+// is what the model is like for a season reading; `catch` is the trade-off.
 const AI_MODEL = "gemini-3.1-pro-preview";
+const AI_MODELS_PAGE = "https://firebase.google.com/docs/ai-logic/models";
+const AI_MODEL_CHOICES = [
+  {
+    id: "gemini-4-argon",
+    label: "Gemini 4 Argon",
+    tag: "most capable",
+    note: "Google's newest and strongest model, best at the subtle reading a season asks for.",
+    catch: "Slowest, and costs the most per reading. New as of October 2026."
+  },
+  {
+    id: "gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
+    tag: "fast, good value",
+    note: "Nearly as sharp at a fraction of the cost, and quicker to answer.",
+    catch: "Google may retire it at short notice when a newer Flash arrives."
+  },
+  {
+    id: "gemini-3.5-flash-lite",
+    label: "Gemini 3.5 Flash-Lite",
+    tag: "fastest, cheapest",
+    note: "Quick and very cheap. Fine for trying things out.",
+    catch: "Readings will be thinner, with fewer of the patterns that cut across pillars."
+  },
+  {
+    id: "gemini-3.1-pro-preview",
+    label: "Gemini 3.1 Pro preview",
+    tag: "older",
+    note: "The model your readings have used so far.",
+    catch: "Google now lists it as an older preview and suggests moving off it. It will be retired."
+  }
+];
+
+function aiModelChoice(id) {
+  return AI_MODEL_CHOICES.find(c => c.id === id) || null;
+}
+function aiModelLabel(id) {
+  const c = aiModelChoice(id);
+  return c ? c.label : id;
+}
+
+
+function currentAIModel() {
+  return String(db.readRaw(K.aiModel) || "").trim() || AI_MODEL;
+}
+
+// Asks the model for one word. Resolves if it answered, throws the sentence
+// to show if it didn't.
+async function checkAIModel(model) {
+  await firebaseGeminiProvider.complete({
+    model,
+    prompt: "Reply with the single word: ok",
+    maxTokens: 256,
+    allowTruncated: true
+  });
+}
+
+function saveAIModel(model) {
+  const m = String(model || "").trim();
+  if (!m || m === AI_MODEL) db.remove(K.aiModel);
+  else db.writeRaw(K.aiModel, m);
+}
+
+// `ready` is the question every AI-backed feature actually wants answered:
+// can a call be made? Only when signed in. The preview mode on a computer has
+// no account to send the request as.
 function readAIConnection() {
-  return { providerId: firebaseGeminiProvider.id, key: "", model: AI_MODEL, ready: Boolean(cloud.user) };
+  return { model: currentAIModel(), ready: Boolean(cloud.user) };
 }
 
-// Moving to Gemini through the account: a saved direct-Gemini connection
-// switches over, keeping its model, and the key is removed from this browser
-// since nothing uses it any more. Runs on every device as it signs in.
-function migrateAIToAccount() {
-  if (db.readRaw(K.aiProvider) !== "gemini") return;
-  db.writeRaw(K.aiProvider, firebaseGeminiProvider.id);
-  db.remove(K.aiKey);
-}
-
-function saveAIConnection({ providerId, key, model }) {
-  db.writeRaw(K.aiProvider, providerId || "");
-  db.writeRaw(K.aiKey, key || "");
-  db.writeRaw(K.aiModel, model || "");
-}
-
-function clearAIConnection() {
-  [K.aiProvider, K.aiKey, K.aiModel].forEach(k => db.remove(k));
-}
-
-// A key stored by a version whose settings UI was later removed sat in storage
-// for months, invisible and still being swept into every export. Anything
-// holding a credential gets removed on load rather than left for the next
-// export to find.
+// Older versions offered a choice of provider, a pasted key, and a model
+// picker. None of that exists any more; whatever they stored is removed on
+// load so a credential never sits in a browser, or in an export, unused.
 function purgeLegacyCredentials() {
-  [K.legacyApiKey, K.legacyApiProvider].forEach(k => db.remove(k));
+  [K.legacyApiKey, K.legacyApiProvider, K.legacyAiProvider, K.legacyAiKey, K.legacyAiModel].forEach(k => db.remove(k));
 }
-
-// Enough of the key to recognise which one it is, and not enough to use.
-// A model list with the saved model added if it isn't already on it, so a
-// connection that works today never disappears from its own settings.
-function withModel(list, id) {
-  return id && !list.some(m => m.id === id) ? list.concat([{ id, label: id }]) : list;
-}
-
-function maskKey(key) {
-  if (!key) return "";
-  if (key.length <= 12) return "•".repeat(key.length);
-  return `${key.slice(0, 6)}${"•".repeat(10)}${key.slice(-4)}`;
-}
-
 
 // ---------------------------------------------------------------------------
 // Seasons
@@ -7384,15 +7237,12 @@ function parseSeasonActionsJSON(raw, pillarNames, avoid) {
 async function generateSeasonActions(entry, { cats, ideas, kept, declined, avoid, model: modelOverride }) {
   const conn = readAIConnection();
   if (!conn.ready) throw new Error("no-connection");
-  const provider = aiProviderById(conn.providerId);
-  if (!provider) throw new Error("no-connection");
   const pillars = (cats || []).map(c => ({ label: c.label, purpose: String(c.purpose || "").trim() }));
   const benches = {};
   (cats || []).forEach(c => {
     benches[c.label] = ((ideas || {})[c.id] || []).map(i => String(i.text || "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").trim()).filter(Boolean);
   });
-  const raw = await provider.complete({
-    key: conn.key,
+  const raw = await firebaseGeminiProvider.complete({
     model: String(modelOverride || "").trim() || conn.model,
     system: SEASON_ACTIONS_SYSTEM,
     prompt: buildSeasonActionsPrompt({ entry, pillars, benches, kept, declined }),
@@ -7600,12 +7450,7 @@ function seasonLedger(signals, cats, goals) {
 async function generateSeasonReading(season, { cats, goals, userName, store, model: modelOverride, fresh = false }) {
   const conn = readAIConnection();
   if (!conn.ready) throw new Error("no-connection");
-  // A re-read can name its own model without changing the saved connection:
-  // trying a second opinion shouldn't quietly change what every later
-  // reading uses.
   const model = String(modelOverride || "").trim() || conn.model;
-  const provider = aiProviderById(conn.providerId);
-  if (!provider) throw new Error("no-connection");
   const data = collectSeasonData(season, cats);
   const signals = seasonSignals(season, data, cats, goals);
   const prev = store.get(seasonBefore(season).id);
@@ -7634,8 +7479,7 @@ async function generateSeasonReading(season, { cats, goals, userName, store, mod
       target: goals && goals[c.id] != null ? goals[c.id] : null
     }))
   });
-  const raw = await provider.complete({
-    key: conn.key,
+  const raw = await firebaseGeminiProvider.complete({
     model,
     system: SEASON_SYSTEM,
     prompt,
@@ -8696,41 +8540,10 @@ function SeasonReading({ entry, cats, goalFor, canEdit, onClose, onNote, onPilla
 // ---------------------------------------------------------------------------
 function SeasonFooter({ entry, canEdit, busy, error, noteCount, onRegenerate }) {
   const [choosing, setChoosing] = useState(false);
-  const [models, setModels] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [model, setModel] = useState("");
   const hasNotes = noteCount > 0;
   const written = fmtShortDate(String(entry.generatedAt || "").slice(0, 10));
   // A new reading arriving means the choice was made; fold the chooser away.
   useEffect(() => { setChoosing(false); }, [entry.generatedAt]);
-
-  function openChooser() {
-    setChoosing(true);
-    setModel(AI_MODEL);
-    return;
-    const conn = readAIConnection();
-    // Whatever happens with the network, the models already known about are
-    // selectable: the one that wrote this reading and the saved default.
-    const known = [conn.model, entry.model].filter(Boolean)
-      .filter((id, i, a) => a.indexOf(id) === i)
-      .map(id => ({ id, label: id }));
-    setModels(known);
-    setModel((known.find(m => m.id !== entry.model) || known[0] || {}).id || "");
-    const provider = aiProviderById(conn.providerId);
-    if (!conn.ready || !provider) return;
-    setLoading(true);
-    provider.listModels(conn.key)
-      .then(found => {
-        const ranked = rankModels(found || []);
-        if (!ranked.length) return;
-        setModels(ranked);
-        // Preselect the best-ranked model that isn't the author of this one,
-        // since "a different model" is what was asked for.
-        setModel((ranked.find(m => m.id !== entry.model) || ranked[0]).id);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }
 
   const quietBtn = {
     background: "none",
@@ -8760,9 +8573,9 @@ function SeasonFooter({ entry, canEdit, busy, error, noteCount, onRegenerate }) 
 
     React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 } },
       React.createElement("div", { style: { fontSize: 11, color: MUTED } },
-        `Written ${written}`),
+        entry.model ? `Written ${written} by ${aiModelLabel(entry.model)}` : `Written ${written}`),
       canEdit && !choosing && React.createElement("button", {
-        onClick: openChooser,
+        onClick: () => setChoosing(true),
         disabled: busy,
         style: quietBtn
       }, busy ? "Writing a new reading\u2026" : "Read again")
@@ -8779,29 +8592,10 @@ function SeasonFooter({ entry, canEdit, busy, error, noteCount, onRegenerate }) 
       }
     },
       React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
-        false && React.createElement("select", {
-          "aria-label": "Model",
-          value: model,
-          disabled: busy,
-          onChange: e => setModel(e.target.value),
-          style: {
-            flex: "1 1 220px",
-            minWidth: 0,
-            border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
-            borderRadius: TILE_RADIUS,
-            background: PAPER,
-            padding: "5px 8px",
-            fontFamily: "inherit",
-            fontSize: 12,
-            color: INK_2,
-            cursor: "pointer"
-          }
-        }, models.map(m => React.createElement("option", { key: m.id, value: m.id },
-          `${m.label || m.id}${m.id === entry.model ? " (wrote this one)" : ""}`))),
         React.createElement("button", {
           className: "season-reread",
-          onClick: () => { if (model) onRegenerate({ model, fresh: true }); },
-          disabled: busy || !model,
+          onClick: () => onRegenerate({ model: currentAIModel(), fresh: true }),
+          disabled: busy,
           style: {
             border: `${PLAN_BORDER_W}px solid ${ACCENT}`,
             borderRadius: TILE_RADIUS,
@@ -8829,8 +8623,8 @@ function SeasonFooter({ entry, canEdit, busy, error, noteCount, onRegenerate }) 
         className: "season-reread-warning",
         style: { fontSize: 11.5, lineHeight: 1.55, color: hasNotes ? INK_2 : INK_3 }
       }, hasNotes
-        ? `This replaces the reading you're looking at, and your ${noteCount === 1 ? "note on it" : `${noteCount} notes on it`} won't be kept.`
-        : "This replaces the reading you're looking at.")
+        ? `${aiModelLabel(currentAIModel())} will write a new reading to replace this one, and your ${noteCount === 1 ? "note on it" : `${noteCount} notes on it`} won't be kept.`
+        : `${aiModelLabel(currentAIModel())} will write a new reading to replace this one.`)
     )
   );
 }
@@ -8851,7 +8645,6 @@ function SeasonsPanel({
   aiReady,
   onGenerate,
   onOpen,
-  onConnectAI,
   onClose
 }) {
   return React.createElement(React.Fragment, null,
@@ -8966,7 +8759,206 @@ function SeasonsPanel({
             }
           }, error.message)
         );
-      })
+      }),
+
+      canEdit && React.createElement(SeasonModelControl, { canChange: aiReady })
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SeasonModelControl
+//
+// Which Gemini model writes readings and next-season suggestions, and the
+// way to change it. Google retires models between one season and the next,
+// so this lives where the reading is asked for, as a quiet line at the foot
+// of the shelf. Changing it is a short menu of current models, each with a
+// line on what it's like, plus "Other" for a name from Google's page. The
+// pick is tried with a one-word request before it's saved: a retired model
+// or a typo is caught here, not three months from now in a reading.
+// ---------------------------------------------------------------------------
+const OTHER_MODEL = "__other__";
+
+function SeasonModelControl({ canChange }) {
+  const [model, setModelState] = useState(currentAIModel);
+  const [editing, setEditing] = useState(false);
+  const [pick, setPick] = useState("");
+  const [typed, setTyped] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [problem, setProblem] = useState(null);
+  const otherRef = useRef(null);
+  useEffect(() => {
+    if (editing && pick === OTHER_MODEL && otherRef.current) otherRef.current.focus();
+  }, [editing, pick]);
+
+  function open() {
+    const now = currentAIModel();
+    setModelState(now);
+    // A model typed in earlier shows as its own line in the menu rather
+    // than as "Other", so reopening never looks like the choice was lost.
+    setPick(now);
+    setTyped("");
+    setProblem(null);
+    setEditing(true);
+  }
+  function close() {
+    if (checking) return;
+    setEditing(false);
+    setProblem(null);
+  }
+  const chosen = (pick === OTHER_MODEL ? typed : pick).trim().replace(/^models\//, "");
+  async function trySave() {
+    if (!chosen || checking) return;
+    if (chosen === model) { close(); return; }
+    setChecking(true);
+    setProblem(null);
+    try {
+      await checkAIModel(chosen);
+      saveAIModel(chosen);
+      setModelState(currentAIModel());
+      setEditing(false);
+    } catch (err) {
+      setProblem(String((err && err.message) || "That model didn't answer."));
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  const choice = pick === OTHER_MODEL ? null : aiModelChoice(pick);
+  const listed = AI_MODEL_CHOICES.some(c => c.id === model);
+  const canSave = Boolean(chosen) && !checking;
+
+  const linkBtn = {
+    background: "none",
+    border: "none",
+    padding: 0,
+    fontFamily: "inherit",
+    fontSize: 11,
+    fontWeight: 600,
+    color: INK_3,
+    cursor: "pointer"
+  };
+  const field = {
+    width: "100%",
+    boxSizing: "border-box",
+    border: `${PLAN_BORDER_W}px solid ${NEUTRAL_OUTLINE}`,
+    borderRadius: TILE_RADIUS,
+    background: TILE_PLAN_FILL,
+    padding: "6px 8px",
+    fontFamily: "inherit",
+    fontSize: 13,
+    color: INK,
+    outline: "none"
+  };
+
+  return React.createElement("div", {
+    className: "season-model",
+    style: { borderTop: `1px solid ${HAIRLINE}`, marginTop: 14, paddingTop: 10 }
+  },
+    !editing && React.createElement("div", {
+      style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }
+    },
+      React.createElement("div", { style: { fontSize: 11, lineHeight: 1.5, color: MUTED, minWidth: 0, overflowWrap: "anywhere" } },
+        "Model ",
+        React.createElement("span", { className: "season-model-name", style: { color: INK_2 } }, aiModelLabel(model))),
+      canChange && React.createElement("button", {
+        className: "season-model-change",
+        onClick: open,
+        style: { ...linkBtn, flexShrink: 0 }
+      }, "Change")
+    ),
+
+    editing && React.createElement("div", {
+      style: { background: WASH, borderRadius: TILE_RADIUS, padding: "10px 11px", display: "flex", flexDirection: "column", gap: 8 }
+    },
+      React.createElement("label", {
+        htmlFor: "season-model-select",
+        style: { fontSize: 11.5, fontWeight: 600, color: INK_2 }
+      }, "Model for season readings"),
+      React.createElement("select", {
+        id: "season-model-select",
+        className: "season-model-select",
+        value: pick,
+        disabled: checking,
+        onChange: e => { setPick(e.target.value); setProblem(null); },
+        style: { ...field, cursor: checking ? "default" : "pointer" }
+      },
+        AI_MODEL_CHOICES.map(c => React.createElement("option", { key: c.id, value: c.id },
+          `${c.label} (${c.tag})${c.id === model ? " \u2713" : ""}`)),
+        !listed && React.createElement("option", { key: model, value: model }, `${model} \u2713`),
+        React.createElement("option", { key: OTHER_MODEL, value: OTHER_MODEL }, "Other\u2026")
+      ),
+
+      choice && React.createElement("div", {
+        className: "season-model-note",
+        style: { fontSize: 11.5, lineHeight: 1.5, color: INK_2 }
+      },
+        choice.note,
+        React.createElement("div", { style: { color: INK_3, marginTop: 2 } }, choice.catch)),
+
+      pick === OTHER_MODEL && React.createElement(React.Fragment, null,
+        React.createElement("input", {
+          ref: otherRef,
+          className: "season-model-input",
+          "aria-label": "Model name",
+          value: typed,
+          disabled: checking,
+          spellCheck: false,
+          autoCapitalize: "off",
+          autoCorrect: "off",
+          placeholder: "e.g. gemini-4-argon",
+          onChange: e => { setTyped(e.target.value); setProblem(null); },
+          onKeyDown: e => {
+            if (e.key === "Enter") { e.preventDefault(); trySave(); }
+            if (e.key === "Escape") { e.preventDefault(); close(); }
+          },
+          style: field
+        }),
+        React.createElement("div", { style: { fontSize: 11, lineHeight: 1.5, color: INK_3 } },
+          "For a model that isn't listed. Copy its name from ",
+          React.createElement("a", {
+            href: AI_MODELS_PAGE,
+            target: "_blank",
+            rel: "noopener noreferrer",
+            style: { color: INK_2, textDecoration: "underline", textUnderlineOffset: 2 }
+          }, "Google's list of current models"),
+          ".")
+      ),
+
+      !choice && pick !== OTHER_MODEL && React.createElement("div", {
+        style: { fontSize: 11.5, lineHeight: 1.5, color: INK_3 }
+      }, "A model you typed in earlier."),
+
+      problem && React.createElement("div", {
+        className: "season-model-problem",
+        style: { fontSize: 11, lineHeight: 1.5, color: INK_2, borderTop: `1px solid ${HAIRLINE}`, paddingTop: 8 }
+      }, problem),
+
+      React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" } },
+        React.createElement("button", {
+          className: "season-model-save",
+          onClick: trySave,
+          disabled: !canSave,
+          style: {
+            border: `${PLAN_BORDER_W}px solid ${canSave ? ACCENT : NEUTRAL_OUTLINE}`,
+            borderRadius: TILE_RADIUS,
+            background: "transparent",
+            padding: "5px 12px",
+            fontSize: 11.5,
+            fontWeight: 600,
+            fontFamily: "inherit",
+            color: canSave ? ACCENT : FAINT,
+            cursor: canSave ? "pointer" : "default"
+          }
+        }, checking ? "Trying it\u2026" : "Try it and save"),
+        React.createElement("button", {
+          onClick: close,
+          disabled: checking,
+          style: { ...linkBtn, color: MUTED }
+        }, "Cancel")
+      ),
+      React.createElement("div", { style: { fontSize: 10.5, lineHeight: 1.5, color: MUTED } },
+        "List checked October 2026. Saving sends one tiny test request first.")
     )
   );
 }
@@ -9681,8 +9673,9 @@ function ReflectionsPanel({
 // silent until someone tries to restore.
 // ---------------------------------------------------------------------------
 
-// Never leaves this browser. `planner:ai` covers provider, key and model in one
-// prefix; the two legacy names are listed because old installs still hold them.
+// Never goes into an export. `planner:ai` covers the chosen model (a backup
+// shouldn't change it) and the old connection keys; the two legacy names are
+// listed because old installs still hold them.
 const TRANSFER_SKIP_PREFIXES = [
   K.importedViews,
   K.userName,
@@ -11196,324 +11189,6 @@ function ExportDialog({ pendingExportName, exportIncludeReflections, setExportIn
   }, "Download"));
 }
 
-const AI_FIELD_LABEL = {
-  fontSize: 11,
-  letterSpacing: "0.08em",
-  textTransform: "uppercase",
-  color: INK_3,
-  fontWeight: 600,
-  marginBottom: 6
-};
-
-const AI_INPUT = {
-  width: "100%",
-  boxSizing: "border-box",
-  padding: "9px 10px",
-  borderRadius: 9,
-  border: `1px solid ${HAIRLINE}`,
-  background: "#fff",
-  fontSize: 13,
-  fontFamily: "inherit",
-  color: INK,
-  outline: "none"
-};
-
-// Settings for the connection the AI-backed features run on.
-//
-// The shape of the thing is: pick a provider, paste a key, prove it works,
-// then choose from what that key can actually reach. Test connection is not
-// decoration — it is the step that populates the model list, so it sits in the
-// middle of the flow rather than off to one side as a reassurance button.
-function AIConnectionDialog({ onClose }) {
-  const saved = readAIConnection();
-  const [providerId, setProviderId] = useState(saved.providerId);
-  const [key, setKey] = useState(saved.key);
-  // A saved key renders masked until it's replaced. Showing it in full would
-  // put a credential on screen for no reason; showing nothing would make a
-  // configured connection look empty.
-  const [keyDirty, setKeyDirty] = useState(false);
-  const savedProvider = aiProviderById(saved.providerId) || AI_PROVIDERS[0];
-  const [model, setModel] = useState(saved.model || (savedProvider.needsKey === false ? FIREBASE_AI_SUGGESTED[0] : ""));
-  const [models, setModels] = useState(savedProvider.needsKey === false
-    ? withModel(FIREBASE_AI_SUGGESTED.map(id => ({ id, label: id })), saved.model)
-    : saved.model ? [{ id: saved.model, label: saved.model }] : []);
-  const [status, setStatus] = useState("idle");
-  const [message, setMessage] = useState("");
-  const provider = aiProviderById(providerId) || AI_PROVIDERS[0];
-  const keyless = provider.needsKey === false;
-  // For the keyless provider the list is a starting set, so "Other model…"
-  // opens a field for any name. A saved model not on the list opens in it.
-  const [otherModel, setOtherModel] = useState(Boolean(saved.model) && savedProvider.needsKey === false
-    && !FIREBASE_AI_SUGGESTED.includes(saved.model));
-
-  // Reopening the dialog used to show a list of exactly one model — the saved
-  // one — because the list only ever came back from pressing Test. That made
-  // changing model look impossible, which is the one thing somebody reopening
-  // this dialog is most likely trying to do. A saved key refetches on open.
-  useEffect(() => {
-    if (!saved.key || !saved.model) return;
-    let cancelled = false;
-    setStatus("testing");
-    provider.listModels(saved.key)
-      .then(found => {
-        if (cancelled || !found.length) return;
-        setModels(rankModels(found));
-        setStatus("idle");
-        setMessage("");
-      })
-      .catch(() => {
-        // The saved model stays selectable, so a provider that is down does
-        // not also strand the connection that was already working.
-        if (!cancelled) { setStatus("idle"); setMessage(""); }
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  function changeProvider(id) {
-    setProviderId(id);
-    // A key and a model list belong to one provider. Carrying either across
-    // would offer models this key can't reach.
-    setKey("");
-    setKeyDirty(true);
-    const next = aiProviderById(id);
-    if (next && next.needsKey === false) {
-      setModels(FIREBASE_AI_SUGGESTED.map(m => ({ id: m, label: m })));
-      setModel(FIREBASE_AI_SUGGESTED[0]);
-    } else {
-      setModel("");
-      setModels([]);
-    }
-    setStatus("idle");
-    setMessage("");
-  }
-
-  async function test() {
-    if (keyless) {
-      if (!model.trim()) { setStatus("error"); setMessage("Choose or type a model first."); return; }
-      await verifyModel(model.trim(), 0);
-      return;
-    }
-    if (!key.trim()) {
-      setStatus("error");
-      setMessage("Paste a key first.");
-      return;
-    }
-    setStatus("testing");
-    setMessage("");
-    try {
-      const found = rankModels(await provider.listModels(key.trim()));
-      if (!found.length) {
-        setStatus("error");
-        setMessage("The key works, but no usable models came back for it.");
-        return;
-      }
-      setModels(found);
-      // Keep the saved model if this key can still reach it. Otherwise the
-      // best-ranked one, so Save is reachable without a second decision.
-      const keep = found.find(m => m.id === model);
-      const chosen = keep ? keep.id : found[0].id;
-      setModel(chosen);
-      await verifyModel(chosen, found.length);
-    } catch (err) {
-      setStatus("error");
-      setMessage(err.message || "Something went wrong.");
-    }
-  }
-
-  // Listing models proves the key is valid. It does not prove the selected
-  // model will answer: access is granted per model, and a model can be
-  // healthy at 9am and shedding load at 10. Both of those used to surface
-  // only after a season reading had been asked for and waited on. A
-  // two-token completion settles it in a second instead.
-  async function verifyModel(id, modelCount) {
-    if (!id || (!keyless && !key.trim())) return;
-    setStatus("testing");
-    setMessage(`Checking ${id}\u2026`);
-    try {
-      await provider.complete({
-        key: key.trim(),
-        model: id,
-        prompt: "Reply with the single word: ok",
-        // Small enough that browsing the dropdown costs nothing, and
-        // truncation-tolerant so a model that thinks before answering still
-        // counts as having answered. Reaching the provider at all is the
-        // whole question here.
-        maxTokens: 64,
-        allowTruncated: true
-      });
-      setStatus("ok");
-      setMessage(modelCount
-        ? `Working. ${modelCount} model${modelCount === 1 ? "" : "s"} available on this key.`
-        : "Working.");
-    } catch (err) {
-      setStatus("error");
-      // The distinction that matters: one of these is worth waiting out, the
-      // other means pick something else.
-      setMessage(/overloaded|high demand/i.test(err.message || "")
-        ? `${id} is busy right now. Wait a few minutes, or pick another model.`
-        : `${id} didn't answer. ${err.message || ""}`.trim());
-    }
-  }
-
-  function save() {
-    saveAIConnection({ providerId, key: keyless ? "" : key.trim(), model: model.trim() });
-    onClose();
-  }
-
-  function disconnect() {
-    clearAIConnection();
-    onClose();
-  }
-
-  const canSave = Boolean((keyless || key.trim()) && model.trim());
-  const statusColor = status === "ok" ? "#4E7A5E" : status === "error" ? "#A85448" : MUTED;
-
-  return /*#__PURE__*/React.createElement(Modal, {
-    onClose: onClose, maxWidth: 380, padding: "24px 24px 20px"
-  },
-    /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: MUTED, fontWeight: 600, marginBottom: 6 }
-    }, "AI connection"),
-    /*#__PURE__*/React.createElement("div", {
-      style: { fontSize: 12, color: INK_3, lineHeight: 1.5, marginBottom: 18 }
-    }, keyless
-      ? "Powers Seasons. Runs through your I Love Mondays account, so there's no key to paste. Your writing goes to Google's Gemini only when you ask for a season to be read."
-      : "Powers Seasons. Your key is stored in this browser and sent only to the provider you pick, only when you ask for a season to be read."),
-
-    /*#__PURE__*/React.createElement("div", { style: { marginBottom: 14 } },
-      /*#__PURE__*/React.createElement("div", { style: AI_FIELD_LABEL }, "Provider"),
-      /*#__PURE__*/React.createElement("select", {
-        value: providerId,
-        onChange: e => changeProvider(e.target.value),
-        style: { ...AI_INPUT, cursor: "pointer" }
-      }, AI_PROVIDERS.map(p => /*#__PURE__*/React.createElement("option", { key: p.id, value: p.id }, p.label)))),
-
-    keyless ? null : /*#__PURE__*/React.createElement("div", { style: { marginBottom: 14 } },
-      /*#__PURE__*/React.createElement("div", { style: AI_FIELD_LABEL }, "API key"),
-      /*#__PURE__*/React.createElement("input", {
-        type: "text",
-        value: keyDirty ? key : maskKey(key),
-        placeholder: provider.keyHint,
-        spellCheck: false,
-        autoComplete: "off",
-        onFocus: () => { if (!keyDirty) { setKey(""); setKeyDirty(true); } },
-        onChange: e => { setKey(e.target.value); setKeyDirty(true); setStatus("idle"); setMessage(""); },
-        style: AI_INPUT
-      }),
-      key.trim() && keyDirty && !provider.keyPattern.test(key.trim())
-        ? /*#__PURE__*/React.createElement("div", {
-            style: { fontSize: 11, color: MUTED, marginTop: 5, lineHeight: 1.4 }
-          }, `That doesn't look like a ${provider.label} key — ${provider.keyHint.toLowerCase()}. Test it anyway if you think it's right.`)
-        : null),
-
-    /*#__PURE__*/React.createElement("button", {
-      onClick: test,
-      disabled: status === "testing",
-      style: {
-        width: "100%",
-        padding: "9px",
-        borderRadius: 9,
-        background: "#fff",
-        border: `1px solid ${HAIRLINE}`,
-        cursor: status === "testing" ? "default" : "pointer",
-        fontSize: 13,
-        color: INK,
-        fontWeight: 600,
-        fontFamily: "inherit",
-        marginBottom: message ? 8 : 14
-      }
-    }, status === "testing" ? "Testing\u2026" : "Test connection"),
-
-    message
-      ? /*#__PURE__*/React.createElement("div", {
-          style: { fontSize: 12, color: statusColor, lineHeight: 1.45, marginBottom: 14 }
-        }, message)
-      : null,
-
-    /*#__PURE__*/React.createElement("div", { style: { marginBottom: 18 } },
-      /*#__PURE__*/React.createElement("div", { style: AI_FIELD_LABEL }, "Model"),
-      keyless
-        // A plain dropdown of the starting set, plus "Other model…" for a name
-        // that isn't on it yet — newer models arrive faster than new versions
-        // of this file. (A text box with suggestions hid every option but the
-        // one already typed, which read as a list of one.)
-        ? /*#__PURE__*/React.createElement(React.Fragment, null,
-            /*#__PURE__*/React.createElement("select", {
-              value: otherModel ? "__other" : model,
-              onChange: e => {
-                const v = e.target.value;
-                if (v === "__other") { setOtherModel(true); setModel(""); setStatus("idle"); setMessage(""); return; }
-                setOtherModel(false);
-                setModel(v);
-                verifyModel(v, 0);
-              },
-              style: { ...AI_INPUT, cursor: "pointer" }
-            },
-              rankModels(FIREBASE_AI_SUGGESTED.map(id => ({ id, label: id }))).map(m => /*#__PURE__*/React.createElement("option", { key: m.id, value: m.id },
-                `${m.label} \u2014 ${MODEL_TIER_NOTE[modelTier(m.id)]}`)),
-              /*#__PURE__*/React.createElement("option", { value: "__other" }, "Other model\u2026")),
-            otherModel ? /*#__PURE__*/React.createElement("input", {
-              type: "text",
-              value: model,
-              placeholder: "Model name, e.g. gemini-3.8-flash",
-              spellCheck: false,
-              autoComplete: "off",
-              onChange: e => { setModel(e.target.value); setStatus("idle"); setMessage(""); },
-              style: { ...AI_INPUT, marginTop: 8 }
-            }) : null)
-        : models.length
-        ? /*#__PURE__*/React.createElement("select", {
-            value: model,
-            // Changing the model re-checks it. Picking from a dropdown and
-            // finding out three months later that this one is unavailable is
-            // the exact loop this replaces.
-            onChange: e => { setModel(e.target.value); verifyModel(e.target.value, models.length); },
-            style: { ...AI_INPUT, cursor: "pointer" }
-          }, models.map(m => /*#__PURE__*/React.createElement("option", { key: m.id, value: m.id },
-            `${m.label} \u2014 ${MODEL_TIER_NOTE[modelTier(m.id)]}`)))
-        : /*#__PURE__*/React.createElement("div", {
-            style: { ...AI_INPUT, color: FAINT, background: "#FBF9F4" }
-          }, "Test the connection to load models"),
-      /*#__PURE__*/React.createElement("div", {
-        style: { fontSize: 11, color: MUTED, marginTop: 6, lineHeight: 1.45 }
-      }, "A season is three months of writing read in one pass, so this is the one place the model really shows. Start at the top of the list and work down \u2014 the light models are quick, and tend to produce thin readings.")),
-
-    /*#__PURE__*/React.createElement("button", {
-      onClick: save,
-      disabled: !canSave,
-      style: {
-        width: "100%",
-        padding: "11px",
-        borderRadius: 9,
-        background: canSave ? INK : "#D1CCCA",
-        border: "none",
-        cursor: canSave ? "pointer" : "default",
-        fontSize: 13,
-        color: "#fff",
-        fontWeight: 600,
-        fontFamily: "inherit"
-      }
-    }, "Save"),
-
-    saved.key
-      ? /*#__PURE__*/React.createElement("button", {
-          onClick: disconnect,
-          style: {
-            width: "100%",
-            padding: "9px",
-            marginTop: 8,
-            borderRadius: 9,
-            background: "transparent",
-            border: "none",
-            cursor: "pointer",
-            fontSize: 12,
-            color: MUTED,
-            fontFamily: "inherit"
-          }
-        }, "Remove key from this browser")
-      : null);
-}
-
 // The Pillars tab of the sidebar: rename, reorder, set weekly targets for and
 // remove the user's own pillars, and add new ones from the library or by name.
 function PillarsPanel({
@@ -11833,7 +11508,8 @@ function PillarsPanel({
 // SettingsPanel
 //
 // Everything about the app rather than your life: your name, backing up and
-// starting fresh, and the account. (AI needs no setting: see AI_MODEL.) These used to be
+// starting fresh, and the account. (The AI model is set in the Seasons panel,
+// where its only work happens.) These used to be
 // tucked into the avatar menu and the footer, which left the avatar menu doing
 // two jobs. That menu is now only about whose plan is showing; this panel is
 // the one place for settings, and the phone's More > Settings will open the
@@ -11879,7 +11555,7 @@ function SettingsRow({ label, detail, onClick, danger, chevron = true, detailTon
     strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", style: { flexShrink: 0 }, "aria-hidden": "true"
   }, /*#__PURE__*/React.createElement("path", { d: "M9 6l6 6-6 6" })));
 }
-function SettingsPanel({ userName, openNamePrompt, exportData, setShowAIConnection, setShowStartFreshConfirm, onClose }) {
+function SettingsPanel({ userName, openNamePrompt, exportData, setShowStartFreshConfirm, onClose }) {
   const c = useCloud();
   const syncNote = !c.user ? "Preview on this computer \u00b7 not synced"
     : c.status === "offline" ? "Offline \u00b7 changes are saved on this device"
@@ -12061,7 +11737,7 @@ function SidebarRail({
 // The Pillars panel arrives ready-made as `pillarsPanel`, so the sidebar
 // doesn't have to carry everything that panel needs.
 function PlannerSidebar({
-  pillarsPanel, ideaPanelCatId, setDraggingIdea, setShowAIConnection,
+  pillarsPanel, ideaPanelCatId, setDraggingIdea,
   journalStore, newEntryId, sidebarOpen, sidebarTab, reflectPinId,
   lastIdeaCatId, dates, todayStr, activeView, isOwnView, seasonsStore,
   seasonBusy, seasonError, setOpenSeasonId, seasonCue, displayCats,
@@ -12154,7 +11830,6 @@ function PlannerSidebar({
     aiReady: readAIConnection().ready,
     onGenerate: runSeasonReading,
     onOpen: setOpenSeasonId,
-    onConnectAI: () => setShowAIConnection(true),
     onClose: closeSidebar
   }), sidebarTab === 'pillars' && isOwnView && pillarsPanel, sidebarTab === 'settings' && settingsPanel), !phone && /*#__PURE__*/React.createElement(SidebarRail, {
     sidebarOpen, sidebarTab, lastIdeaCatId, isOwnView, seasonCue,
@@ -12320,12 +11995,12 @@ function PlannerTitle({ activeView, isOwnView }) {
 }
 // The avatar menu at the top left: whose plan is showing, the shared plans you
 // can switch to, and the two file actions that go with sharing (open a shared
-// plan, share yours). The AI connection, backing up and Start fresh moved to
+// plan, share yours). Backing up and Start fresh moved to
 // the Settings panel, so this menu only answers "whose plan am I looking at?"
 function PlanSwitcher({
   importRef, importedViews, activeViewId, setActiveViewId, userName,
   showViewDropdown, setShowViewDropdown, setShowStartFreshConfirm,
-  setShowAIConnection, viewDropdownRef, activeView, isOwnView, exportData,
+  viewDropdownRef, activeView, isOwnView, exportData,
   openNamePrompt, removeImportedView
 }) {
   return React.createElement("div", {
@@ -14129,7 +13804,6 @@ function Planner() {
   const [userName, setUserName] = useState("");
   const [showViewDropdown, setShowViewDropdown] = useState(false);
   const [showStartFreshConfirm, setShowStartFreshConfirm] = useState(false);
-  const [showAIConnection, setShowAIConnection] = useState(false);
   const viewDropdownRef = useRef(null);
   const journalStore = useJournalStore();
   const journal = journalStore.journal;
@@ -15327,7 +15001,7 @@ function Planner() {
     openEdit: isOwnView ? openEditById : null,
     openCreate: isOwnView ? openCreate : null
   };
-  const APP_VERSION = "v10.13.6";
+  const APP_VERSION = "v10.13.8";
   function phoneStepDay(delta) {
     setPhoneSlide(delta > 0 ? "next" : "prev");
     const i = phoneDay + delta;
@@ -15516,7 +15190,7 @@ return /*#__PURE__*/React.createElement("div", {
   }), /*#__PURE__*/React.createElement(PlanSwitcher, {
     importRef, importedViews, activeViewId, setActiveViewId, userName,
     showViewDropdown, setShowViewDropdown, setShowStartFreshConfirm,
-    setShowAIConnection, viewDropdownRef, activeView, isOwnView, exportData,
+    viewDropdownRef, activeView, isOwnView, exportData,
     openNamePrompt, removeImportedView
   })), (viewMode === "calendar" ? /*#__PURE__*/React.createElement(CalendarView, {
     ...calendarProps,
@@ -15607,7 +15281,7 @@ return /*#__PURE__*/React.createElement("div", {
       removeGoal, closeSidebar, saveCats, deleteCat, addCatFromSuggestion,
       handleRowDragStart, handleRowDragOver, handleRowDrop, resetRowDrag
     }),
-    ideaPanelCatId, setDraggingIdea, setShowAIConnection, journalStore,
+    ideaPanelCatId, setDraggingIdea, journalStore,
     newEntryId, sidebarOpen, sidebarTab, reflectPinId, lastIdeaCatId, dates,
     todayStr, activeView, isOwnView, seasonsStore, seasonBusy, seasonError,
     setOpenSeasonId, seasonCue, displayCats, externalItemDrag, ideasStore,
@@ -15616,7 +15290,7 @@ return /*#__PURE__*/React.createElement("div", {
     closeSidebar, openPillarsSidebar, reflectOnDraggedItem, handlePanelDrop,
     weekStart, selectedPillar, setPillarFocus, openSettingsSidebar,
     settingsPanel: /*#__PURE__*/React.createElement(SettingsPanel, {
-      userName, openNamePrompt, exportData, setShowAIConnection,
+      userName, openNamePrompt, exportData,
       setShowStartFreshConfirm, onClose: closeSidebar
     })
   }), openSeasonId && seasonsStore.get(openSeasonId) && /*#__PURE__*/React.createElement(SeasonReading, {
@@ -15642,8 +15316,6 @@ return /*#__PURE__*/React.createElement("div", {
     onPillarTarget: (id, v) => saveGoals({ ...goals, [id]: v }),
     onPillarRename: (id, name) => saveCats(pillarOps.rename(cats, id, name)),
     onRegenerate: opts => runSeasonReading(openSeasonId, opts)
-  }), showAIConnection && /*#__PURE__*/React.createElement(AIConnectionDialog, {
-    onClose: () => setShowAIConnection(false)
   }), showStartFreshConfirm && /*#__PURE__*/React.createElement(StartFreshDialog, {
     onClose: () => setShowStartFreshConfirm(false),
     onConfirm: startFresh
@@ -15754,7 +15426,7 @@ function AuthGate() {
     try {
       await cloud.start(user);
       migrateTendStorage();
-      migrateAIToAccount();
+      purgeLegacyCredentials();
       setPhase("ready");
     } catch (err) {
       console.warn(err);
