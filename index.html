@@ -4,6 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>I Love Mondays</title>
+  <!-- Home-screen install: "Add to home screen" in Chrome opens the app
+       full-screen with this icon. The three files sit beside index.html. -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="theme-color" content="#FAF4E8">
   <script src="https://cdn.jsdelivr.net/npm/firebase@12.19.0/firebase-app-compat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/firebase@12.19.0/firebase-auth-compat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/firebase@12.19.0/firebase-firestore-compat.js"></script>
@@ -322,6 +328,11 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     @media (prefers-reduced-motion: reduce) { .ilm-slide-next, .ilm-slide-prev { animation: none; } }
     /* On a phone, dialogs rise from the bottom as a sheet, within thumb reach,
        instead of floating in the middle of the screen. */
+    @media (max-height: 499px) {
+      .ilm-preview-note { display: none !important; }
+      .ilm-sheet-overlay { padding: 8px !important; }
+      .ilm-sheet { max-height: calc(100dvh - 16px); overflow-y: auto; }
+    }
     @media (max-width: 499px) {
       .ilm-sheet-overlay { align-items: flex-end !important; padding: 0 !important; }
       /* The preview note would sit on the tray; the More panel says it instead. */
@@ -1925,6 +1936,13 @@ const CAL_HOUR_END = 21;
 const CAL_HOUR_PX_DESKTOP = 38;
 const CAL_HOUR_PX_PHONE = 54;
 let CAL_HOUR_PX = CAL_HOUR_PX_DESKTOP;
+const CAL_HOUR_PX_PHONE_WIDE = 44;
+// On a phone an event's title wraps onto as many lines as its block has room
+// for, breaking between words (or hyphenating a word too long for its column)
+// rather than being cut off mid-word, and the time is left to the axis beside
+// it. Set by the Planner as it renders, like CAL_HOUR_PX.
+let CAL_WRAP_TITLES = false;
+let CAL_TIGHT_LANES = false;
 const CAL_DEFAULT_DURATION = 60;
 const CAL_MIN_DURATION = 15;
 const TIME_STEP_MIN = 15;
@@ -2530,6 +2548,18 @@ function accentBar(accent, radius = TILE_RADIUS) {
   const blocks = accent && accent.blocks;
   if (!blocks || !blocks.length) return null;
   const done = accent.isDone;
+  // "top" is the phone's slim strip across the head of a tile: a narrow
+  // column has no width to spare for a side band.
+  const topStrip = accent.layout === "top";
+  if (topStrip) {
+    const ws0 = accent.weights || blocks.map(() => 1);
+    return /*#__PURE__*/React.createElement("span", {
+      style: { position: "absolute", left: 0, right: 0, top: 0, height: accent.bandH || 5, display: "flex",
+        borderTopLeftRadius: Math.max(radius - 1.5, 0), borderTopRightRadius: Math.max(radius - 1.5, 0), overflow: "hidden", pointerEvents: "none" }
+    }, blocks.map((b, i) => /*#__PURE__*/React.createElement("i", {
+      key: i, style: { flex: `${ws0[i] || 1} 1 0`, background: done ? b.deep : b.mid }
+    })));
+  }
   const bottom = accent.layout === "bottom";
   const GROUT = "rgba(253,249,240,0.6)";
   const r = Math.max(radius - 1.5, 0);
@@ -4914,8 +4944,17 @@ function CalendarEventTile({
   const isHoveredThis = hoveredKey === itemKey;
   const isNudgeThis = isPastOrToday && nudgeItem && nudgeItem.ds === ds && nudgeItem.catId === it.cat.id && nudgeItem.entryId === it.id;
   const isBeingDraggedSched = isOwnView && dragItem && dragItem.ds === ds && dragItem.entryId === it.id;
-  const showTime = it.numCols === 1 && plainOf(it.text).length <= 22;
-  const accent = pillarAccent(it.allCats, it.isDone, null, height >= 52 ? "bottom" : "left", height, it.id);
+  const showTime = !CAL_WRAP_TITLES && it.numCols === 1 && plainOf(it.text).length <= 22;
+  const accent0 = pillarAccent(it.allCats, it.isDone, null, CAL_WRAP_TITLES ? "bottom" : height >= 52 ? "bottom" : "left", height, it.id);
+  // On a phone a tile drops the desktop's wide text indent, and any further
+  // pillars show as a slim strip across the top rather than a band down the
+  // side, so a narrow column keeps its width for the title.
+  const accent = CAL_WRAP_TITLES
+    ? { ...accent0, layout: "top", bandH: 5, style: { ...accent0.style, paddingLeft: 5, paddingTop: accent0.blocks ? 5 : 1, paddingBottom: 0 } }
+    : accent0;
+  // Sideways, side-by-side events are too narrow for a tick as well as a
+  // title; tapping one opens it, and Done is there.
+  const tightLane = CAL_TIGHT_LANES && it.numCols > 1;
   const nameColor = accent.text;
   return /*#__PURE__*/React.createElement("div", {
     key: itemKey,
@@ -4966,7 +5005,7 @@ function CalendarEventTile({
       height,
       border: `${accent.borderW || DONE_BORDER_W}px solid ${accent.outline}`,
       borderRadius: TILE_RADIUS,
-      padding: "0 6px",
+      padding: CAL_WRAP_TITLES ? "0 3px" : "0 6px",
       ...accent.style,
       fontSize: 12,
       fontWeight: 400,
@@ -4986,12 +5025,29 @@ function CalendarEventTile({
       position: "relative",
       display: "flex",
       flexDirection: "row",
-      alignItems: "center",
+      alignItems: CAL_WRAP_TITLES ? "flex-start" : "center",
+      paddingTop: CAL_WRAP_TITLES ? 3 : 0,
       gap: 5,
       minWidth: 0
     }
   }, /*#__PURE__*/React.createElement("span", {
-    style: {
+    lang: "en",
+    style: CAL_WRAP_TITLES ? {
+      display: "-webkit-box",
+      WebkitBoxOrient: "vertical",
+      WebkitLineClamp: Math.max(1, Math.floor((height - 10) / 14)),
+      overflow: "hidden",
+      whiteSpace: "normal",
+      overflowWrap: "normal",
+      wordBreak: "normal",
+      hyphens: "auto",
+      WebkitHyphens: "auto",
+      fontSize: it.numCols > 1 ? 11 : 12,
+      lineHeight: "14px",
+      flex: 1,
+      minWidth: 0,
+      color: nameColor
+    } : {
       overflow: "hidden",
       textOverflow: "ellipsis",
       whiteSpace: "nowrap",
@@ -5007,7 +5063,7 @@ function CalendarEventTile({
       flexShrink: 0,
       whiteSpace: "nowrap"
     }
-  }, timeLabel), isPastOrToday && onToggleDone && isOwnView && /*#__PURE__*/React.createElement("button", {
+  }, timeLabel), isPastOrToday && onToggleDone && isOwnView && !tightLane && /*#__PURE__*/React.createElement("button", {
     "data-done-toggle": `${ds}::${it.id}`,
     "data-tap": "1",
     onClick: e => {
@@ -5848,9 +5904,10 @@ function CalendarView({
     return { hour, minute: quarter * 15 };
   }
   // One column per date: seven on the desktop, one in the phone's day planner.
-  // `compact` is the phone: no frame, no day headers (the strip of days above
-  // already says which day this is), and the untimed row stays pinned while
-  // the hours scroll beneath it.
+  // `compact` is the phone: no frame, and the headings and untimed row pinned
+  // while the hours scroll. "day" (upright) also drops the day headings — the
+  // strip of days above already says which day this is; "week" (sideways)
+  // keeps them.
   const colTemplate = `${CAL_LABEL_W}px repeat(${dates.length},1fr)`;
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: compact ? { background: "#fff" } : {
@@ -5860,17 +5917,34 @@ function CalendarView({
       overflow: "hidden",
       marginBottom: 18
     }
-  }, toolbar, !compact && /*#__PURE__*/React.createElement("div", {
+  }, toolbar, /*#__PURE__*/React.createElement("div", {
+    // On a phone the day headings (sideways) and the untimed row stay pinned
+    // while the hours scroll beneath them.
+    style: compact ? { position: "sticky", top: 0, zIndex: 6 } : { display: "contents" }
+  }, compact !== "day" && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: colTemplate,
-      borderBottom: `1px solid ${FAINT}`
+      borderBottom: `1px solid ${FAINT}`,
+      background: "#fff"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       background: PLAN_BG
     }
-  }), dates.map((d, i) => /*#__PURE__*/React.createElement(CalendarDayHeader, {
+  }), compact === "week" ? dates.map((d, i) => {
+    // Sideways on a phone height is scarce, so each day is one short line.
+    const isToday = ymd(d) === todayStr;
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: { height: 30, display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+        borderLeft: `1px solid ${WASH}`, borderBottom: isToday ? `2px solid ${ACCENT}` : "2px solid transparent" }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: { fontSize: 10.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: isToday ? ACCENT : INK_3 }
+    }, DAY_ABB[i]), /*#__PURE__*/React.createElement("span", {
+      style: { fontSize: 14, fontWeight: isToday ? 700 : 500, color: isToday ? INK : INK_2 }
+    }, d.getDate()));
+  }) : dates.map((d, i) => /*#__PURE__*/React.createElement(CalendarDayHeader, {
     key: i, d, i, todayStr, isOwnView, onReflectDay, onOpenDayReflection,
     dayReflectionDates, hoveredDayHeader, setHoveredDayHeader
   }))), /*#__PURE__*/React.createElement("div", {
@@ -5878,8 +5952,7 @@ function CalendarView({
       display: "grid",
       gridTemplateColumns: colTemplate,
       borderBottom: `1px solid ${HAIRLINE}`,
-      background: "#FBFAF9",
-      ...(compact ? { position: "sticky", top: 0, zIndex: 6 } : null)
+      background: "#FBFAF9"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -5896,7 +5969,7 @@ function CalendarView({
     isDimmed, openEdit, openCreate, dragItem, setDragItem, hoveredKey,
     setHoveredKey, dragOverSlot, setDragOverSlot, itemActions, itemsForDay,
     handleDropUnscheduled
-  }))), /*#__PURE__*/React.createElement("div", {
+  })))), /*#__PURE__*/React.createElement("div", {
     style: {
       position: "relative"
     }
@@ -13631,9 +13704,14 @@ function PhoneHeader({ dates, dayIdx, offset, todayStr, isOwnView, onWeek, onTod
   },
     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
       arrow(-1, "Previous week"),
-      React.createElement("span", {
+      // In Pillars the week is the page, so its dates are the heading itself,
+      // between the arrows that change it. In Schedule the day is the heading
+      // and the week is a small label above it.
+      viewMode === "calendar" ? React.createElement("span", {
         style: { fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: INK_3, minWidth: 0 }
-      }, weekLabelShort(dates)),
+      }, weekLabelShort(dates)) : React.createElement("h1", {
+        style: { margin: 0, minWidth: 0, fontFamily: "'Fraunces',Georgia,serif", fontSize: 21, fontWeight: 600, lineHeight: 1.1, color: INK, whiteSpace: "nowrap" }
+      }, `${MONTHS[dates[0].getMonth()]} ${dates[0].getDate()}\u2013${dates[0].getMonth() === dates[6].getMonth() ? "" : MONTHS[dates[6].getMonth()].slice(0, 3) + " "}${dates[6].getDate()}`),
       arrow(1, "Next week"),
       awayFromToday && React.createElement("button", {
         onClick: onToday,
@@ -13644,9 +13722,9 @@ function PhoneHeader({ dates, dayIdx, offset, todayStr, isOwnView, onWeek, onTod
       isOwnView && onAdd && React.createElement("button", {
         onClick: onAdd,
         "aria-label": viewMode === "calendar" ? `Add to ${PHONE_WEEKDAY[dayIdx]}` : "Add an activity",
-        style: { width: 44, height: 44, border: "none", borderRadius: 4, background: ACCENT, color: "#fff",
-          display: "flex", alignItems: "center", justifyContent: "center", padding: 0, cursor: "pointer" }
-      }, React.createElement(PhoneIcon, { name: "plus", size: 22, color: "#fff" }))),
+        style: { position: "relative", width: 34, height: 34, border: "none", borderRadius: 4, background: ACCENT, color: "#fff",
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 0, cursor: "pointer", flexShrink: 0 }
+      }, hitArea("-5px"), React.createElement(PhoneIcon, { name: "plus", size: 18, color: "#fff" }))),
     viewMode === "calendar" && React.createElement(React.Fragment, null,
       React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 8, margin: "6px 0 10px" } },
         React.createElement("h1", {
@@ -13708,23 +13786,50 @@ function PhoneTray({ viewMode, setViewMode, onReflect, onMore, reflectActive, mo
     btn("reflect", "Reflect", onReflect, reflectActive, REFLECT),
     btn("more", "More", onMore, moreActive, ACCENT));
 }
+// The rail's own icons, for the phone's More panel, so each place looks the
+// same on every screen. (Same drawings as SidebarRail; kept beside the phone
+// code so the rail can stay as it is.)
+function RailGlyph({ name, size = 21 }) {
+  if (name === "settings") return React.createElement(SettingsGear, { size });
+  if (name === "ideas") return React.createElement("svg", {
+    width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+    strokeWidth: "1.75", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true"
+  }, React.createElement("path", { d: "M9 18h6" }), React.createElement("path", { d: "M10 22h4" }),
+    React.createElement("path", { d: "M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17H8v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7z" }));
+  if (name === "seasons") return React.createElement("svg", { width: size - 2, height: size - 2, viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true" },
+    React.createElement("rect", { x: "3", y: "3", width: "8.5", height: "8.5", rx: "1.5" }),
+    React.createElement("rect", { x: "12.5", y: "3", width: "8.5", height: "8.5", rx: "1.5", opacity: "0.42" }),
+    React.createElement("rect", { x: "3", y: "12.5", width: "8.5", height: "8.5", rx: "1.5", opacity: "0.42" }),
+    React.createElement("rect", { x: "12.5", y: "12.5", width: "8.5", height: "8.5", rx: "1.5", opacity: "0.2" }));
+  return React.createElement("svg", { width: size - 2, height: size - 2, viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true" },
+    React.createElement("rect", { x: "3", y: "9", width: "4.5", height: "12" }),
+    React.createElement("rect", { x: "9.75", y: "4", width: "4.5", height: "17" }),
+    React.createElement("rect", { x: "16.5", y: "13", width: "4.5", height: "8" }));
+}
+// More: a Plan pulldown (whose plan, and sharing), then the rail's places as
+// plain rows — icon and name, nothing else, the way the rail looks on the
+// desktop minus the hover.
 function PhoneMoreSheet({ onClose, isOwnView, activeViewId, importedViews, setActiveViewId, userName,
   openImport, exportData, openIdeas, openSeasons, openPillars, openSettings, version }) {
-  const row = (label, sub, onClick, extra) => React.createElement("button", {
-    key: label,
-    onClick: () => { onClose(); onClick(); },
-    style: { width: "100%", minHeight: 56, display: "flex", alignItems: "center", gap: 12, padding: "6px 4px",
+  const [planOpen, setPlanOpen] = useState(false);
+  const active = importedViews.find(v => v.id === activeViewId);
+  const currentName = active ? splitViewName(active.name).who : "My Plan";
+  const go = fn => () => { onClose(); fn(); };
+  const planItem = (key, label, sub, selected, onClick) => React.createElement("button", {
+    key, role: "option", "aria-selected": selected ? "true" : "false", onClick,
+    style: { width: "100%", minHeight: 48, display: "flex", alignItems: "center", gap: 10, padding: "6px 12px",
+      border: "none", borderTop: `1px solid ${WASH}`, background: "transparent", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }
+  }, React.createElement("span", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 } },
+      React.createElement("span", { style: { fontSize: 15, fontWeight: selected ? 700 : 500, color: INK } }, label),
+      sub && React.createElement("span", { style: { fontSize: 12, color: INK_3 } }, sub)),
+    selected && React.createElement(PhoneIcon, { name: "check", size: 18, color: INK }));
+  const placeRow = (glyph, label, onClick) => React.createElement("button", {
+    key: label, onClick: go(onClick),
+    style: { width: "100%", height: 52, display: "flex", alignItems: "center", gap: 14, padding: "0 4px",
       border: "none", borderBottom: `1px solid ${HAIRLINE}`, background: "transparent", cursor: "pointer",
-      fontFamily: "inherit", textAlign: "left" }
-  },
-    React.createElement("span", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 } },
-      React.createElement("span", { style: { fontSize: 16, fontWeight: 600, color: INK } }, label),
-      sub && React.createElement("span", { style: { fontSize: 12.5, color: INK_2 } }, sub)),
-    extra || React.createElement(PhoneIcon, { name: "chev", size: 18, color: MUTED }));
-  const label = text => React.createElement("div", {
-    style: { fontSize: 9, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3, padding: "14px 4px 2px" }
-  }, text);
-  const tick = React.createElement(PhoneIcon, { name: "check", size: 18, color: INK });
+      fontFamily: "inherit", fontSize: 16, fontWeight: 500, color: INK, textAlign: "left" }
+  }, React.createElement("span", { style: { width: 24, display: "flex", justifyContent: "center", color: INK_3 } },
+      React.createElement(RailGlyph, { name: glyph })), label);
   return React.createElement("div", {
     onClick: onClose,
     style: { position: "fixed", inset: 0, zIndex: 400, background: "rgba(28,25,23,0.38)", display: "flex", alignItems: "flex-end" }
@@ -13732,38 +13837,208 @@ function PhoneMoreSheet({ onClose, isOwnView, activeViewId, importedViews, setAc
     "aria-label": "More",
     onClick: e => e.stopPropagation(),
     style: { width: "100%", maxHeight: "88dvh", overflowY: "auto", background: PAPER, borderRadius: "14px 14px 0 0",
-      padding: "8px 18px max(16px, env(safe-area-inset-bottom))", boxShadow: "0 -8px 30px rgba(28,25,23,0.18)" }
+      padding: "8px 18px max(14px, env(safe-area-inset-bottom))", boxShadow: "0 -8px 30px rgba(28,25,23,0.18)" }
   },
-    React.createElement("div", { style: { width: 40, height: 4, borderRadius: 2, background: "#CFC5B0", margin: "2px auto 4px" } }),
-    label("Plans"),
-    row("My Plan", userName || null, () => setActiveViewId("own"), activeViewId === "own" ? tick : React.createElement("span")),
-    importedViews.map(v => {
-      const { who, when } = splitViewName(v.name);
-      return row(who, when ? "Shared " + when : null, () => setActiveViewId(v.id), activeViewId === v.id ? tick : React.createElement("span"));
-    }),
-    row("Open a shared plan\u2026", null, openImport),
-    isOwnView && row("Share my plan\u2026", null, exportData),
-    label("Your week"),
-    row("Ideas", "Your idea bench, by pillar", openIdeas),
-    isOwnView && row("Seasons", "Zooming out, from weeks to your life", openSeasons),
-    isOwnView && row("My pillars", "Names, colours, why and how often", openPillars),
-    row("Settings", "Your name, backups, account", openSettings),
-    React.createElement("div", { style: { textAlign: "center", padding: "14px 0 2px" } },
+    React.createElement("div", { style: { width: 40, height: 4, borderRadius: 2, background: "#CFC5B0", margin: "2px auto 10px" } }),
+    React.createElement("div", { style: { paddingBottom: 10, borderBottom: `1px solid ${HAIRLINE}` } },
+      React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+        React.createElement("span", {
+          id: "phone-plan-label",
+          style: { fontSize: 9, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3 }
+        }, "Plan"),
+        React.createElement("button", {
+          "aria-labelledby": "phone-plan-label", "aria-haspopup": "listbox", "aria-expanded": planOpen ? "true" : "false",
+          onClick: () => setPlanOpen(o => !o),
+          style: { flex: 1, height: 44, display: "flex", alignItems: "center", gap: 8, padding: "0 12px",
+            border: `1px solid ${HAIRLINE}`, borderRadius: planOpen ? "4px 4px 0 0" : 4, background: "#FFFDF8", cursor: "pointer",
+            fontFamily: "inherit", fontSize: 15, fontWeight: 600, color: INK, textAlign: "left" }
+        }, React.createElement("span", { style: { flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, currentName),
+          React.createElement("svg", {
+            width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: INK_3, strokeWidth: 2, strokeLinecap: "round",
+            "aria-hidden": "true", style: { transform: planOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s ease" }
+          }, React.createElement("path", { d: "M6 9l6 6 6-6" })))),
+      planOpen && React.createElement("div", {
+        role: "listbox", "aria-labelledby": "phone-plan-label",
+        style: { marginLeft: 37, border: `1px solid ${HAIRLINE}`, borderTop: "none", borderRadius: "0 0 4px 4px", background: "#FFFDF8", overflow: "hidden" }
+      },
+        planItem("own", "My Plan", userName || null, activeViewId === "own", go(() => setActiveViewId("own"))),
+        importedViews.map(v => {
+          const { who, when } = splitViewName(v.name);
+          return planItem(v.id, who, when ? "Shared " + when : null, activeViewId === v.id, go(() => setActiveViewId(v.id)));
+        }),
+        React.createElement("button", {
+          onClick: go(openImport),
+          style: { width: "100%", height: 46, padding: "0 12px", border: "none", borderTop: `1px solid ${HAIRLINE}`, background: "transparent",
+            cursor: "pointer", fontFamily: "inherit", fontSize: 14, color: INK_2, textAlign: "left" }
+        }, "Open a shared plan\u2026"),
+        isOwnView && React.createElement("button", {
+          onClick: go(exportData),
+          style: { width: "100%", height: 46, padding: "0 12px", border: "none", borderTop: `1px solid ${WASH}`, background: "transparent",
+            cursor: "pointer", fontFamily: "inherit", fontSize: 14, color: INK_2, textAlign: "left" }
+        }, "Share my plan\u2026"))),
+    placeRow("ideas", "Ideas", openIdeas),
+    isOwnView && placeRow("seasons", "Seasons", openSeasons),
+    isOwnView && placeRow("pillars", "My pillars", openPillars),
+    placeRow("settings", "Settings", openSettings),
+    React.createElement("div", { style: { textAlign: "center", padding: "12px 0 2px" } },
       React.createElement("span", { style: { fontSize: 10, color: FAINT, letterSpacing: "0.08em", fontWeight: 500 } }, version),
       !cloud.user && React.createElement("div", { style: { fontSize: 10, color: INK_3, marginTop: 4 } }, "Preview on this computer \u00b7 not synced"),
       React.createElement(AccountLine, null))));
 }
-function PhonePillarsSoon({ onBack }) {
-  return React.createElement("div", { style: { padding: "40px 28px", textAlign: "center", color: INK_2, fontSize: 14, lineHeight: 1.6 } },
+// Pillars, upright: one pillar at a time, chosen from the tabs across the top,
+// with its ring and the week's days running down the screen. Each day shows
+// that pillar's activities and a + to place one there — "I want five, I have
+// three, where do the other two go?" answered by the open days. A swipe across
+// the days moves to the next or previous week; the tabs choose the pillar.
+function stripLinks(text) {
+  return String(text || "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+}
+function PhonePillars({ dates, todayStr, cats, pillarId, setPillarId, getItemsForDay, getGoal, daysDone, daysPlanned,
+  isOwnView, openEditById, toggleDoneById, openCreate, daySwipe }) {
+  const cat = cats.find(c => c.id === pillarId) || cats[0];
+  if (!cat) return React.createElement("div", { style: { padding: 28, color: INK_2, fontSize: 14 } }, "No pillars yet. Add some under More \u2192 My pillars.");
+  const deep = catDeep(cat);
+  const goal = getGoal(cat.id);
+  const done = daysDone(cat.id);
+  const planned = daysPlanned(cat.id);
+  const left = goal != null ? Math.max(0, Math.round(goal) - done - planned) : 0;
+  const thisWeek = dates.some(d => ymd(d) === todayStr);
+  const doneInk = hexLuma(deep) > 150 ? catInk(cat) : TILE_DONE_TEXT;
+  const tabs = React.createElement("div", {
+    role: "tablist", "aria-label": "Pillar",
+    style: { display: "flex", alignItems: "center", gap: 5, overflowX: "auto", padding: "4px 14px 14px", flexShrink: 0, scrollbarWidth: "none" }
+  }, cats.map(c => {
+    const on = c.id === cat.id;
+    const cd = catDeep(c);
+    // The same tiles, at the same size, as the pillar picker atop the
+    // sidebars (Reflect, Ideas): solid pillar colour at rest, the chosen one
+    // filled and wide enough for its name. Each reaches past its edges to a
+    // finger-sized target without drawing any bigger.
+    return on ? React.createElement("button", {
+      key: c.id, role: "tab", "aria-selected": "true",
+      style: { position: "relative", height: 22, padding: "0 8px", flexShrink: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 9.5,
+        fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", ...pillarChip(c, true), borderRadius: CHIP_RADIUS }
+    }, hitArea("-11px -2.5px"), c.label) : React.createElement("button", {
+      key: c.id, role: "tab", "aria-selected": "false", "aria-label": c.label, title: c.label,
+      onClick: () => setPillarId(c.id),
+      style: { position: "relative", width: 22, height: 22, flexShrink: 0, borderRadius: CHIP_RADIUS, cursor: "pointer", padding: 0,
+        background: isTend(c.id) ? TILE_PLAN_FILL : c.color, border: `${PLAN_BORDER_W}px solid ${c.color}` }
+    }, hitArea("-11px -2.5px"));
+  }));
+  const status = goal != null
+    ? React.createElement(React.Fragment, null, `${done} done \u00b7 ${planned} planned`,
+        left > 0 && React.createElement(React.Fragment, null, " \u00b7 ",
+          React.createElement("span", { style: { color: ACCENT, fontWeight: 600 } }, `${left} more to place`)))
+    : `${done} ${done === 1 ? "day" : "days"} with something done`;
+  const summary = React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderTop: `1px solid ${HAIRLINE}`,
+      borderBottom: `1px solid ${HAIRLINE}`, flexShrink: 0 }
+  }, goal != null && React.createElement(PillarRing, {
+      goal, done, planned, color: cat.color, deep, size: 52, title: cat.label,
+      celebrateKey: isOwnView && thisWeek ? `${ymd(dates[0])}|${cat.id}` : null
+    }),
+    React.createElement("div", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 } },
+      React.createElement("span", { style: { fontFamily: "'Fraunces',Georgia,serif", fontSize: 21, fontWeight: 600, color: INK } }, cat.label),
+      React.createElement("span", { style: { fontSize: 12.5, color: INK_2 } }, status)));
+  const rows = dates.map((d, i) => {
+    const ds = ymd(d);
+    const isToday = ds === todayStr;
+    const items = getItemsForDay(ds).filter(it => (it.allPillars || []).includes(cat.id));
+    return React.createElement("div", {
+      key: ds,
+      style: { display: "flex", alignItems: "center", gap: 10, minHeight: 56, padding: "6px 14px",
+        borderBottom: `1px solid ${HAIRLINE}`, background: isToday ? "#FFFDF8" : "transparent" }
+    }, React.createElement("div", { style: { width: 40, flexShrink: 0, display: "flex", flexDirection: "column", gap: 1 } },
+        React.createElement("span", {
+          style: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: isToday ? ACCENT : INK_3 }
+        }, DAY_ABB[i]),
+        React.createElement("span", { style: { fontSize: 15, fontWeight: isToday ? 700 : 500, color: isToday ? INK : INK_2 } }, d.getDate())),
+      React.createElement("div", { style: { flex: 1, minWidth: 0, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" } },
+        items.map(it => {
+          const [hh, mm] = it.sched ? it.sched.start.split(":").map(Number) : [null, null];
+          return React.createElement("div", {
+            key: it.id,
+            style: { position: "relative", display: "flex", alignItems: "center", gap: 2, maxWidth: "100%", minHeight: 42,
+              borderRadius: 4, boxSizing: "border-box", overflow: "hidden",
+              background: it.isDone ? deep : TILE_PLAN_FILL, border: `1.5px solid ${it.isDone ? deep : cat.color}` }
+          }, React.createElement("button", {
+              onClick: () => isOwnView && openEditById(ds, it.id),
+              style: { minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", gap: 1, padding: "4px 2px 4px 10px",
+                border: "none", background: "transparent", cursor: isOwnView ? "pointer" : "default", fontFamily: "inherit", textAlign: "left" }
+            }, React.createElement("span", {
+                style: { fontSize: 13.5, fontWeight: 600, lineHeight: 1.2, color: it.isDone ? doneInk : INK,
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }
+              }, stripLinks(it.text)),
+              hh != null && React.createElement("span", {
+                style: { fontSize: 11, color: it.isDone ? doneInk : INK_3, opacity: it.isDone ? 0.85 : 1 }
+              }, fmtTime(hh, mm))),
+            isOwnView && React.createElement("button", {
+              onClick: () => toggleDoneById(ds, cat.id, it.id),
+              "aria-label": (it.isDone ? "Mark not done: " : "Mark done: ") + stripLinks(it.text),
+              style: { position: "relative", width: 34, alignSelf: "stretch", border: "none", background: "transparent",
+                display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 }
+            }, React.createElement("span", {
+              style: { width: 18, height: 18, borderRadius: "50%", boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center",
+                border: `2px solid ${it.isDone ? doneInk : "#CFC5B0"}`, background: it.isDone ? "transparent" : "#FFFDF8" }
+            }, it.isDone && React.createElement(PhoneIcon, { name: "check", size: 11, color: doneInk }))));
+        }),
+        isOwnView && React.createElement("button", {
+          onClick: () => openCreate(ds, null, null, [cat.id]),
+          "aria-label": `Add ${cat.label} on ${PHONE_WEEKDAY[i]}`,
+          style: { position: "relative", width: 32, height: 32, flexShrink: 0, borderRadius: 4, border: "1.5px dashed #CFC5B0",
+            background: "transparent", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, cursor: "pointer", color: ACCENT }
+        }, hitArea("-6px"), React.createElement(PhoneIcon, { name: "plus", size: 16, color: ACCENT }))));
+  });
+  return React.createElement("div", { style: { display: "flex", flexDirection: "column", flex: 1, minHeight: 0 } },
+    tabs, summary,
+    React.createElement("div", { ...daySwipe, style: { flex: 1, minHeight: 0, overflowY: "auto" } }, rows));
+}
+// The sideways rail: the View switch stacked upright (Schedule over
+// Pillars), then Reflect and More. It sits on the right like the desktop's
+// rail, with room left at the edge for the phone's own Back and Home.
+function PhoneWeekArrow({ dir, onWeek }) {
+  return React.createElement("button", {
+    onClick: () => onWeek(dir),
+    "aria-label": dir < 0 ? "Previous week" : "Next week",
+    style: { position: "relative", width: 30, height: 30, border: `1px solid ${HAIRLINE}`, borderRadius: 4, background: "#FFFDF8",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 0, color: INK_2, cursor: "pointer", flexShrink: 0 }
+  }, hitArea("-7px"), React.createElement(PhoneIcon, { name: dir < 0 ? "left" : "right", size: 15 }));
+}
+function PhoneRail({ viewMode, setViewMode, onReflect, onMore, reflectActive, moreActive }) {
+  const seg = (mode, label) => {
+    const on = viewMode === mode;
+    return React.createElement("button", {
+      key: mode,
+      onClick: () => setViewMode(mode),
+      "aria-pressed": on ? "true" : "false",
+      style: { position: "relative", height: 30, border: "none", borderRadius: 6, cursor: "pointer", fontFamily: "inherit",
+        fontSize: 11, fontWeight: on ? 700 : 600, color: on ? INK : INK_3, background: on ? "#fff" : "transparent",
+        boxShadow: on ? "0 1px 3px rgba(28,25,23,0.14)" : "none", padding: 0 }
+    }, hitArea("-6px"), label);
+  };
+  const btn = (name, label, onClick, active, activeColor) => React.createElement("button", {
+    onClick,
+    "aria-label": label,
+    style: { height: 54, border: "none", background: "transparent", cursor: "pointer", fontFamily: "inherit",
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, padding: 0,
+      fontSize: 10.5, fontWeight: active ? 700 : 500, color: active ? activeColor : INK_3 }
+  }, React.createElement(PhoneIcon, { name, size: 20 }), label);
+  return React.createElement("nav", {
+    style: { flexShrink: 0, width: 72, boxSizing: "content-box", display: "flex", flexDirection: "column", gap: 6,
+      padding: "70px 0 8px", paddingRight: "calc(env(safe-area-inset-right) + 6px)",
+      background: "#FFFDF8", borderLeft: `1px solid ${HAIRLINE}` }
+  },
+    React.createElement("span", {
+      id: "phone-rail-view-label",
+      style: { fontSize: 9, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3, textAlign: "center" }
+    }, "View"),
     React.createElement("div", {
-      style: { fontFamily: "'Fraunces',Georgia,serif", fontSize: 22, fontWeight: 600, color: INK, marginBottom: 8 }
-    }, "Pillars, on the phone"),
-    "This view is being built next. Until then, the Pillars view is on your tablet or computer.",
-    React.createElement("div", null, React.createElement("button", {
-      onClick: onBack,
-      style: { marginTop: 18, height: 44, padding: "0 18px", border: `1.5px solid ${ACCENT}`, borderRadius: 4,
-        background: "transparent", color: ACCENT, fontFamily: "inherit", fontSize: 14, fontWeight: 600, cursor: "pointer" }
-    }, "Back to Schedule")));
+      role: "group", "aria-labelledby": "phone-rail-view-label",
+      style: { display: "flex", flexDirection: "column", gap: 2, padding: 3, margin: "0 5px", borderRadius: 8, background: HAIRLINE }
+    }, seg("calendar", "Schedule"), seg("pillar", "Pillars")),
+    React.createElement("span", { style: { height: 1, background: HAIRLINE, margin: "6px 12px" } }),
+    btn("reflect", "Reflect", onReflect, reflectActive, REFLECT),
+    btn("more", "More", onMore, moreActive, ACCENT));
 }
 function Planner() {
   const narrowScreen = useNarrowScreen();
@@ -13773,10 +14048,15 @@ function Planner() {
   // desktop's seven columns allow: short events get room for their titles.
   // CAL_HOUR_PX is read by every calendar component as it renders, and this is
   // the only place that sets it.
-  CAL_HOUR_PX = phonePortrait ? CAL_HOUR_PX_PHONE : CAL_HOUR_PX_DESKTOP;
+  const phoneLandscape = phoneMode === "landscape";
+  CAL_HOUR_PX = phonePortrait ? CAL_HOUR_PX_PHONE : phoneLandscape ? CAL_HOUR_PX_PHONE_WIDE : CAL_HOUR_PX_DESKTOP;
+  CAL_WRAP_TITLES = !!phoneMode;
+  CAL_TIGHT_LANES = phoneLandscape;
   const [phoneDay, setPhoneDay] = useState(() => (new Date().getDay() + 6) % 7);
   const [phoneSlide, setPhoneSlide] = useState(null);
   const [phoneMoreOpen, setPhoneMoreOpen] = useState(false);
+  const [phonePillarId, setPhonePillarId] = useState(null);
+  const phoneWeekSwipeRef = useRef(null);
   const phoneDaySwipeRef = useRef(null);
   const phoneStripSwipeRef = useRef(null);
   const phoneScrollRef = useRef(null);
@@ -13876,14 +14156,15 @@ function Planner() {
   const isFutureWeek = ymd(dates[0]) > todayStr;
   // Opening a day on the phone lands near the hours that matter: an hour before
   // now on today, the morning on any other day.
-  const phoneDayKey = phonePortrait ? ymd(dates[phoneDay]) : null;
+  const phoneDayKey = phonePortrait ? ymd(dates[phoneDay]) : phoneMode === "landscape" ? "week-" + ymd(dates[0]) : null;
+  const showsToday = phonePortrait ? phoneDayKey === todayStr : dates.some(d => ymd(d) === todayStr);
   useEffect(() => {
-    if (!phonePortrait || viewMode !== "calendar") return;
+    if (!phoneMode || viewMode !== "calendar") return;
     const el = phoneScrollRef.current;
     if (!el) return;
-    const target = phoneDayKey === todayStr ? Math.max(CAL_HOUR_START, new Date().getHours() - 1) : 8;
+    const target = showsToday ? Math.max(CAL_HOUR_START, new Date().getHours() - 1) : 8;
     el.scrollTop = Math.max(0, (target - CAL_HOUR_START) * CAL_HOUR_PX);
-  }, [phonePortrait, phoneDayKey, viewMode]);
+  }, [phoneMode, phoneDayKey, viewMode]);
   // An imported view is read-only; the user's own week is the editable one.
   // Resolved here because the entry store needs to know before any write.
   const activeView = importedViews.find(v => v.id === activeViewId) || null;
@@ -15041,7 +15322,7 @@ function Planner() {
     openEdit: isOwnView ? openEditById : null,
     openCreate: isOwnView ? openCreate : null
   };
-  const APP_VERSION = "v10.12.4";
+  const APP_VERSION = "v10.13.5";
   function phoneStepDay(delta) {
     setPhoneSlide(delta > 0 ? "next" : "prev");
     const i = phoneDay + delta;
@@ -15060,22 +15341,33 @@ function Planner() {
     onWeek: phoneStepWeek,
     onToday: () => { setPhoneSlide(null); setOffset(0); setPhoneDay((new Date().getDay() + 6) % 7); },
     onPickDay: i => { setPhoneSlide(i > phoneDay ? "next" : i < phoneDay ? "prev" : null); setPhoneDay(i); },
-    onAdd: isOwnView ? () => openCreate(ymd(dates[phoneDay]), null, null) : null,
+    onAdd: isOwnView ? () => viewMode === "calendar"
+      ? openCreate(ymd(dates[phoneDay]), null, null)
+      : openCreate(ymd(dates.find(d => ymd(d) === todayStr) || dates[0]), null, null, [phonePillarId || displayCats[0]?.id].filter(Boolean)) : null,
     stripSwipe: swipeHandlers(phoneStripSwipeRef, () => phoneStepWeek(1), () => phoneStepWeek(-1))
-  }), /*#__PURE__*/React.createElement("div", {
+  }), viewMode === "calendar" ? /*#__PURE__*/React.createElement("div", {
     ref: phoneScrollRef,
     ...swipeHandlers(phoneDaySwipeRef, () => phoneStepDay(1), () => phoneStepDay(-1)),
     style: { flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", borderTop: `1px solid ${HAIRLINE}`, background: "#fff" }
-  }, viewMode === "calendar" ? /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     key: phoneDayKey,
     className: phoneSlide ? "ilm-slide-" + phoneSlide : undefined
   }, /*#__PURE__*/React.createElement(CalendarView, {
     ...calendarProps,
     dates: [dates[phoneDay]],
     toolbar: null,
-    compact: true
-  })) : /*#__PURE__*/React.createElement(PhonePillarsSoon, {
-    onBack: () => setViewMode("calendar")
+    compact: "day"
+  }))) : /*#__PURE__*/React.createElement("div", {
+    key: "pillars-" + ymd(dates[0]),
+    className: phoneSlide ? "ilm-slide-" + phoneSlide : undefined,
+    style: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }
+  }, /*#__PURE__*/React.createElement(PhonePillars, {
+    dates, todayStr, cats: displayCats,
+    pillarId: phonePillarId || displayCats[0]?.id,
+    setPillarId: setPhonePillarId,
+    getItemsForDay, getGoal, daysDone, daysPlanned, isOwnView,
+    openEditById, toggleDoneById, openCreate,
+    daySwipe: swipeHandlers(phoneWeekSwipeRef, () => phoneStepWeek(1), () => phoneStepWeek(-1))
   })), /*#__PURE__*/React.createElement(PhoneTray, {
     viewMode, setViewMode,
     reflectActive: sidebarOpen && sidebarTab === 'reflections',
@@ -15103,8 +15395,87 @@ function Planner() {
       e.target.value = "";
     }
   }));
+  // Sideways: the whole week as a time grid, with the View switch, Reflect and
+  // More in a rail down the right. A swipe across the grid changes the week.
+  // Pillars sideways is the upright Pillars view given the wider screen.
+  const phoneWeekTitle = `${MONTHS[dates[0].getMonth()]} ${dates[0].getDate()}\u2013${dates[0].getMonth() === dates[6].getMonth() ? "" : MONTHS[dates[6].getMonth()].slice(0, 3) + " "}${dates[6].getDate()}`;
+  const phoneWideLayout = phoneLandscape && /*#__PURE__*/React.createElement("div", {
+    style: { height: "100dvh", display: "flex", flexDirection: "row", overflow: "hidden",
+      paddingLeft: "env(safe-area-inset-left)" }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 8, padding: "6px 12px" }
+  }, /*#__PURE__*/React.createElement(PhoneWeekArrow, { dir: -1, onWeek: phoneStepWeek }),
+    /*#__PURE__*/React.createElement("h1", {
+      style: { margin: 0, fontFamily: "'Fraunces',Georgia,serif", fontSize: 19, fontWeight: 600, color: INK, whiteSpace: "nowrap" }
+    }, phoneWeekTitle),
+    /*#__PURE__*/React.createElement(PhoneWeekArrow, { dir: 1, onWeek: phoneStepWeek }),
+    offset !== 0 && /*#__PURE__*/React.createElement("button", {
+      onClick: () => { setPhoneSlide(null); setOffset(0); },
+      style: { position: "relative", border: "none", background: "none", padding: "0 4px", height: 30, fontFamily: "inherit",
+        fontSize: 13, fontWeight: 600, color: ACCENT, cursor: "pointer" }
+    }, hitArea("-6px"), "Today"),
+    /*#__PURE__*/React.createElement("span", { style: { flex: 1 } }),
+    isOwnView && /*#__PURE__*/React.createElement("button", {
+      onClick: () => openCreate(ymd(dates.find(d => ymd(d) === todayStr) || dates[0]), null, null,
+        viewMode === "calendar" ? undefined : [phonePillarId || displayCats[0]?.id].filter(Boolean)),
+      "aria-label": "Add an activity",
+      style: { position: "relative", width: 30, height: 30, border: "none", borderRadius: 4, background: ACCENT,
+        display: "flex", alignItems: "center", justifyContent: "center", padding: 0, cursor: "pointer" }
+    }, hitArea("-7px"), /*#__PURE__*/React.createElement(PhoneIcon, { name: "plus", size: 16, color: "#fff" }))),
+  viewMode === "calendar" ? /*#__PURE__*/React.createElement("div", {
+    ref: phoneScrollRef,
+    ...swipeHandlers(phoneWeekSwipeRef, () => phoneStepWeek(1), () => phoneStepWeek(-1)),
+    style: { flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", borderTop: `1px solid ${HAIRLINE}`, background: "#fff" }
+  }, /*#__PURE__*/React.createElement("div", {
+    key: phoneDayKey,
+    className: phoneSlide ? "ilm-slide-" + phoneSlide : undefined
+  }, /*#__PURE__*/React.createElement(CalendarView, {
+    ...calendarProps,
+    dates: dates,
+    toolbar: null,
+    compact: "week"
+  }))) : /*#__PURE__*/React.createElement("div", {
+    key: "pillars-" + ymd(dates[0]),
+    className: phoneSlide ? "ilm-slide-" + phoneSlide : undefined,
+    style: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }
+  }, /*#__PURE__*/React.createElement(PhonePillars, {
+    dates, todayStr, cats: displayCats,
+    pillarId: phonePillarId || displayCats[0]?.id,
+    setPillarId: setPhonePillarId,
+    getItemsForDay, getGoal, daysDone, daysPlanned, isOwnView,
+    openEditById, toggleDoneById, openCreate,
+    daySwipe: swipeHandlers(phoneWeekSwipeRef, () => phoneStepWeek(1), () => phoneStepWeek(-1))
+  }))), /*#__PURE__*/React.createElement(PhoneRail, {
+    viewMode, setViewMode,
+    reflectActive: sidebarOpen && sidebarTab === 'reflections',
+    moreActive: phoneMoreOpen,
+    onReflect: () => openReflectionSidebar(),
+    onMore: () => setPhoneMoreOpen(true)
+  }), phoneMoreOpen && /*#__PURE__*/React.createElement(PhoneMoreSheet, {
+    onClose: () => setPhoneMoreOpen(false),
+    isOwnView, activeViewId, importedViews, setActiveViewId, userName,
+    openImport: () => importRef.current && importRef.current.click(),
+    exportData,
+    openIdeas: () => openIdeasSidebar(lastIdeaCatId || displayCats[0]?.id),
+    openSeasons: openSeasonsSidebar,
+    openPillars: () => openPillarsSidebar(),
+    openSettings: openSettingsSidebar,
+    version: APP_VERSION
+  }), /*#__PURE__*/React.createElement("input", {
+    ref: importRef,
+    type: "file",
+    accept: ".json",
+    style: { display: "none" },
+    onChange: e => {
+      const f = e.target.files?.[0];
+      if (f) importData(f);
+      e.target.value = "";
+    }
+  }));
 return /*#__PURE__*/React.createElement("div", {
-    style: phonePortrait ? { fontFamily: "'DM Sans',sans-serif", background: PAPER, color: INK } : {
+    style: phoneMode ? { fontFamily: "'DM Sans',sans-serif", background: PAPER, color: INK } : {
       fontFamily: "'DM Sans',sans-serif",
       background: PAPER,
       backgroundImage: "radial-gradient(ellipse 1100px 380px at 50% -60px, rgba(255,214,160,0.32), rgba(250,244,232,0) 72%)",
@@ -15117,7 +15488,7 @@ return /*#__PURE__*/React.createElement("div", {
       color: INK,
       transition: "padding-right 0.2s ease"
     }
-  }, phonePortrait ? phoneLayout : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PlannerTitle, {
+  }, phonePortrait ? phoneLayout : phoneLandscape ? phoneWideLayout : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PlannerTitle, {
     activeView, isOwnView
   }), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -15223,7 +15594,7 @@ return /*#__PURE__*/React.createElement("div", {
       fontWeight: 500
     }
   }, APP_VERSION), /*#__PURE__*/React.createElement(AccountLine, null))), /*#__PURE__*/React.createElement(PlannerSidebar, {
-    phone: phonePortrait,
+    phone: !!phoneMode,
     pillarsPanel: /*#__PURE__*/React.createElement(PillarsPanel, {
       cats, catTyping, setCatTyping, catCustomInput, setCatCustomInput,
       suggestionNames, setSuggestionNames, pillarEditId, setPillarEditId,
