@@ -5,9 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>I Love Mondays</title>
   <!-- Home-screen install: "Add to home screen" in Chrome opens the app
-       full-screen with this icon. The three files sit beside index.html. -->
+       full-screen with the "Mon" rising-heart icon (icon-192.png, icon-512.png,
+       apple-touch-icon.png). Browser tabs use the simplified heart-sun mark
+       (favicon.svg, with PNG fallbacks), since "Mon" is unreadable at 16px.
+       All of these sit beside index.html. -->
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <meta name="theme-color" content="#FAF4E8">
   <script src="https://cdn.jsdelivr.net/npm/firebase@12.19.0/firebase-app-compat.js"></script>
@@ -15322,7 +15327,7 @@ function Planner() {
     openEdit: isOwnView ? openEditById : null,
     openCreate: isOwnView ? openCreate : null
   };
-  const APP_VERSION = "v10.13.5";
+  const APP_VERSION = "v10.13.6";
   function phoneStepDay(delta) {
     setPhoneSlide(delta > 0 ? "next" : "prev");
     const i = phoneDay + delta;
