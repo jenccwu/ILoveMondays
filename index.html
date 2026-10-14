@@ -448,12 +448,18 @@ const K = {
   // stays out of exports.
   celebrated: "planner:celebrated",
   userName: "planner:userName",
-  importedViews: "planner:importedViews",
+  // Plans opened from someone else's shared file. Sharing is gone; whatever
+  // an older version stored here is purged on load.
+  legacyImportedViews: "planner:importedViews",
   week: ds => WEEK_PREFIX + ds,
   // The model the AI features use, when one has been chosen in the Seasons
   // panel. Syncs, so every device uses the same one. Shares the `planner:ai`
   // prefix, which keeps it out of exports: a backup shouldn't change the model.
   aiModel: "planner:aiModelName",
+  // Which pillar palette is showing (Settings > Look). Syncs, so every device
+  // paints the same week; absent means the default. Kept out of backups, like
+  // the model: a restore shouldn't repaint the planner.
+  palette: "planner:palette",
   // Written by the old AI connection dialog (provider, pasted key, model).
   // Nothing reads them any more. Purged on load.
   legacyAiProvider: "planner:aiProvider",
@@ -883,6 +889,9 @@ const ON_DARK = TILE_DONE_TEXT; // text and icons on ink or accent fills
 // Where a season's own words are gathered. A step deeper than WASH so the
 // block reads as a container without taking any colour of its own.
 const EVIDENCE_WASH = "#EDE5D6";
+// The calendar's untimed "make time" tray: a half-step below the grid surface,
+// enough to read as its own band without the weight of a recessed panel.
+const TRAY_FILL = "#F8F2E7";
 // The reflections family. Journalling is the one place the app leaves its
 // paper palette, and it does so on purpose — a reflection is a different kind
 // of act from a plan, and reads as one.
@@ -893,7 +902,11 @@ const REFLECT_BG = "#EDE9FE";
 const PLAN_TEXT = "#5B5246";
 const PLAN_MUTED = MUTED;
 const PLAN_RING = "#CFC5B0";
-// Dusty Haze, in the order pillars claim it.
+// Sorbet, in the order pillars claim it. (v10.13.19: Dusty Haze with the dust
+// taken out. Every colour keeps its OKLCH lightness — so the cream text on a
+// done tile keeps its contrast and nothing gets brighter on the eye — and its
+// chroma rises about 75%, with the rose leaning coral and the gold leaning
+// marigold. Lively without glare: the energy comes from clean hue, not light.)
 //
 // The sequence matters more than the set: a new pillar takes the first colour
 // nobody is using, so position 1 is what a single-pillar week looks like and
@@ -903,41 +916,157 @@ const PLAN_RING = "#CFC5B0";
 // than three neighbouring blues. Chroma second — the eight saturated hues come
 // first and the four low-chroma earth tones wait at the end, which is why a
 // normal week never has to look muddy.
-const COLOR_PALETTE = [
-  // 1 — terracotta rose: the warm signature, and the highest chroma here
-  { color: "#D2907F", bg: "#FCEAE5", deep: "#B86D5B", ink: "#774539" },
-  // 2 — dusty teal: nearly opposite the rose, so two pillars read as a pair
-  { color: "#6F9AA7", bg: "#DFF1F7", deep: "#497988", ink: "#1E4A56" },
-  // 3 — sage: completes a triad
-  { color: "#9CAF83", bg: "#EAF0E3", deep: "#7C9360", ink: "#526141" },
-  // 4 — dusty violet: completes a tetrad, four evenly spaced hues
-  { color: "#9F8CB2", bg: "#F2EBF8", deep: "#7F6996", ink: "#4C3F5A" },
-  // 5 — dusty pink: fills the gap between violet and rose
-  { color: "#C799AA", bg: "#FBE9EF", deep: "#AC778B", ink: "#6F4E5A" },
-  // 6 — seafoam: fills between sage and teal
-  { color: "#82B5A8", bg: "#E0F2ED", deep: "#589788", ink: "#3D635A" },
-  // 7 — periwinkle: fills between teal and violet
-  { color: "#92A1BE", bg: "#E8EEFB", deep: "#6F82A3", ink: "#45536C" },
-  // 8 — gold: brightened by chroma rather than lightness. Going paler is what
-  //     costs legibility; going richer keeps the cream text on it. At 3.0:1 it
-  //     is the lowest-contrast done tile in the set, a hair under sage.
-  { color: "#D1AE61", bg: "#F8EFDC", deep: "#B68A2B", ink: "#6E5314" },
-  // --- past here the chroma drops, but not the lightness. Nine or more. ---
-  // 9 — burnt orange: the one vivid warm, sitting between rose and gold
-  { color: "#D69971", bg: "#FBE9DC", deep: "#B26634", ink: "#6B3B1B" },
-  // 10 — slate blue
-  { color: "#7593A8", bg: "#E3F0FA", deep: "#4C7996", ink: "#2A4A5E" },
-  // 11 — mauve
-  { color: "#9C8195", bg: "#F8EAF3", deep: "#8C6680", ink: "#57394E" },
-  // 12 — grey-green
-  { color: "#7B9683", bg: "#E4F1E7", deep: "#587E64", ink: "#36503F" }
+// Every palette the planner can wear. All four paint the same twelve hues —
+// the set tuned for Dusty Haze — and differ only in lightness and strength,
+// so a mood never costs distinctness and a pillar stays in the same colour
+// family whichever palette is on. Blossom is airy (its pale done tiles take
+// dark text via the light-deep rule), Dusty Haze muted, Sorbet clean, and
+// Harvest deep and warm. Sorbet is the default.
+//
+// The claim order is what a new pillar gets. The first six are the six most
+// different families — coral, blue, gold, violet, green, aqua — so pillars
+// 1–6 are distinguishable at a glance; the second six fill the gaps between
+// them (pink, teal, orange, grey-green, periwinkle, mauve). A pillar keeps
+// its slot when the palette changes, and a person can choose any slot for
+// any pillar in My pillars.
+const PALETTES = [
+  { id: "blossom", name: "Blossom", note: "Airy and soft", colors: [
+    // 1 — coral
+    { color: "#FFAE9A", bg: "#FFF2EE", deep: "#F99279", ink: "#62291C" },
+    // 2 — slate
+    { color: "#95B4D4", bg: "#EEF6FF", deep: "#76A4D5", ink: "#233F5C" },
+    // 3 — gold
+    { color: "#FBCE67", bg: "#FEF4DF", deep: "#F2B52B", ink: "#503900" },
+    // 4 — violet
+    { color: "#C4ABDD", bg: "#F9F2FF", deep: "#B092D0", ink: "#453555" },
+    // 5 — sage
+    { color: "#BCD49B", bg: "#F1F8EA", deep: "#A5C57E", ink: "#33431E" },
+    // 6 — seafoam
+    { color: "#93DBDA", bg: "#E5FAFA", deep: "#6AC9C9", ink: "#0E4646" },
+    // 7 — pink
+    { color: "#F3B7CD", bg: "#FFF1F6", deep: "#E79EBA", ink: "#55303E" },
+    // 8 — teal
+    { color: "#86BECF", bg: "#E7F9FF", deep: "#66A9BE", ink: "#054553" },
+    // 9 — orange
+    { color: "#FEBA8E", bg: "#FFF3EA", deep: "#F38B45", ink: "#622B00" },
+    // 10 — grey-green
+    { color: "#97BAA2", bg: "#EBFAEE", deep: "#7AAF8B", ink: "#264531" },
+    // 11 — periwinkle
+    { color: "#B0C4E9", bg: "#F1F5FF", deep: "#96B0DD", ink: "#2D3D5A" },
+    // 12 — mauve
+    { color: "#C3A0BA", bg: "#FFF0FA", deep: "#C28EB2", ink: "#532F49" }
+  ] },
+  { id: "dusty", name: "Dusty Haze", note: "Muted and calm", colors: [
+    // 1 — coral
+    { color: "#D2907F", bg: "#FCEAE5", deep: "#B86D5B", ink: "#774539" },
+    // 2 — slate
+    { color: "#7593A8", bg: "#E3F0FA", deep: "#4C7996", ink: "#2A4A5E" },
+    // 3 — gold
+    { color: "#D1AE61", bg: "#F8EFDC", deep: "#B68A2B", ink: "#6E5314" },
+    // 4 — violet
+    { color: "#9F8CB2", bg: "#F2EBF8", deep: "#7F6996", ink: "#4C3F5A" },
+    // 5 — sage
+    { color: "#9CAF83", bg: "#EAF0E3", deep: "#7C9360", ink: "#526141" },
+    // 6 — seafoam
+    { color: "#7EB4B4", bg: "#DFF2F1", deep: "#529696", ink: "#3A6362" },
+    // 7 — pink
+    { color: "#C799AA", bg: "#FBE9EF", deep: "#AC778B", ink: "#6F4E5A" },
+    // 8 — teal
+    { color: "#6F9AA7", bg: "#DFF1F7", deep: "#497988", ink: "#1E4A56" },
+    // 9 — orange
+    { color: "#D69971", bg: "#FBE9DC", deep: "#B26634", ink: "#6B3B1B" },
+    // 10 — grey-green
+    { color: "#7B9683", bg: "#E4F1E7", deep: "#587E64", ink: "#36503F" },
+    // 11 — periwinkle
+    { color: "#92A1BE", bg: "#E8EEFB", deep: "#6F82A3", ink: "#45536C" },
+    // 12 — mauve
+    { color: "#9C8195", bg: "#F8EAF3", deep: "#8C6680", ink: "#57394E" }
+  ] },
+  { id: "sorbet", name: "Sorbet", note: "Clean and lively", colors: [
+    // 1 — coral
+    { color: "#F57B69", bg: "#FFE9E5", deep: "#D35748", ink: "#803E35" },
+    // 2 — slate
+    { color: "#6A94C0", bg: "#E2F0FF", deep: "#3D77AF", ink: "#294868" },
+    // 3 — gold
+    { color: "#E7A824", bg: "#FFEDD1", deep: "#C18404", ink: "#745002" },
+    // 4 — violet
+    { color: "#A885C8", bg: "#F4E9FE", deep: "#8660A9", ink: "#4E3D60" },
+    // 5 — sage
+    { color: "#95B665", bg: "#E8F2DD", deep: "#749840", ink: "#4F6338" },
+    // 6 — seafoam
+    { color: "#4FBEBE", bg: "#D6F5F4", deep: "#029C9D", ink: "#2C6464" },
+    // 7 — pink
+    { color: "#DD8EAD", bg: "#FFE7EF", deep: "#BE6A8C", ink: "#754A5A" },
+    // 8 — teal
+    { color: "#4CA1B8", bg: "#D6F3FD", deep: "#1E7D96", ink: "#034C5B" },
+    // 9 — orange
+    { color: "#F08E47", bg: "#FFE8D7", deep: "#C05C00", ink: "#743500" },
+    // 10 — grey-green
+    { color: "#6C9D7C", bg: "#DFF3E3", deep: "#42845A", ink: "#2F523C" },
+    // 11 — periwinkle
+    { color: "#88A2D5", bg: "#E6EEFF", deep: "#6381B6", ink: "#415373" },
+    // 12 — mauve
+    { color: "#AA7B9E", bg: "#FEE7F6", deep: "#995C87", ink: "#5C3551" }
+  ] },
+  { id: "harvest", name: "Harvest", note: "Deep and warm", colors: [
+    // 1 — coral
+    { color: "#BA5E3F", bg: "#FFE9E2", deep: "#A03D1B", ink: "#501A07" },
+    // 2 — slate
+    { color: "#496B8F", bg: "#E3F0FF", deep: "#235483", ink: "#132F4B" },
+    // 3 — gold
+    { color: "#B48006", bg: "#FBEDD5", deep: "#926400", ink: "#3F2900" },
+    // 4 — violet
+    { color: "#7D6097", bg: "#F3EAFB", deep: "#61417E", ink: "#352644" },
+    // 5 — sage
+    { color: "#7F863D", bg: "#EEF1DF", deep: "#656D14", ink: "#2D3105" },
+    // 6 — seafoam
+    { color: "#349191", bg: "#DBF4F4", deep: "#047575", ink: "#003636" },
+    // 7 — pink
+    { color: "#AD6979", bg: "#FFE8EC", deep: "#954B5D", ink: "#452129" },
+    // 8 — teal
+    { color: "#2F7689", bg: "#DCF3FB", deep: "#01596C", ink: "#003440" },
+    // 9 — orange
+    { color: "#BE6720", bg: "#FFEADB", deep: "#8C4200", ink: "#4B2000" },
+    // 10 — grey-green
+    { color: "#4B7358", bg: "#E3F4E7", deep: "#275F3C", ink: "#163522" },
+    // 11 — periwinkle
+    { color: "#6479A3", bg: "#E7EFFF", deep: "#465F8B", ink: "#1E2D49" },
+    // 12 — mauve
+    { color: "#81556A", bg: "#FDE8F0", deep: "#753D57", ink: "#451F31" }
+  ] }
 ];
+const DEFAULT_PALETTE_ID = "sorbet";
+// The live palette everything reads. It is one array swapped in place rather
+// than a variable reassigned, so every module-level reference to it (and to
+// COLOR_PALETTE[n]) sees the change without being rewired.
+const COLOR_PALETTE = PALETTES.find(p => p.id === DEFAULT_PALETTE_ID).colors.slice();
+let appliedPaletteId = DEFAULT_PALETTE_ID;
+function storedPaletteId() {
+  const id = String(db.readRaw(K.palette) || "").trim();
+  return PALETTES.some(p => p.id === id) ? id : DEFAULT_PALETTE_ID;
+}
+// Brings the live palette in line with the stored choice. Cheap when nothing
+// changed, so it runs at the top of every colour migration: whatever path
+// loads the pillars, they are painted from the palette that is actually chosen.
+function applyStoredPalette() {
+  const id = storedPaletteId();
+  if (id === appliedPaletteId) return;
+  const p = PALETTES.find(x => x.id === id);
+  COLOR_PALETTE.splice(0, COLOR_PALETTE.length, ...p.colors);
+  appliedPaletteId = id;
+}
 // Which slot a pillar belongs to, however old the stored colour is.
 function slotForColor(color) {
   const hex = String(color || "").toUpperCase();
-  const i = COLOR_PALETTE.findIndex(
-    s => s.color.toUpperCase() === hex || s.deep.toUpperCase() === hex);
+  const match = s => s.color.toUpperCase() === hex || s.deep.toUpperCase() === hex;
+  const i = COLOR_PALETTE.findIndex(match);
   if (i >= 0) return i;
+  // A colour from another palette keeps its slot, which is what lets a
+  // pillar find its way back when the palette is switched.
+  for (const p of PALETTES) {
+    const j = p.colors.findIndex(match);
+    if (j >= 0) return j;
+  }
   const legacy = LEGACY_COLOR_MAP[hex];
   return legacy == null ? null : legacy;
 }
@@ -1145,53 +1274,55 @@ function migrateTendStorage() {
 // look without the user having to re-pick colours.
 const LEGACY_COLOR_MAP = {
   // original jewel tones
-  "#2563EB": 6, "#EA580C": 0, "#DB2777": 4, "#D97706": 5,
-  REFLECT: 3, "#059669": 1, "#4D7C0F": 2, "#0891B2": 1,
-  "#C026D3": 3, "#B45309": 7, "#0E7490": 1, REFLECT_DEEP: 3,
+  "#2563EB": 10, "#EA580C": 0, "#DB2777": 6, "#D97706": 5,
+  REFLECT: 3, "#059669": 7, "#4D7C0F": 4, "#0891B2": 7,
+  "#C026D3": 3, "#B45309": 2, "#0E7490": 7, REFLECT_DEEP: 3,
   // the muted set some pillars were hand-tuned to before the mosaic redesign
-  "#5C7A50": 2, "#4A8C8C": 1, "#C4714B": 0, "#A06070": 4,
-  "#B07D2A": 5, "#8B6BAE": 3, "#6A8C7A": 7,
+  "#5C7A50": 4, "#4A8C8C": 7, "#C4714B": 0, "#A06070": 6,
+  "#B07D2A": 5, "#8B6BAE": 3, "#6A8C7A": 2,
   // the v8.4.6 watercolour set, in case pillars were re-saved under it
-  "#D4704A": 0, "#55A8A2": 1, "#E2B23A": 5, "#C77BA4": 4,
-  "#7396BB": 6, "#93A96B": 2, "#9179C2": 3, "#A88463": 7,
-  "#5EA3C4": 6, "#DD9350": 10, "#5F9463": 9, "#A96BB0": 3,
+  "#D4704A": 0, "#55A8A2": 7, "#E2B23A": 5, "#C77BA4": 6,
+  "#7396BB": 10, "#93A96B": 4, "#9179C2": 3, "#A88463": 2,
+  "#5EA3C4": 10, "#DD9350": 11, "#5F9463": 1, "#A96BB0": 3,
   // the v8.4.7–v8.4.11 sets
-  "#E28168": 0, "#3C929E": 1, "#DAB45B": 5, "#EA91B1": 4,
-  "#7CA1CC": 6, "#99AE65": 2, "#9788C6": 3, "#A68268": 7,
-  "#CE6B77": 10, "#628B64": 9,
-  "#398F9E": 1, "#6AC3AE": 5, "#9BB164": 2, "#E1C160": 7,
+  "#E28168": 0, "#3C929E": 7, "#DAB45B": 5, "#EA91B1": 6,
+  "#7CA1CC": 10, "#99AE65": 4, "#9788C6": 3, "#A68268": 2,
+  "#CE6B77": 11, "#628B64": 1,
+  "#398F9E": 7, "#6AC3AE": 5, "#9BB164": 4, "#E1C160": 2,
   // Groovy Spring, retired in v8.5.5. A pillar carries its slot number, so
   // these only matter for anything old enough to be identified by hex alone —
   // but slotForColor no longer walks a live palette that contains them.
-  "#E98B64": 0, "#31939F": 1, "#6CB48E": 5, "#DD7DA4": 4,
-  "#8DA7D4": 6, "#9BAE5C": 2, "#A185BF": 3, "#CEAA43": 7,
-  "#9E698D": 10, "#3C80A8": 9, "#9C704E": 8, "#508561": 11,
-  "#CF653A": 0, "#007080": 1, "#3D966B": 5, "#BF5081": 4,
-  "#6A8ABD": 6, "#7A9231": 2, "#7F5FA3": 3, "#B08900": 7,
-  "#7C406A": 10, "#005C88": 9, "#774B23": 8, "#20603A": 11,
+  "#E98B64": 0, "#31939F": 7, "#6CB48E": 5, "#DD7DA4": 6,
+  "#8DA7D4": 10, "#9BAE5C": 4, "#A185BF": 3, "#CEAA43": 2,
+  "#9E698D": 11, "#3C80A8": 1, "#9C704E": 8, "#508561": 9,
+  "#CF653A": 0, "#007080": 7, "#3D966B": 5, "#BF5081": 6,
+  "#6A8ABD": 10, "#7A9231": 4, "#7F5FA3": 3, "#B08900": 2,
+  "#7C406A": 11, "#005C88": 1, "#774B23": 8, "#20603A": 9,
   // Hazy Sunrise, retired in v8.5.7.
-  "#D5907B": 0, "#E9A692": 0, "#77A8B7": 1, "#97C2D0": 1,
-  "#66AE99": 5, "#86C9B4": 5, "#C88DA5": 4, "#E1A9BF": 4,
-  "#8EA0C2": 6, "#A9BADA": 6, "#92AB74": 2, "#AEC691": 2,
-  "#A690BC": 3, "#C0ABD5": 3, "#C5A86A": 7, "#E1C387": 7,
-  "#9B8291": 10, "#B59BAB": 10, "#728CA0": 9, "#8BA6BA": 9,
-  "#9D8573": 8, "#B79E8C": 8, "#76917D": 11, "#8FAB96": 11,
+  "#D5907B": 0, "#E9A692": 0, "#77A8B7": 7, "#97C2D0": 7,
+  "#66AE99": 5, "#86C9B4": 5, "#C88DA5": 6, "#E1A9BF": 6,
+  "#8EA0C2": 10, "#A9BADA": 10, "#92AB74": 4, "#AEC691": 4,
+  "#A690BC": 3, "#C0ABD5": 3, "#C5A86A": 2, "#E1C387": 2,
+  "#9B8291": 11, "#B59BAB": 11, "#728CA0": 1, "#8BA6BA": 1,
+  "#9D8573": 8, "#B79E8C": 8, "#76917D": 9, "#8FAB96": 9,
   // Dusty Haze values retired in v8.5.7 — the old gold, the four dark tail
   // colours, and brown, which left the palette entirely. Brown maps to the
   // burnt orange that replaced it: same corner of the wheel, more life in it.
-  "#C7A364": 7, "#AA823B": 7,
-  "#657C8E": 9, "#355970": 9,
-  "#8B7382": 10, "#6A4B60": 10,
-  "#697F6F": 11, "#3E5B47": 11,
+  "#C7A364": 2, "#AA823B": 2,
+  "#657C8E": 1, "#355970": 1,
+  "#8B7382": 11, "#6A4B60": 11,
+  "#697F6F": 9, "#3E5B47": 9,
   "#8B7666": 8, "#694F3B": 8,
+  // Dusty Haze, retired in v10.13.19 for Sorbet — same slots, cleaner hue.
+  "#D2907F": 0, "#B86D5B": 0, "#6F9AA7": 7, "#497988": 7, "#9CAF83": 4, "#7C9360": 4, "#9F8CB2": 3, "#7F6996": 3, "#C799AA": 6, "#AC778B": 6, "#82B5A8": 5, "#589788": 5, "#92A1BE": 10, "#6F82A3": 10, "#D1AE61": 2, "#B68A2B": 2, "#D69971": 8, "#B26634": 8, "#7593A8": 1, "#4C7996": 1, "#9C8195": 11, "#8C6680": 11, "#7B9683": 9, "#587E64": 9,
+  // Retired in v10.13.22: Citrus and Caribbean, and the earlier Sorbet and
+  // Dusty Haze aqua and blue. Slots are in the v10.13.22 claim order.
+  "#5BBFA9": 5, "#1C9E88": 5, "#6097BC": 1, "#267BAA": 1, "#82B5A8": 5, "#589788": 5, "#F67F2F": 0, "#C65F0F": 0, "#8DBD42": 7, "#6A9712": 7, "#ED737B": 4, "#C44C57": 4, "#D1B324": 3, "#A78E11": 3, "#4DBC92": 6, "#12976E": 6, "#D9553F": 5, "#B02B15": 5, "#EEA230": 10, "#C17F10": 10, "#4E9A52": 2, "#25762E": 2, "#E380A9": 8, "#BC5B84": 8, "#549AC9": 1, "#2B76A4": 1, "#40B1B7": 11, "#048B91": 11, "#E37547": 9, "#BB4E1C": 9, "#06B7BF": 0, "#038F95": 0, "#F0A133": 7, "#C57D00": 7, "#D35182": 4, "#AB265F": 4, "#92BF4F": 3, "#6E991E": 3, "#E97362": 6, "#C14C3D": 6, "#297AB6": 5, "#05578A": 5, "#8F5FB0": 10, "#6C3C8B": 10, "#DABC43": 2, "#B3960D": 2, "#E26272": 8, "#BA3A4F": 8, "#389560": 1, "#03703F": 1, "#64BEAD": 11, "#3A9888": 11, "#E9833D": 9, "#BF5F0E": 9,
   "#A79C88": null
 };
 function paletteEntryFor(color) {
-  const hit = COLOR_PALETTE.find(p => p.color.toLowerCase() === String(color || "").toLowerCase());
-  if (hit) return hit;
-  const idx = LEGACY_COLOR_MAP[String(color || "").toUpperCase()];
-  if (idx != null) return COLOR_PALETTE[idx];
-  return null;
+  const slot = slotForColor(color);
+  return slot == null ? null : COLOR_PALETTE[slot];
 }
 // Fills in deep/ink for any pillar that predates them, and swaps legacy hexes
 // for their palette equivalents.
@@ -1203,6 +1334,7 @@ function paletteEntryFor(color) {
 // mean a pillar silently changing colour every time the sequence moves.
 function migrateCatColors(cats) {
   if (!Array.isArray(cats)) return cats;
+  applyStoredPalette();
   return cats.map(c => {
     if (!c || typeof c !== "object") return c;
     // Tend is deliberately outside the palette. Re-deriving it from a slot
@@ -1789,7 +1921,7 @@ const PILLAR_LIBRARY = [{
   id: "connect",
   label: "Connect",
   slot: 4,
-  ...COLOR_PALETTE[4]
+  ...COLOR_PALETTE[1]
 },
 {
   // id stays distinct from the old "contribute" so both can carry their own
@@ -1798,19 +1930,19 @@ const PILLAR_LIBRARY = [{
   id: "serve",
   label: "Serve",
   slot: 1,
-  ...COLOR_PALETTE[1]
+  ...COLOR_PALETTE[2]
 },
 {
   id: "expand",
   label: "Expand",
   slot: 2,
-  ...COLOR_PALETTE[2]
+  ...COLOR_PALETTE[3]
 },
 {
   id: "rest",
   label: "Rest",
   slot: 3,
-  ...COLOR_PALETTE[3]
+  ...COLOR_PALETTE[4]
 },
 // Offered, not started with. Slots here don't matter: a pillar added from a
 // suggestion takes the next free colour rather than the one recorded below.
@@ -2102,35 +2234,6 @@ function loadWeekEntries(rawJson, doneBlob, timesBlob) {
 }
 function packWeekEntries(weekEntries) {
   return { __v: 2, entries: weekEntries };
-}
-// Upgrades an imported (shared) view that was saved in the old derived
-// shape — { allData, done, entryPillars, entryIds } — into the entry model,
-// so imported views and the user's own week share one code path. Uses
-// entryIds to collapse an entry that appears under several pillars back
-// into a single entry, and entryPillars to restore its full tag list.
-// Views imported from v8.2 on already carry `entries` and skip this.
-function entriesFromLegacyView(view) {
-  const out = {};
-  let counter = 0;
-  Object.entries(view?.allData || view?.weeks || {}).forEach(([ds, byCat]) => {
-    Object.entries(byCat || {}).forEach(([catId, val]) => {
-      if (!hasEntry(val)) return;
-      val.split("\n").filter(l => l.trim()).forEach((text, lineIdx) => {
-        const id = view?.entryIds?.[ds]?.[catId]?.[lineIdx] || genEntryId();
-        out[ds] = out[ds] || {};
-        if (out[ds][id]) return;
-        out[ds][id] = {
-          id,
-          text,
-          pillars: view?.entryPillars?.[ds]?.[catId]?.[lineIdx] || [catId],
-          done: !!(view?.done?.[ds]?.[catId] || []).includes(lineIdx),
-          sched: null,
-          order: counter++
-        };
-      });
-    });
-  });
-  return out;
 }
 // --- Recurring events ------------------------------------------------------
 //
@@ -3989,7 +4092,7 @@ function SciencePage({
     label: "Accountability",
     headline: "Telling someone else about your goal dramatically increases your chances of following through.",
     body: "Research from the Association for Talent Development found that stating a goal to another person raises completion probability from roughly 10% to 65%. A specific accountability check-in raises it further. The mechanism is social commitment: once witnessed, a goal carries reputational stakes. It doesn't require a formal structure — even knowing that someone you respect can see your plan creates a continuous, low-friction signal.",
-    connection: "The Export & Share feature exists for this reason. Sharing your weekly plan with one person you trust is one of the highest-leverage things you can do to actually follow through.",
+    connection: "A planned week gives you something specific to tell. Sharing what's in it with one person you trust is one of the highest-leverage things you can do to actually follow through.",
     bar: "Tell someone",
     barLabel: "Sharing your plan with one person who cares roughly doubles your follow-through rate. A scheduled check-in — even a quick one — doubles it again.",
     chips: [{
@@ -5547,8 +5650,7 @@ function CalendarDayHeader({
     style: {
       position: "relative",
       textAlign: "center",
-      padding: "10px 4px 8px",
-      borderLeft: `1px solid ${HAIRLINE}`
+      padding: "10px 4px 8px"
     }
   }, isDayHovered && onReflectDay && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
@@ -5583,17 +5685,17 @@ function CalendarDayHeader({
       fontSize: 10,
       letterSpacing: "0.1em",
       textTransform: "uppercase",
-      color: INK_3,
+      color: isToday ? ACCENT : INK_3,
       fontWeight: 600,
       marginBottom: 4
     }
   }, DAY_ABB[i]), /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 16,
+      fontSize: 18,
       fontWeight: isToday ? 700 : 500,
       color: isToday ? ON_DARK : INK,
-      width: 28,
-      height: 28,
+      width: 32,
+      height: 32,
       borderRadius: "50%",
       background: isToday ? ACCENT : "transparent",
       display: "flex",
@@ -5896,7 +5998,7 @@ function CalendarView({
   // strip of days above already says which day this is; "week" (sideways)
   // keeps them.
   const colTemplate = `${CAL_LABEL_W}px repeat(${dates.length},1fr)`;
-  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(React.Fragment, null, toolbar, /*#__PURE__*/React.createElement("div", {
     style: compact ? { background: SURFACE } : {
       background: SURFACE,
       border: `1px solid ${HAIRLINE}`,
@@ -5904,22 +6006,20 @@ function CalendarView({
       overflow: "hidden",
       marginBottom: 18
     }
-  }, toolbar, /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     // On a phone the day headings (sideways) and the untimed row stay pinned
     // while the hours scroll beneath them.
     style: compact ? { position: "sticky", top: 0, zIndex: 6 } : { display: "contents" }
   }, compact !== "day" && /*#__PURE__*/React.createElement("div", {
+    // The day headings are the grid's axis, not one more row of cells: no
+    // column lines, and the one strong rule in the grid sits under them.
     style: {
       display: "grid",
       gridTemplateColumns: colTemplate,
-      borderBottom: `1px solid ${FAINT}`,
+      borderBottom: `1.5px solid ${INK_2}`,
       background: SURFACE
     }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      background: PLAN_BG
-    }
-  }), compact === "week" ? dates.map((d, i) => {
+  }, /*#__PURE__*/React.createElement("div", null), compact === "week" ? dates.map((d, i) => {
     // Sideways on a phone height is scarce, so each day is one short line.
     const isToday = ymd(d) === todayStr;
     return /*#__PURE__*/React.createElement("div", {
@@ -5938,19 +6038,25 @@ function CalendarView({
     style: {
       display: "grid",
       gridTemplateColumns: colTemplate,
-      borderBottom: `1px solid ${HAIRLINE}`,
-      background: PAPER
+      // A recessed tray one step deeper than the paper, and a heavier seam
+      // below it than any hour line: untimed and timed are different kinds
+      // of time, and for someone with an open week the tray is often where
+      // most of it lives.
+      borderBottom: `3px solid ${HAIRLINE}`,
+      background: TRAY_FILL
     }
   }, /*#__PURE__*/React.createElement("div", {
+    // Set exactly like the hour labels below it: the row is named, not
+    // announced.
     style: {
-      padding: "6px 6px",
       fontSize: 10,
       color: MUTED,
-      letterSpacing: "0.05em",
-      textTransform: "uppercase",
-      lineHeight: 1.3
+      textAlign: "right",
+      paddingRight: 8,
+      paddingTop: 6,
+      lineHeight: 1.25
     }
-  }, ""), dates.map((d, i) => /*#__PURE__*/React.createElement(UnscheduledDayCell, {
+  }, "make", /*#__PURE__*/React.createElement("br", null), "time"), dates.map((d, i) => /*#__PURE__*/React.createElement(UnscheduledDayCell, {
     key: i, d, i, todayStr, isOwnView, onItemDragChange, onReorderItem,
     onToggleDone, nudgeItem, onNudgeClick, canEditItems, onCreateItem,
     isDimmed, openEdit, openCreate, dragItem, setDragItem, hoveredKey,
@@ -6473,8 +6579,10 @@ function readAIConnection() {
 // Older versions offered a choice of provider, a pasted key, and a model
 // picker. None of that exists any more; whatever they stored is removed on
 // load so a credential never sits in a browser, or in an export, unused.
+// Shared plans from the retired sharing feature go the same way.
 function purgeLegacyCredentials() {
-  [K.legacyApiKey, K.legacyApiProvider, K.legacyAiProvider, K.legacyAiKey, K.legacyAiModel].forEach(k => db.remove(k));
+  [K.legacyApiKey, K.legacyApiProvider, K.legacyAiProvider, K.legacyAiKey, K.legacyAiModel,
+    K.legacyImportedViews].forEach(k => db.remove(k));
 }
 
 // ---------------------------------------------------------------------------
@@ -9433,152 +9541,61 @@ function ReflectionsPanel({
 }
 
 // ---------------------------------------------------------------------------
-// Backup / share transfer
+// Backup
 //
-// Pure conversions between the app's storage and the JSON file users export.
-// Two flavours of file, distinguished only by whether reflections are
-// included: a full backup (restore over your own data) and a share (someone
-// else opens it read-only alongside their own week).
+// Pure conversions between the app's storage and the backup file. Kept free of
+// React and of localStorage so the file format can be exercised directly,
+// because a format mistake here is silent until someone tries to restore.
 //
-// Keeping these free of React and of localStorage means the file format can
-// be exercised directly, which matters because a format mistake here is
-// silent until someone tries to restore.
+// Sharing a plan with another person used to ride on the same file. That is
+// gone; a backup is only ever restored over your own plan.
 // ---------------------------------------------------------------------------
 
-// Never goes into an export. `planner:ai` covers the chosen model (a backup
-// shouldn't change it) and the old connection keys; the two legacy names are
-// listed because old installs still hold them.
+// Never goes into a backup, and never overwritten or cleared by a restore.
+// `planner:ai` covers the chosen model (a backup shouldn't change it) and the
+// old connection keys; the legacy names are listed because old installs still
+// hold them.
 const TRANSFER_SKIP_PREFIXES = [
-  K.importedViews,
+  K.legacyImportedViews,
   K.userName,
   K.celebrated,
   "planner:ai",
+  K.palette,
   K.legacyApiKey,
   K.legacyApiProvider
 ];
+function backupKeyAllowed(k) {
+  return k.startsWith(DB_PREFIX) && !TRANSFER_SKIP_PREFIXES.some(p => k.startsWith(p));
+}
 
-// Builds the export payload from a plain { key: value } snapshot of storage.
-function buildExportPayload(snapshot, { name, includeReflections = true, now = new Date() } = {}) {
-  const out = { _meta: { exportedBy: name, exportedAt: now.toISOString() } };
+// Builds the backup from a plain { key: value } snapshot of storage.
+function buildExportPayload(snapshot, { name, now = new Date() } = {}) {
+  const out = { _meta: { exportedBy: name || "", exportedAt: now.toISOString() } };
   Object.keys(snapshot || {}).forEach(k => {
-    if (!k.startsWith(DB_PREFIX)) return;
-    if (TRANSFER_SKIP_PREFIXES.some(p => k.startsWith(p))) return;
-    if (!includeReflections && k === K.journal) return;
-    out[k] = snapshot[k];
+    if (backupKeyAllowed(k)) out[k] = snapshot[k];
   });
   return out;
 }
-
-function exportFilename(name, includeReflections, now = new Date()) {
-  const slug = (name || "planner").toLowerCase().replace(/\s+/g, "-");
-  return `planner-${slug}-${now.toISOString().slice(0, 10)}-${includeReflections ? "backup" : "share"}.json`;
+function exportFilename(now = new Date()) {
+  return `i-love-mondays-backup-${now.toISOString().slice(0, 10)}.json`;
+}
+// A file is a backup if it carries at least one planner key. Anything else
+// (a different app's JSON, an empty object) is turned away before it can
+// touch storage.
+function looksLikeBackup(obj) {
+  return !!obj && typeof obj === "object" && !Array.isArray(obj) &&
+    Object.keys(obj).some(k => backupKeyAllowed(k) && typeof obj[k] === "string");
+}
+// What a restore does to storage, as two lists, so it can be tested without
+// a browser. Every planner key the file lacks is cleared (a backup made
+// before a feature existed must not leave that feature's data behind), except
+// the protected keys above, which no backup ever carries.
+function planRestore(obj, storedKeys) {
+  const remove = storedKeys.filter(k => backupKeyAllowed(k) && !Object.prototype.hasOwnProperty.call(obj, k));
+  const write = Object.keys(obj).filter(k => backupKeyAllowed(k) && typeof obj[k] === "string");
+  return { remove, write };
 }
 
-// Merges every week in an imported file into one entries map, upgrading any
-// week still in the pre-v2 shape. Works the same whether the backup came from
-// an old or a current version of the planner.
-function collectImportedEntries(obj) {
-  const doneRaw = safeParse(obj[K.legacyDone], {});
-  const all = {};
-  Object.entries(obj || {}).forEach(([k, v]) => {
-    if (!k.startsWith(WEEK_PREFIX)) return;
-    const parsed = safeParse(v, null);
-    if (!parsed) return;
-    const weekEntries = parsed.__v === 2 && parsed.entries
-      ? parsed.entries
-      : migrateWeekToEntries(parsed, doneRaw, safeParse(obj["times:" + k], {}));
-    Object.assign(all, weekEntries);
-  });
-  return all;
-}
-
-// Turns an imported file into a read-only view the user can switch to.
-// An imported view's name carries both who and when ("Maria Chen \u00b7 Aug 6,
-// 2026"). The menu wants those as two lines, and the title wants only the
-// person, so both readings come from one place.
-function splitViewName(name) {
-  const [who, when] = String(name || "").split(" \u00b7 ");
-  return { who: who || "Friend", when: when || "" };
-}
-function initialsOf(name) {
-  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return "";
-  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
-}
-// The identity marker on a plan. With a name it's initials on a filled disc;
-// without one it's an outlined placeholder, because a filled circle with no
-// letters in it is just a decorative dot — the thing this control had before
-// and didn't need. Same footprint either way, so nothing shifts when a name
-// finally arrives.
-const PLAN_OWN_AVATAR = MUTED;
-function PlanAvatar({ size = 24, name, color = PLAN_OWN_AVATAR }) {
-  const initials = initialsOf(name);
-  const base = {
-    width: size,
-    height: size,
-    borderRadius: "50%",
-    flexShrink: 0,
-    boxSizing: "border-box",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center"
-  };
-  if (!initials) {
-    const g = Math.round(size * 0.56);
-    return /*#__PURE__*/React.createElement("div", {
-      style: { ...base, border: `1.5px solid ${NEUTRAL_OUTLINE}`, color: FAINT }
-    }, /*#__PURE__*/React.createElement("svg", {
-      width: g,
-      height: g,
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: "currentColor",
-      strokeWidth: "2.2",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"
-    }), /*#__PURE__*/React.createElement("circle", {
-      cx: "12",
-      cy: "7",
-      r: "4"
-    })));
-  }
-  return /*#__PURE__*/React.createElement("div", {
-    style: {
-      ...base,
-      background: color,
-      color: ON_DARK,
-      fontSize: Math.round(size * 0.42),
-      fontWeight: 700,
-      letterSpacing: "0.02em"
-    }
-  }, initials);
-}
-function buildImportedView(obj, { id, now = new Date() } = {}) {
-  const meta = obj._meta || {};
-  const exportedAt = meta.exportedAt ? new Date(meta.exportedAt) : now;
-  const exName = meta.exportedBy || "Friend";
-  const dateStr = `${MONTHS_S[exportedAt.getMonth()]} ${exportedAt.getDate()}, ${exportedAt.getFullYear()}`;
-  return {
-    id: id || `view_${Date.now()}`,
-    name: `${exName} · ${dateStr}`,
-    // A shared view shows the sender's set as it actually is — Tend is not
-    // forced in here. If they exported before the row existed, an empty Tend
-    // in their week would be this reader's assumption, not their plan.
-    cats: orderCats(migrateCatColors(safeParse(obj[K.cats], DEFAULT_CATS))),
-    ideas: safeParse(obj[K.ideas], {}),
-    goals: safeParse(obj[K.goals], {}),
-    entries: collectImportedEntries(obj),
-    // Absent from share exports by design, so this is {} for those — which is
-    // what makes a shared view show no reflections rather than falling back to
-    // the viewer's own.
-    journal: safeParse(obj[K.journal], {})
-  };
-}
-
-// JSON.parse that yields a fallback instead of throwing, so one corrupt key in
-// an imported file can't take the whole import down.
 // ---------------------------------------------------------------------------
 // Pillars
 //
@@ -9603,6 +9620,27 @@ const pillarOps = {
     // read instead, which is the only place it matters.
     const raw = String(purpose == null ? "" : purpose);
     return cats.map(c => c.id === id ? { ...c, purpose: raw.trim() ? raw : undefined } : c);
+  },
+  // Gives a pillar the palette colour in `slot`. If another pillar already
+  // wears that colour, the two trade, so no two pillars ever share a colour
+  // and nothing has to be refused. The choice is a slot, not a hex, so it
+  // carries across palettes: the pillar wears that slot in every palette.
+  setColor(cats, id, slot) {
+    const target = cats.find(c => c.id === id);
+    const entry = COLOR_PALETTE[slot];
+    if (!target || !entry || isTend(id)) return cats;
+    const bySlot = slotForColor(target.color);
+    const fromSlot = bySlot != null ? bySlot : (typeof target.slot === "number" ? target.slot : null);
+    if (fromSlot === slot) return cats;
+    const paint = n => {
+      const e = COLOR_PALETTE[n];
+      return { slot: n, color: e.color, bg: e.bg, deep: e.deep, ink: e.ink };
+    };
+    return cats.map(c => {
+      if (c.id === id) return { ...c, ...paint(slot) };
+      if (fromSlot != null && !isTend(c.id) && slotForColor(c.color) === slot) return { ...c, ...paint(fromSlot) };
+      return c;
+    });
   },
   rename(cats, id, label) {
     const clean = (label || "").trim();
@@ -10761,10 +10799,13 @@ function StartFreshDialog({ onClose, onConfirm }) {
   }, "Cancel"));
 }
 
-// Asks how an imported file should land: merged in, or as a separate view.
-function ImportDialog({ pendingImport, onClose, doImport }) {
+// The confirm step before a backup replaces the plan.
+function RestoreDialog({ backup, onClose, onConfirm }) {
+  const [busy, setBusy] = useState(false);
+  const at = backup?._meta?.exportedAt ? new Date(backup._meta.exportedAt) : null;
+  const when = at && !isNaN(at) ? `${MONTHS_S[at.getMonth()]} ${at.getDate()}, ${at.getFullYear()}` : null;
   return /*#__PURE__*/React.createElement(Modal, {
-    onClose: onClose
+    onClose: busy ? () => {} : onClose
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
@@ -10774,55 +10815,30 @@ function ImportDialog({ pendingImport, onClose, doImport }) {
       fontWeight: 600,
       marginBottom: 6
     }
-  }, "Open a shared plan"), /*#__PURE__*/React.createElement("div", {
+  }, "Restore backup"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 16,
       fontWeight: 700,
       color: INK,
       marginBottom: 4
     }
-  }, pendingImport._meta?.exportedBy ? pendingImport._meta.exportedBy + "'s plan" : "A shared plan"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      height: 20
-    }
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 10
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => doImport("view"),
-    style: {
-      padding: "14px 16px",
-      borderRadius: 12,
-      border: `1.5px solid ${HAIRLINE}`,
-      background: PAPER,
-      cursor: "pointer",
-      textAlign: "left",
-      fontFamily: "inherit"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, "Replace your plan with this backup?"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
-      fontWeight: 700,
-      color: INK,
-      marginBottom: 3
-    }
-  }, "Open alongside mine"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
       color: INK_3,
-      lineHeight: 1.4
+      marginBottom: 20,
+      lineHeight: 1.5
     }
-  }, "Read-only. My Plan stays untouched.")), /*#__PURE__*/React.createElement("button", {
-    onClick: () => doImport("replace"),
+  }, when ? `Saved ${when}. Everything since is replaced.` : "Everything in your plan now is replaced."), /*#__PURE__*/React.createElement("button", {
+    onClick: () => { if (busy) return; setBusy(true); onConfirm(); },
+    disabled: busy,
     style: {
+      width: "100%",
       padding: "14px 16px",
       borderRadius: 12,
       border: `1.5px solid ${DANGER_LINE}`,
       background: DANGER_WASH,
-      cursor: "pointer",
+      cursor: busy ? "default" : "pointer",
       textAlign: "left",
       fontFamily: "inherit"
     }
@@ -10830,16 +10846,9 @@ function ImportDialog({ pendingImport, onClose, doImport }) {
     style: {
       fontSize: 13,
       fontWeight: 700,
-      color: DANGER,
-      marginBottom: 3
+      color: DANGER
     }
-  }, "Replace My Plan"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: INK_3,
-      lineHeight: 1.4
-    }
-  }, "Overwrites everything. Back up first."))), /*#__PURE__*/React.createElement("button", {
+  }, busy ? "Restoring\u2026" : "Yes, restore")), !busy && /*#__PURE__*/React.createElement("button", {
     onClick: () => onClose(),
     style: {
       marginTop: 16,
@@ -10855,8 +10864,8 @@ function ImportDialog({ pendingImport, onClose, doImport }) {
   }, "Cancel"));
 }
 
-// Asks who you are before a plan leaves the app carrying your name.
-function NamePromptDialog({ namePromptVal, setNamePromptVal, namePromptNext, onClose, saveUserName }) {
+// Your name, used as the Settings title and in Seasons.
+function NamePromptDialog({ namePromptVal, setNamePromptVal, onClose, saveUserName }) {
   return /*#__PURE__*/React.createElement(Modal, {
     onClose: onClose, maxWidth: 360
   }, /*#__PURE__*/React.createElement("div", {
@@ -10868,7 +10877,7 @@ function NamePromptDialog({ namePromptVal, setNamePromptVal, namePromptNext, onC
       fontWeight: 600,
       marginBottom: 6
     }
-  }, namePromptNext === "export" ? "Before you export" : "Your plan"), /*#__PURE__*/React.createElement("div", {
+  }, "Settings"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 16,
       fontWeight: 700,
@@ -10877,12 +10886,9 @@ function NamePromptDialog({ namePromptVal, setNamePromptVal, namePromptNext, onC
     }
   }, "What's your name?"), /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 13,
-      color: INK_3,
-      marginBottom: 20,
-      lineHeight: 1.5
+      height: 16
     }
-  }, namePromptNext === "export" ? "Used to name your backup file." : "Used for your initials and shared plans."), /*#__PURE__*/React.createElement("input", {
+  }), /*#__PURE__*/React.createElement("input", {
     autoFocus: true,
     value: namePromptVal,
     onChange: e => setNamePromptVal(e.target.value),
@@ -10918,96 +10924,9 @@ function NamePromptDialog({ namePromptVal, setNamePromptVal, namePromptNext, onC
       fontFamily: "inherit",
       opacity: namePromptVal.trim() ? 1 : 0.4
     }
-  }, namePromptNext === "export" ? "Save & Export" : "Save"));
+  }, "Save"));
 }
 
-// Chooses what goes into an export — chiefly whether reflections travel with it.
-function ExportDialog({ pendingExportName, exportIncludeReflections, setExportIncludeReflections, onClose, doExport }) {
-  return /*#__PURE__*/React.createElement(Modal, {
-    onClose: onClose, maxWidth: 320, padding: "24px 24px 20px"
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      letterSpacing: "0.12em",
-      textTransform: "uppercase",
-      color: MUTED,
-      fontWeight: 600,
-      marginBottom: 16
-    }
-  }, "Share or back up"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 16,
-      marginBottom: 20
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      minWidth: 0
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 14,
-      fontWeight: 600,
-      color: INK
-    }
-  }, "Include reflections"),
-  // Which entries a reflection covers isn't obvious from the toggle alone,
-  // and it's the one setting here you'd regret getting wrong when the file
-  // is going to another person.
-  /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: MUTED,
-      marginTop: 2,
-      lineHeight: 1.4
-    }
-  }, "Private. Leave off when sharing.")), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setExportIncludeReflections(v => !v),
-    style: {
-      width: 42,
-      height: 24,
-      borderRadius: 12,
-      border: "none",
-      cursor: "pointer",
-      padding: 0,
-      background: exportIncludeReflections ? REFLECT : NEUTRAL_OUTLINE,
-      transition: "background 0.2s ease",
-      position: "relative",
-      flexShrink: 0
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 18,
-      height: 18,
-      borderRadius: "50%",
-      background: SURFACE,
-      position: "absolute",
-      top: 3,
-      left: exportIncludeReflections ? 21 : 3,
-      transition: "left 0.2s ease",
-      boxShadow: "0 1px 3px rgba(0,0,0,0.2)"
-    }
-  }))), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      onClose();
-      doExport(pendingExportName, exportIncludeReflections);
-    },
-    style: {
-      width: "100%",
-      padding: "11px",
-      borderRadius: 9,
-      background: INK,
-      border: "none",
-      cursor: "pointer",
-      fontSize: 13,
-      color: ON_DARK,
-      fontWeight: 600,
-      fontFamily: "inherit"
-    }
-  }, "Download"));
-}
 
 // The Pillars tab of the sidebar: rename, reorder, set weekly targets for and
 // remove the user's own pillars, and add new ones from the library or by name.
@@ -11146,7 +11065,7 @@ function PillarsPanel({
   // something behind it, faint when there isn't — and it asks for nothing.
   /*#__PURE__*/React.createElement("button", {
     onClick: openEditor,
-    title: isEditing ? "Close" : "Purpose and weekly target",
+    title: isEditing ? "Close" : "Purpose, weekly target and color",
     "aria-expanded": isEditing ? "true" : "false",
     style: {
       background: "none",
@@ -11242,6 +11161,35 @@ function PillarsPanel({
           ...pillarChip(cat, goalVal != null && v <= goalVal)
         }
       }, v)))
+    ),
+    // The palette in claim order, one square per colour. The pillar's own
+    // is ringed; one another pillar wears carries a small dot, and picking
+    // it trades colours between the two.
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", {
+        style: { ...SIDEBAR_SECTION_LABEL, margin: "0 0 4px" }
+      }, "Color"),
+      /*#__PURE__*/React.createElement("div", {
+        role: "radiogroup", "aria-label": `${cat.label} color`,
+        style: { display: "grid", gridTemplateColumns: "repeat(12, minmax(0, 1fr))", gap: 4, padding: 2 }
+      }, COLOR_PALETTE.map((p, i) => {
+        const mine = slotForColor(cat.color) === i;
+        const owner = mine ? null : managedCats.find(o => o.id !== cat.id && slotForColor(o.color) === i);
+        return /*#__PURE__*/React.createElement("button", {
+          key: i, role: "radio", "aria-checked": mine,
+          "aria-label": owner ? `Color ${i + 1}, used by ${owner.label}` : `Color ${i + 1}`,
+          title: owner ? `Swap with ${owner.label}` : undefined,
+          onClick: () => saveCats(pillarOps.setColor(cats, cat.id, i)),
+          style: {
+            height: 18, padding: 0, border: "none", borderRadius: 3, cursor: mine ? "default" : "pointer",
+            background: p.color, display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: mine ? `0 0 0 1.5px ${TILE_PLAN_FILL}, 0 0 0 3px ${INK_2}` : "none"
+          }
+        }, owner && /*#__PURE__*/React.createElement("span", {
+          "aria-hidden": "true",
+          style: { width: 4, height: 4, borderRadius: "50%", background: hexA(PAPER, 0.9) }
+        }));
+      }))
     ),
     /*#__PURE__*/React.createElement("button", {
       onClick: () => deleteCat(cat.id),
@@ -11477,8 +11425,40 @@ function SettingsModelRow() {
   );
 }
 
-function SettingsPanel({ userName, openNamePrompt, exportData, setShowStartFreshConfirm, onClose }) {
+// Settings > Look. Each palette is shown as itself — a strip of its colours
+// in claim order — so choosing is by eye, not by name. One tap applies it.
+function SettingsPaletteRow({ paletteId, choosePalette, canEdit }) {
+  return React.createElement("div", {
+    role: "radiogroup", "aria-label": "Pillar colors",
+    style: { display: "flex", flexDirection: "column", gap: 6 }
+  }, PALETTES.map(p => {
+    const on = p.id === paletteId;
+    return React.createElement("button", {
+      key: p.id, role: "radio", "aria-checked": on, disabled: !canEdit,
+      onClick: () => choosePalette(p.id),
+      style: {
+        width: "100%", display: "flex", flexDirection: "column", gap: 7,
+        padding: "9px 12px 10px", background: SURFACE, textAlign: "left",
+        border: `${on ? 1.5 : 1}px solid ${on ? INK_2 : HAIRLINE}`, borderRadius: 4,
+        cursor: canEdit ? "pointer" : "default", fontFamily: "inherit"
+      }
+    }, React.createElement("span", { style: { display: "flex", alignItems: "baseline", gap: 8 } },
+      React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: INK } }, p.name),
+      React.createElement("span", { style: { fontSize: 12, color: INK_3, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.note),
+      on && React.createElement("svg", {
+        width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: INK_2, strokeWidth: "2.5",
+        strokeLinecap: "round", strokeLinejoin: "round", style: { flexShrink: 0, alignSelf: "center" }, "aria-hidden": "true"
+      }, React.createElement("path", { d: "M5 12.5l4.5 4.5L19 7.5" }))),
+    React.createElement("span", {
+      style: { display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 3 }, "aria-hidden": "true"
+    }, p.colors.map((c, i) => React.createElement("span", {
+      key: i, style: { height: 16, borderRadius: 3, background: c.color }
+    }))));
+  }));
+}
+function SettingsPanel({ userName, openNamePrompt, downloadBackup, readRestoreFile, setShowStartFreshConfirm, onClose, paletteId, choosePalette, canEdit }) {
   const c = useCloud();
+  const restoreInput = useRef(null);
   // Silent when all is well; a few words only when changes aren't syncing.
   const syncNote = !c.user ? "Preview, not synced"
     : c.status === "offline" ? "Offline, will sync later"
@@ -11496,10 +11476,25 @@ function SettingsPanel({ userName, openNamePrompt, exportData, setShowStartFresh
       detail: userName || "Add your name",
       detailTone: userName ? INK_3 : ACCENT,
       onClick: openNamePrompt
-    })), /*#__PURE__*/React.createElement(SettingsSection, { label: "Your plan" },
+    })), /*#__PURE__*/React.createElement(SettingsSection, { label: "Pillar colors" },
+    /*#__PURE__*/React.createElement(SettingsPaletteRow, { paletteId, choosePalette, canEdit })),
+    /*#__PURE__*/React.createElement(SettingsSection, { label: "Your plan" },
     /*#__PURE__*/React.createElement(SettingsRow, {
-      label: "Back up my plan",
-      onClick: exportData
+      label: "Download backup",
+      onClick: downloadBackup
+    }), /*#__PURE__*/React.createElement(SettingsRow, {
+      label: "Restore backup",
+      onClick: () => restoreInput.current && restoreInput.current.click()
+    }), /*#__PURE__*/React.createElement("input", {
+      ref: restoreInput,
+      type: "file",
+      accept: ".json,application/json",
+      style: { display: "none" },
+      onChange: e => {
+        const f = e.target.files?.[0];
+        if (f) readRestoreFile(f);
+        e.target.value = "";
+      }
     }), /*#__PURE__*/React.createElement(SettingsRow, {
       label: "Start fresh",
       danger: true,
@@ -11773,9 +11768,10 @@ function ViewToolbar({ viewMode, setViewMode, displayCats, selectedPillar, toggl
       alignItems: "center",
       justifyContent: "space-between",
       gap: "8px 16px",
-      padding: "10px 14px",
-      borderBottom: `1px solid ${HAIRLINE}`,
-      background: PLAN_BG
+      // Page-level controls: they sit on the planner background above the
+      // grid's card rather than being its first row, so the grid has a clean
+      // top edge and the controls read as acting on it.
+      padding: "0 2px 10px"
     }
   }, /*#__PURE__*/React.createElement("div", {
     key: "view",
@@ -11866,13 +11862,19 @@ function ViewToolbar({ viewMode, setViewMode, displayCats, selectedPillar, toggl
     }, cat.label);
   })));
 }
-// The page title, or, when reading someone else's shared plan, whose plan it is
-// and that it's read-only.
 // The rising heart from the app icon: a heart cut off at the baseline, like a
 // sun coming up. Sized in em so it scales with the text it sits in; as the "o"
 // in Mondays it sits on the baseline. `halo` adds the soft warm glow behind it.
-const HEART_PATH = "M50 19 C46 8 40 0 30 0 C13 0 0 13 0 31 C0 48 10 64 19 79 L81 79 C90 64 100 48 100 31 C100 13 87 0 70 0 C60 0 54 8 50 19 Z";
-function RisingHeart({ width = "0.5em", height = "0.395em", margin = "0 0.03em", halo = false, line = 2 }) {
+//
+// The path is the whole heart, 100 wide and 110 tall, tip included. `rise` is
+// how much of it shows above the baseline, in the same units: 79 is the
+// icon's cut (where the sides reach 19 and 81), 110 would be fully risen.
+const HEART_PATH = "M50 19 C46 8 40 0 30 0 C13 0 0 13 0 31 C0 48 10 64 19 79 C26 91 40 101 50 110 C60 101 74 91 81 79 C90 64 100 48 100 31 C100 13 87 0 70 0 C60 0 54 8 50 19 Z";
+const HEART_FULL = 110;
+// Height follows from width and rise, so the two can't disagree.
+function RisingHeart({ width = 0.5, rise = 79, margin = "0 0.03em", halo = false, line = 2 }) {
+  const height = (width * rise / 100).toFixed(4) + "em";
+  width = width + "em";
   return React.createElement("span", {
     "aria-hidden": "true",
     style: { position: "relative", display: "inline-block", width, height, margin, verticalAlign: "baseline" }
@@ -11880,37 +11882,31 @@ function RisingHeart({ width = "0.5em", height = "0.395em", margin = "0 0.03em",
     style: { position: "absolute", left: "-90%", right: "-90%", top: "-110%", bottom: "-40%",
       background: "radial-gradient(closest-side, rgba(235,163,61,0.30), rgba(235,163,61,0.10) 55%, rgba(235,163,61,0))" }
   }), React.createElement("svg", {
-    viewBox: "0 0 100 79",
-    style: { position: "relative", display: "block", width: "100%", height: "100%", overflow: "visible" }
+    viewBox: "0 0 100 " + rise,
+    style: { position: "relative", display: "block", width: "100%", height: "100%", overflow: "hidden" }
   }, React.createElement("path", { d: HEART_PATH, fill: HEART })), React.createElement("span", {
     style: { position: "absolute", left: "-35%", right: "-35%", bottom: "-0.06em", height: line, borderRadius: 2,
       background: "linear-gradient(90deg, rgba(205,110,54,0), " + HEART_GLOW + " 50%, rgba(205,110,54,0))" }
   }));
 }
-// "I Love Mondays" with the rising heart as the o. Screen readers get the
-// plain name; the drawn version is hidden from them.
+// "I Love Mondays" with the rising heart as the o. Fully risen, the heart would
+// be the size of an o; it is set a little below the baseline, showing more of
+// itself than the icon's cut. Screen readers get the plain name; the drawn
+// version is hidden from them.
 function Wordmark() {
   return React.createElement(React.Fragment, null,
     React.createElement("span", { className: "ilm-sr-only" }, "I Love Mondays"),
     React.createElement("span", { "aria-hidden": "true", style: { whiteSpace: "nowrap" } },
-      "I Love M", React.createElement(RisingHeart, null), "ndays"));
+      "I Love M", React.createElement(RisingHeart, { width: 0.5, rise: 92 }), "ndays"));
 }
-function PlannerTitle({ activeView, isOwnView }) {
+// The page title: the wordmark.
+function PlannerTitle() {
   return React.createElement("div", {
     style: {
       textAlign: "center",
       marginBottom: 6
     }
-  }, !isOwnView && /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      letterSpacing: "0.15em",
-      textTransform: "uppercase",
-      color: MUTED,
-      marginBottom: 6,
-      fontWeight: 600
-    }
-    }, "Shared with you"), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 33,
       fontWeight: 600,
@@ -11918,342 +11914,7 @@ function PlannerTitle({ activeView, isOwnView }) {
       color: INK,
       letterSpacing: "-0.01em"
     }
-  }, isOwnView ? React.createElement(Wordmark, null) : splitViewName(activeView.name).who + "'s Plan"), !isOwnView && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 5,
-      marginTop: 8,
-      padding: "3px 9px",
-      borderRadius: TILE_RADIUS,
-      background: WASH,
-      fontSize: 10,
-      fontWeight: 600,
-      letterSpacing: "0.06em",
-      textTransform: "uppercase",
-      color: INK_3
-    }
-  }, "Read only \u00b7 ", splitViewName(activeView.name).when), !isOwnView && /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 44,
-      height: 3,
-      background: "linear-gradient(90deg,#D4704A,#E2B23A)",
-      borderRadius: 2,
-      margin: "10px auto 0"
-    }
-  }));
-}
-// The avatar menu at the top left: whose plan is showing, the shared plans you
-// can switch to, and the two file actions that go with sharing (open a shared
-// plan, share yours). Backing up and Start fresh moved to
-// the Settings panel, so this menu only answers "whose plan am I looking at?"
-function PlanSwitcher({
-  importRef, importedViews, activeViewId, setActiveViewId, userName,
-  showViewDropdown, setShowViewDropdown, setShowStartFreshConfirm,
-  viewDropdownRef, activeView, isOwnView, exportData,
-  openNamePrompt, removeImportedView
-}) {
-  return React.createElement("div", {
-    ref: viewDropdownRef,
-    style: {
-      position: "absolute",
-      left: 0,
-      top: "50%",
-      transform: "translateY(-50%)"
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setShowViewDropdown(v => !v),
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 5,
-      background: "none",
-      border: "none",
-      padding: "4px 0",
-      cursor: "pointer",
-      fontFamily: "inherit"
-    }
-  }, /*#__PURE__*/React.createElement(PlanAvatar, {
-    size: 18,
-    name: isOwnView ? userName : splitViewName(activeView.name).who,
-    color: isOwnView ? PLAN_OWN_AVATAR : (activeView.cats?.[0]?.color || PLAN_OWN_AVATAR)
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: INK_3,
-      fontWeight: 600
-    }
-  }, isOwnView ? "My Plan" : splitViewName(activeView.name).who), /*#__PURE__*/React.createElement("svg", {
-    width: "10",
-    height: "10",
-    viewBox: "0 0 10 10",
-    fill: "none",
-    style: {
-      transition: "transform 0.15s ease",
-      transform: showViewDropdown ? "rotate(180deg)" : "rotate(0deg)",
-      flexShrink: 0
-    }
-  }, /*#__PURE__*/React.createElement("path", {
-    d: "M2 3.5L5 6.5L8 3.5",
-    stroke: MUTED,
-    strokeWidth: "1.5",
-    strokeLinecap: "round",
-    strokeLinejoin: "round"
-  }))), showViewDropdown && /*#__PURE__*/React.createElement("div", {
-    style: {
-      position: "absolute",
-      top: "calc(100% + 6px)",
-      left: 0,
-      background: SURFACE,
-      border: `1px solid ${HAIRLINE}`,
-      borderRadius: 10,
-      boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
-      minWidth: 250,
-      zIndex: 100,
-      overflow: "hidden"
-    }
-  },
-  // Whose plan you're reading, and the two actions that change that answer.
-  // Export used to dangle at the bottom of the page, away from the import it
-  // is the other half of; both live here now, because handing your plan to a
-  // partner and loading theirs are one loop, not two unrelated file chores.
-  /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      setActiveViewId("own");
-      setShowViewDropdown(false);
-    },
-    style: {
-      width: "100%",
-      display: "flex",
-      alignItems: "center",
-      gap: 9,
-      padding: "10px 14px",
-      background: isOwnView ? WASH : SURFACE,
-      border: "none",
-      cursor: "pointer",
-      fontFamily: "inherit",
-      fontSize: 12,
-      fontWeight: 600,
-      color: INK,
-      textAlign: "left"
-    }
-  }, /*#__PURE__*/React.createElement(PlanAvatar, {
-    size: 24,
-    name: userName
-  }),
-  // Mirrors the partner rows, which carry a name on top and context beneath.
-  // Nameless, the underline is the way out of the outlined-avatar dead end;
-  // named, it shows whose plan this is and is still the way to change it.
-  /*#__PURE__*/React.createElement("span", {
-    style: { minWidth: 0 }
-  }, /*#__PURE__*/React.createElement("div", null, "My Plan"), /*#__PURE__*/React.createElement("div", {
-    onClick: e => {
-      e.stopPropagation();
-      setShowViewDropdown(false);
-      openNamePrompt();
-    },
-    title: userName ? "Change your name" : "Add your name",
-    style: {
-      fontSize: 10,
-      fontWeight: 500,
-      marginTop: 1,
-      cursor: "pointer",
-      color: userName ? FAINT : ACCENT,
-      textDecoration: "underline",
-      textDecorationColor: userName ? HAIRLINE : ACCENT_LINE,
-      textUnderlineOffset: 2,
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap"
-    }
-  }, userName || "Add your name")), isOwnView && /*#__PURE__*/React.createElement("svg", {
-    width: "12",
-    height: "12",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: INK,
-    strokeWidth: "2.5",
-    strokeLinecap: "round",
-    style: {
-      marginLeft: "auto",
-      flexShrink: 0
-    }
-  }, /*#__PURE__*/React.createElement("polyline", {
-    points: "20 6 9 17 4 12"
-  }))), importedViews.length > 0 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      fontWeight: 600,
-      letterSpacing: "0.1em",
-      textTransform: "uppercase",
-      color: FAINT,
-      padding: "10px 14px 4px",
-      borderTop: `1px solid ${WASH}`
-    }
-  }, "Shared with you"), importedViews.map(v => {
-    const active = activeViewId === v.id;
-    const { who, when } = splitViewName(v.name);
-    const dotColor = v.cats?.[0]?.color || MUTED;
-    return /*#__PURE__*/React.createElement("div", {
-      key: v.id,
-      style: {
-        display: "flex",
-        alignItems: "center"
-      }
-    }, /*#__PURE__*/React.createElement("button", {
-      onClick: () => {
-        setActiveViewId(v.id);
-        setShowViewDropdown(false);
-      },
-      style: {
-        flex: 1,
-        display: "flex",
-        alignItems: "center",
-        gap: 9,
-        padding: "8px 14px",
-        background: active ? WASH : SURFACE,
-        border: "none",
-        cursor: "pointer",
-        fontFamily: "inherit",
-        textAlign: "left",
-        minWidth: 0
-      }
-    }, /*#__PURE__*/React.createElement(PlanAvatar, {
-      size: 24,
-      name: who,
-      color: dotColor
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        minWidth: 0,
-        overflow: "hidden"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        fontWeight: 600,
-        color: INK,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap"
-      }
-    }, who), when && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 10,
-        color: FAINT,
-        marginTop: 1
-      }
-    }, "Shared " + when)), active && /*#__PURE__*/React.createElement("svg", {
-      width: "12",
-      height: "12",
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: INK,
-      strokeWidth: "2.5",
-      strokeLinecap: "round",
-      style: {
-        marginLeft: "auto",
-        flexShrink: 0
-      }
-    }, /*#__PURE__*/React.createElement("polyline", {
-      points: "20 6 9 17 4 12"
-    }))), /*#__PURE__*/React.createElement("button", {
-      onClick: () => removeImportedView(v.id),
-      title: `Remove ${who}'s plan`,
-      style: {
-        background: "none",
-        border: "none",
-        borderLeft: `1px solid ${WASH}`,
-        cursor: "pointer",
-        padding: "10px 12px",
-        fontSize: 14,
-        color: FAINT,
-        lineHeight: 1,
-        flexShrink: 0
-      }
-    }, "\u00d7"));
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      borderTop: `1px solid ${HAIRLINE}`
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      importRef.current.click();
-      setShowViewDropdown(false);
-    },
-    style: {
-      width: "100%",
-      display: "flex",
-      alignItems: "center",
-      gap: 9,
-      padding: "9px 14px",
-      background: SURFACE,
-      border: "none",
-      cursor: "pointer",
-      fontFamily: "inherit",
-      fontSize: 12,
-      fontWeight: 500,
-      color: INK_3,
-      textAlign: "left"
-    }
-  }, /*#__PURE__*/React.createElement("svg", {
-    width: "13",
-    height: "13",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: "2",
-    strokeLinecap: "round",
-    strokeLinejoin: "round",
-    style: { flexShrink: 0 }
-  }, /*#__PURE__*/React.createElement("path", {
-    d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
-  }), /*#__PURE__*/React.createElement("polyline", {
-    points: "17 8 12 3 7 8"
-  }), /*#__PURE__*/React.createElement("line", {
-    x1: "12",
-    y1: "3",
-    x2: "12",
-    y2: "15"
-  })), "Open a shared plan\u2026"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      setShowViewDropdown(false);
-      exportData();
-    },
-    style: {
-      width: "100%",
-      display: "flex",
-      alignItems: "center",
-      gap: 9,
-      padding: "9px 14px",
-      background: SURFACE,
-      border: "none",
-      cursor: "pointer",
-      fontFamily: "inherit",
-      fontSize: 12,
-      fontWeight: 500,
-      color: INK_3,
-      textAlign: "left"
-    }
-  }, /*#__PURE__*/React.createElement("svg", {
-    width: "13",
-    height: "13",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: "2",
-    strokeLinecap: "round",
-    strokeLinejoin: "round",
-    style: { flexShrink: 0 }
-  }, /*#__PURE__*/React.createElement("path", {
-    d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
-  }), /*#__PURE__*/React.createElement("polyline", {
-    points: "7 10 12 15 17 10"
-  }), /*#__PURE__*/React.createElement("line", {
-    x1: "12",
-    y1: "15",
-    x2: "12",
-    y2: "3"
-  })), "Share my plan\u2026"))));
+  }, React.createElement(Wordmark, null)));
 }
 // Previous / next week arrows around the week's dates, with Today hanging off
 // the right edge once you've left the current week.
@@ -12374,7 +12035,7 @@ function SeriesScopeDialog({ seriesScope, setSeriesScope, resolveSeriesScope }) 
     }
   }, "Cancel"))));
 }
-// The small confirmation that slides in after an import or a plan switch.
+// The small note that slides in when a chosen file can't be restored.
 function ImportToast({ importConfirm, setImportConfirm }) {
   return React.createElement("div", {
     style: {
@@ -12852,7 +12513,7 @@ function PillarWeekGrid({
   dayReflectionDates, reflectionsByPillar, openEditById, openCreate,
   selectedPillar, togglePillarFilter, focusRowOpacity, toolbar
 }) {
-  return React.createElement("div", {
+  return React.createElement(React.Fragment, null, toolbar, React.createElement("div", {
     style: {
       background: SURFACE,
       overflow: "hidden",
@@ -12863,7 +12524,7 @@ function PillarWeekGrid({
     },
     onDragEnd: resetRowDrag
   },
-  toolbar, /*#__PURE__*/React.createElement("div", {
+  /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: colTemplate,
@@ -12918,7 +12579,7 @@ function PillarWeekGrid({
       padding: "2px 0",
       fontWeight: 500
     }
-  }, "+ Add pillar")));
+  }, "+ Add pillar"))));
 }
 // Seasons: the stored readings, the one slow AI call that writes a reading and
 // the one that suggests what the season should lead to, and the small cue on
@@ -13064,53 +12725,24 @@ function useSeasonFlow({
       status: "applied"
     });
   }
-  function setSeasonsFromStorage() {
-    seasonsStore.reloadFromStorage();
-    setOpenSeasonId(null);
-    setSeasonError(null);
-  }
   return {
     seasonsStore, seasonBusy, seasonError, setSeasonError, seasonActionsBusy,
     seasonActionsError, seasonActionsNote, openSeasonId, setOpenSeasonId,
     seasonCue, runSeasonReading, suggestSeasonActions, applySeasonSuggestion,
-    addOwnSeasonAction, setSeasonsFromStorage
+    addOwnSeasonAction
   };
 }
 
-// Sharing a plan: the name prompt that gates export, export itself, opening
-// someone else's shared plan (as a read-only view, or replacing your own from a
-// backup), and the list of shared plans you can switch between. Start fresh stays
-// in Planner, since it resets nearly every piece of Planner's state.
-function usePlanTransfer({
-  setCats, setGoals, importedViews, setImportedViews, activeViewId,
-  setActiveViewId, userName, setUserName, journalStore, setRules, rulesRef,
-  key, setEntries, setSeasonsFromStorage
-}) {
-  const [pendingImport, setPendingImport] = useState(null);
+// Your name, and the backup file: download one, or restore your plan from one.
+// Start fresh stays in Planner, since it resets nearly every piece of
+// Planner's state.
+function usePlanBackup({ userName, setUserName }) {
   const [showNamePrompt, setShowNamePrompt] = useState(false);
   const [namePromptVal, setNamePromptVal] = useState("");
-  // The name prompt used to exist only as a gate in front of export, so its
-  // copy and its button both assumed that was where you were headed. It can
-  // now also be opened on its own from the plan menu, so it carries where it
-  // should hand off to when it's done.
-  const [namePromptNext, setNamePromptNext] = useState("export");
-  const [importConfirm, setImportConfirm] = useState(null);
-  const [showExportOptions, setShowExportOptions] = useState(false);
-  const [pendingExportName, setPendingExportName] = useState("");
-  const [exportIncludeReflections, setExportIncludeReflections] = useState(false);
-  function exportData() {
-    if (!userName) {
-      setNamePromptVal("");
-      setNamePromptNext("export");
-      setShowNamePrompt(true);
-      return;
-    }
-    setPendingExportName(userName);
-    setShowExportOptions(true);
-  }
+  const [pendingRestore, setPendingRestore] = useState(null);
+  const [restoreNote, setRestoreNote] = useState(null);
   function openNamePrompt() {
     setNamePromptVal(userName || "");
-    setNamePromptNext(null);
     setShowNamePrompt(true);
   }
   function saveUserName() {
@@ -13119,106 +12751,50 @@ function usePlanTransfer({
     setUserName(n);
     db.writeRaw(K.userName, n);
     setShowNamePrompt(false);
-    if (namePromptNext === "export") {
-      setPendingExportName(n);
-      setShowExportOptions(true);
-    }
   }
-  function doExport(name, includeReflections = true) {
+  function downloadBackup() {
     const now = new Date();
-    const out = buildExportPayload(db.snapshot(), { name, includeReflections, now });
+    const out = buildExportPayload(db.snapshot(), { name: userName, now });
     const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = exportFilename(name, includeReflections, now);
+    a.download = exportFilename(now);
     a.click();
     URL.revokeObjectURL(url);
   }
-  function importData(file) {
+  function showNote(msg) {
+    setRestoreNote({ msg, type: "error" });
+    setTimeout(() => setRestoreNote(null), 4000);
+  }
+  function readRestoreFile(file) {
     const reader = new FileReader();
     reader.onload = e => {
-      try {
-        const obj = JSON.parse(e.target.result);
-        setPendingImport(obj);
-      } catch {
-        setImportConfirm({ msg: "Couldn't read that file.", type: "error" });
-        setTimeout(() => setImportConfirm(null), 4000);
-      }
+      let obj = null;
+      try { obj = JSON.parse(e.target.result); } catch {}
+      if (looksLikeBackup(obj)) setPendingRestore(obj);
+      else showNote("That file isn't an I Love Mondays backup.");
     };
+    reader.onerror = () => showNote("Couldn't read that file.");
     reader.readAsText(file);
   }
-  function doImport(mode) {
-    if (!pendingImport) return;
-    const obj = pendingImport;
-    if (mode === "replace") {
-      // Writing the file's keys over the top is not a replace — anything the
-      // backup predates simply survives it. A file exported before a feature
-      // existed would leave that feature's data in place and look like the
-      // import had silently failed. So stored keys absent from the file are
-      // cleared first.
-      //
-      // Except the protected ones. Those are deliberately never exported —
-      // the API key above all — so every file "lacks" them, and clearing
-      // them would log the user out of their provider on every restore.
-      db.keys().forEach(k => {
-        if (Object.prototype.hasOwnProperty.call(obj, k)) return;
-        if (TRANSFER_SKIP_PREFIXES.some(p => k.startsWith(p))) return;
-        db.remove(k);
-      });
-      Object.entries(obj).forEach(([k, v]) => {
-        if (k !== "_meta") db.writeRaw(k, v);
-      });
-      setSeasonsFromStorage();
-      if (db.readRaw(K.cats)) setCats(withTend(migrateCatColors(db.read(K.cats, DEFAULT_CATS))));
-      if (db.readRaw(K.goals)) setGoals(db.read(K.goals, {}));
-      journalStore.replaceAll(db.read(K.journal, {}));
-      // The restored file carries its own series, so the in-memory rules have
-      // to be replaced rather than left pointing at the old ones.
-      const restoredRules = loadRules();
-      rulesRef.current = restoredRules;
-      setRules(restoredRules);
-      try {
-        const { raw, entries: loaded } = readWeekForLoad(key);
-        setEntries(loaded);
-        if (raw) db.write(key, packWeekEntries(loaded));
-      } catch {
-        setEntries({});
-      }
-      setActiveViewId("own");
-      setPendingImport(null);
-      setImportConfirm({
-        msg: "My Plan replaced.",
-        type: "replace"
-      });
-      setTimeout(() => setImportConfirm(null), 4000);
-    } else {
-      const newView = buildImportedView(obj, { id: `view_${Date.now()}` });
-      const updated = [...importedViews, newView];
-      setImportedViews(updated);
-      db.write(K.importedViews, updated);
-      setActiveViewId(newView.id);
-      setPendingImport(null);
-      setImportConfirm({
-        msg: `Added ${splitViewName(newView.name).who}'s plan, read-only. My Plan untouched.`,
-        type: "view"
-      });
-      setTimeout(() => setImportConfirm(null), 4000);
-    }
-  }
-  function removeImportedView(id) {
-    const updated = importedViews.filter(v => v.id !== id);
-    setImportedViews(updated);
-    db.write(K.importedViews, updated);
-    if (activeViewId === id) setActiveViewId("own");
+  // Rewrites storage, makes sure the account has every change, then reloads.
+  // Reloading is what guarantees every part of the app (ideas, seasons,
+  // repeats, the week on screen) reads the restored plan, rather than some
+  // of it lingering in memory from before.
+  async function confirmRestore() {
+    const obj = pendingRestore;
+    if (!obj) return;
+    const { remove, write } = planRestore(obj, db.keys());
+    remove.forEach(k => db.remove(k));
+    write.forEach(k => db.writeRaw(k, obj[k]));
+    try { await cloud.flush(); } catch {}
+    window.location.reload();
   }
   return {
-    pendingImport, setPendingImport, showNamePrompt, setShowNamePrompt,
-    namePromptVal, setNamePromptVal, namePromptNext, importConfirm,
-    setImportConfirm, showExportOptions, setShowExportOptions,
-    pendingExportName, exportIncludeReflections, setExportIncludeReflections,
-    exportData, openNamePrompt, saveUserName, doExport, importData, doImport,
-    removeImportedView
+    showNamePrompt, setShowNamePrompt, namePromptVal, setNamePromptVal,
+    openNamePrompt, saveUserName, downloadBackup, readRestoreFile,
+    pendingRestore, setPendingRestore, confirmRestore, restoreNote, setRestoreNote
   };
 }
 
@@ -13437,23 +13013,10 @@ function RailGlyph({ name, size = 21 }) {
     React.createElement("rect", { x: "9.75", y: "4", width: "4.5", height: "17" }),
     React.createElement("rect", { x: "16.5", y: "13", width: "4.5", height: "8" }));
 }
-// More: a Plan pulldown (whose plan, and sharing), then the rail's places as
-// plain rows — icon and name, nothing else, the way the rail looks on the
-// desktop minus the hover.
-function PhoneMoreSheet({ onClose, isOwnView, activeViewId, importedViews, setActiveViewId, userName,
-  openImport, exportData, openIdeas, openSeasons, openPillars, openSettings, version }) {
-  const [planOpen, setPlanOpen] = useState(false);
-  const active = importedViews.find(v => v.id === activeViewId);
-  const currentName = active ? splitViewName(active.name).who : "My Plan";
+// More: the rail's places as plain rows — icon and name, nothing else, the
+// way the rail looks on the desktop minus the hover.
+function PhoneMoreSheet({ onClose, isOwnView, openIdeas, openSeasons, openPillars, openSettings, version }) {
   const go = fn => () => { onClose(); fn(); };
-  const planItem = (key, label, sub, selected, onClick) => React.createElement("button", {
-    key, role: "option", "aria-selected": selected ? "true" : "false", onClick,
-    style: { width: "100%", minHeight: 48, display: "flex", alignItems: "center", gap: 10, padding: "6px 12px",
-      border: "none", borderTop: `1px solid ${WASH}`, background: "transparent", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }
-  }, React.createElement("span", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 } },
-      React.createElement("span", { style: { fontSize: 16, fontWeight: selected ? 700 : 500, color: INK } }, label),
-      sub && React.createElement("span", { style: { fontSize: 12, color: INK_3 } }, sub)),
-    selected && React.createElement(PhoneIcon, { name: "check", size: 18, color: INK }));
   const placeRow = (glyph, label, onClick) => React.createElement("button", {
     key: label, onClick: go(onClick),
     style: { width: "100%", height: 52, display: "flex", alignItems: "center", gap: 14, padding: "0 4px",
@@ -13471,42 +13034,7 @@ function PhoneMoreSheet({ onClose, isOwnView, activeViewId, importedViews, setAc
       padding: "8px 18px max(14px, env(safe-area-inset-bottom))", boxShadow: "0 -8px 30px rgba(28,25,23,0.18)" }
   },
     React.createElement("div", { style: { width: 40, height: 4, borderRadius: 2, background: PLAN_RING, margin: "2px auto 10px" } }),
-    React.createElement("div", { style: { paddingBottom: 10, borderBottom: `1px solid ${HAIRLINE}` } },
-      React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
-        React.createElement("span", {
-          id: "phone-plan-label",
-          style: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: INK_3 }
-        }, "Plan"),
-        React.createElement("button", {
-          "aria-labelledby": "phone-plan-label", "aria-haspopup": "listbox", "aria-expanded": planOpen ? "true" : "false",
-          onClick: () => setPlanOpen(o => !o),
-          style: { flex: 1, height: 44, display: "flex", alignItems: "center", gap: 8, padding: "0 12px",
-            border: `1px solid ${HAIRLINE}`, borderRadius: planOpen ? "4px 4px 0 0" : 4, background: SURFACE, cursor: "pointer",
-            fontFamily: "inherit", fontSize: 16, fontWeight: 600, color: INK, textAlign: "left" }
-        }, React.createElement("span", { style: { flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, currentName),
-          React.createElement("svg", {
-            width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: INK_3, strokeWidth: 2, strokeLinecap: "round",
-            "aria-hidden": "true", style: { transform: planOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s ease" }
-          }, React.createElement("path", { d: "M6 9l6 6 6-6" })))),
-      planOpen && React.createElement("div", {
-        role: "listbox", "aria-labelledby": "phone-plan-label",
-        style: { marginLeft: 37, border: `1px solid ${HAIRLINE}`, borderTop: "none", borderRadius: "0 0 4px 4px", background: SURFACE, overflow: "hidden" }
-      },
-        planItem("own", "My Plan", userName || null, activeViewId === "own", go(() => setActiveViewId("own"))),
-        importedViews.map(v => {
-          const { who, when } = splitViewName(v.name);
-          return planItem(v.id, who, when ? "Shared " + when : null, activeViewId === v.id, go(() => setActiveViewId(v.id)));
-        }),
-        React.createElement("button", {
-          onClick: go(openImport),
-          style: { width: "100%", height: 46, padding: "0 12px", border: "none", borderTop: `1px solid ${HAIRLINE}`, background: "transparent",
-            cursor: "pointer", fontFamily: "inherit", fontSize: 14, color: INK_2, textAlign: "left" }
-        }, "Open a shared plan\u2026"),
-        isOwnView && React.createElement("button", {
-          onClick: go(exportData),
-          style: { width: "100%", height: 46, padding: "0 12px", border: "none", borderTop: `1px solid ${WASH}`, background: "transparent",
-            cursor: "pointer", fontFamily: "inherit", fontSize: 14, color: INK_2, textAlign: "left" }
-        }, "Share my plan\u2026"))),
+    React.createElement("div", { style: { borderBottom: `1px solid ${HAIRLINE}` } }),
     placeRow("ideas", "Ideas", openIdeas),
     isOwnView && placeRow("seasons", "Seasons", openSeasons),
     isOwnView && placeRow("pillars", "My pillars", openPillars),
@@ -13693,7 +13221,7 @@ function Planner() {
   const phoneScrollRef = useRef(null);
   const [offset, setOffset] = useState(0);
   const [cats, setCats] = useState(DEFAULT_CATS);
-  const [ideaOverride, setIdeaOverride] = useState(null);
+  const [paletteId, setPaletteId] = useState(storedPaletteId);
   const [ideaPanelCatId, setIdeaPanelCatId] = useState(null);
   const [catTyping, setCatTyping] = useState(false);
   const [catCustomInput, setCatCustomInput] = useState("");
@@ -13723,7 +13251,6 @@ function Planner() {
   const [dragScope, setDragScope] = useState(null);
   const [hoveredId, setHoveredId] = useState(null);
   const [hoveredDayHeader, setHoveredDayHeader] = useState(null);
-  const importRef = useRef(null);
   const [draggingIdea, setDraggingIdea] = useState(false);
   // An iPad can start a drag on a press and hold and then never report that
   // it ended. The app went on believing an item was in the air: the
@@ -13750,12 +13277,8 @@ function Planner() {
     };
   }, []);
   const [goals, setGoals] = useState({});
-  const [importedViews, setImportedViews] = useState([]);
-  const [activeViewId, setActiveViewId] = useState("own");
   const [userName, setUserName] = useState("");
-  const [showViewDropdown, setShowViewDropdown] = useState(false);
   const [showStartFreshConfirm, setShowStartFreshConfirm] = useState(false);
-  const viewDropdownRef = useRef(null);
   const journalStore = useJournalStore();
   const journal = journalStore.journal;
   const newEntryId = journalStore.newEntryId;
@@ -13795,10 +13318,11 @@ function Planner() {
     const target = showsToday ? Math.max(CAL_HOUR_START, new Date().getHours() - 1) : 8;
     el.scrollTop = Math.max(0, (target - CAL_HOUR_START) * CAL_HOUR_PX);
   }, [phoneMode, phoneDayKey, viewMode]);
-  // An imported view is read-only; the user's own week is the editable one.
-  // Resolved here because the entry store needs to know before any write.
-  const activeView = importedViews.find(v => v.id === activeViewId) || null;
-  const isOwnView = !activeView;
+  // The planner once also showed other people's shared plans, read-only, and
+  // much of the interface still asks whether the plan on screen is your own.
+  // Sharing is gone, so it always is.
+  const activeView = null;
+  const isOwnView = true;
   // The loaded week's entries — the single source of truth for everything the
   // planner and calendar render.
   const entryStore = useEntryStore({ readOnly: !isOwnView, weekKey: key });
@@ -13847,67 +13371,36 @@ function Planner() {
     if (storedCats) setCats(withTend(migrateCatColors(storedCats)));
     const storedGoals = db.read(K.goals);
     if (storedGoals) setGoals(storedGoals);
-    const storedViews = db.read(K.importedViews);
-    if (storedViews) setImportedViews(storedViews);
     const storedName = db.readRaw(K.userName);
     if (storedName) setUserName(storedName);
     journalStore.load(db.read(K.journal, {}));
     purgeLegacyCredentials();
   }, []);
-  useEffect(() => {
-    function handleClick(e) {
-      if (viewDropdownRef.current && !viewDropdownRef.current.contains(e.target)) setShowViewDropdown(false);
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
-  const displayCats = activeView ? activeView.cats : cats;
-  // An imported view's ideas are fed through the same store so the panel has
-  // one interface; every write is a no-op while a view is active.
-  useEffect(() => {
-    setIdeaOverride(activeView ? activeView.ideas || {} : null);
-  }, [activeViewId]);
+  const displayCats = cats;
   // Any planner item currently being dragged, wherever it came from: a cell
   // or row in the pillar grid, or an item in the calendar. The sidebar's drop
   // targets (ideas, reflections) accept all three, so they gate on this
   // rather than on the pillar-grid drags alone.
   const externalItemDrag = draggingCell || draggingLine || draggingCalItem;
-  const ideasStore = useIdeasStore({ readOnly: !isOwnView, override: ideaOverride });
+  const ideasStore = useIdeasStore({ readOnly: false, override: null });
   const {
     seasonsStore, seasonBusy, seasonError, setSeasonError, seasonActionsBusy,
     seasonActionsError, seasonActionsNote, openSeasonId, setOpenSeasonId,
     seasonCue, runSeasonReading, suggestSeasonActions, applySeasonSuggestion,
-    addOwnSeasonAction, setSeasonsFromStorage
+    addOwnSeasonAction
   } = useSeasonFlow({
     cats, goals, userName, todayStr, isOwnView, ideasStore, saveCats
   });
   const {
-    pendingImport, setPendingImport, showNamePrompt, setShowNamePrompt,
-    namePromptVal, setNamePromptVal, namePromptNext, importConfirm,
-    setImportConfirm, showExportOptions, setShowExportOptions,
-    pendingExportName, exportIncludeReflections, setExportIncludeReflections,
-    exportData, openNamePrompt, saveUserName, doExport, importData, doImport,
-    removeImportedView
-  } = usePlanTransfer({
-    setCats, setGoals, importedViews, setImportedViews, activeViewId,
-    setActiveViewId, userName, setUserName, journalStore, setRules, rulesRef,
-    key, setEntries, setSeasonsFromStorage
-  });
+    showNamePrompt, setShowNamePrompt, namePromptVal, setNamePromptVal,
+    openNamePrompt, saveUserName, downloadBackup, readRestoreFile,
+    pendingRestore, setPendingRestore, confirmRestore, restoreNote, setRestoreNote
+  } = usePlanBackup({ userName, setUserName });
   const ideas = ideasStore.ideas;
-  const displayIdeas = activeView ? activeView.ideas : ideas;
-  // Reflections belong to whoever's week is on screen. Views imported from a
-  // share file have none; views imported before this was stored also read as
-  // empty, rather than showing the viewer's own reflections as if they were
-  // the sharer's.
-  const displayJournal = activeView ? activeView.journal || {} : journal;
-  const displayGoals = activeView ? activeView.goals : goals;
-  // The single source of truth for everything rendered: the user's own
-  // entries, or an imported view's entries (upgrading views saved in the
-  // pre-v8.2 derived shape on the fly).
-  const displayEntries = React.useMemo(
-    () => activeView ? (activeView.entries || entriesFromLegacyView(activeView)) : entries,
-    [activeView, entries]
-  );
+  const displayIdeas = ideas;
+  const displayJournal = journal;
+  const displayGoals = goals;
+  const displayEntries = entries;
   const displayCatById = {};
   [...displayCats, UNTAGGED_CAT].forEach(c => { displayCatById[c.id] = c; });
   // Builds the pillar-view grid's row list for one day+pillar cell, and the
@@ -14207,6 +13700,15 @@ function Planner() {
     setSidebarOpen(false);
     setReflectPinId(null);
   }
+  // Settings > Look. Stores the choice, swaps the live palette, and repaints
+  // every pillar from its slot in one save, so the week changes at once.
+  function choosePalette(id) {
+    if (!isOwnView || !PALETTES.some(p => p.id === id)) return;
+    if (id === DEFAULT_PALETTE_ID) db.remove(K.palette);
+    else db.writeRaw(K.palette, id);
+    setPaletteId(id);
+    saveCats(withTend(migrateCatColors(cats)));
+  }
   function saveCats(nc) {
     if (!isOwnView) return;
     // Every write goes through here, so pinning Tend last once at this choke
@@ -14216,11 +13718,10 @@ function Planner() {
     db.write(K.cats, ordered);
   }
   function startFresh() {
-    db.keys().forEach(k => {
-      if (k !== K.importedViews) db.remove(k);
-    });
+    db.keys().forEach(k => db.remove(k));
     setEntries({});
-    setCats(DEFAULT_CATS);
+    setPaletteId(DEFAULT_PALETTE_ID);
+    setCats(migrateCatColors(DEFAULT_CATS));
     // Rules are held in state as well as storage, so clearing the keys isn't
     // enough — without this the series would immediately re-materialise into
     // the week the user just emptied.
@@ -14231,9 +13732,7 @@ function Planner() {
     journalStore.replaceAll({});
     setUserName("");
     setOffset(0);
-    setActiveViewId("own");
     setShowStartFreshConfirm(false);
-    setShowViewDropdown(false);
   }
   // Deleting a pillar untags its work; it never destroys it.
   //
@@ -14315,7 +13814,6 @@ function Planner() {
   function openSettingsSidebar() {
     setCatTyping(false);
     setCatCustomInput("");
-    setShowViewDropdown(false);
     setSidebarTab('settings');
     setSidebarOpen(true);
   }
@@ -14953,7 +14451,7 @@ function Planner() {
     openEdit: isOwnView ? openEditById : null,
     openCreate: isOwnView ? openCreate : null
   };
-  const APP_VERSION = "v10.13.13";
+  const APP_VERSION = "v10.13.22";
   function phoneStepDay(delta) {
     setPhoneSlide(delta > 0 ? "next" : "prev");
     const i = phoneDay + delta;
@@ -15007,24 +14505,12 @@ function Planner() {
     onMore: () => setPhoneMoreOpen(true)
   }), phoneMoreOpen && /*#__PURE__*/React.createElement(PhoneMoreSheet, {
     onClose: () => setPhoneMoreOpen(false),
-    isOwnView, activeViewId, importedViews, setActiveViewId, userName,
-    openImport: () => importRef.current && importRef.current.click(),
-    exportData,
+    isOwnView,
     openIdeas: () => openIdeasSidebar(lastIdeaCatId || displayCats[0]?.id),
     openSeasons: openSeasonsSidebar,
     openPillars: () => openPillarsSidebar(),
     openSettings: openSettingsSidebar,
     version: APP_VERSION
-  }), /*#__PURE__*/React.createElement("input", {
-    ref: importRef,
-    type: "file",
-    accept: ".json",
-    style: { display: "none" },
-    onChange: e => {
-      const f = e.target.files?.[0];
-      if (f) importData(f);
-      e.target.value = "";
-    }
   }));
   // Sideways: the whole week as a time grid, with the View switch, Reflect and
   // More in a rail down the right. A swipe across the grid changes the week.
@@ -15086,24 +14572,12 @@ function Planner() {
     onMore: () => setPhoneMoreOpen(true)
   }), phoneMoreOpen && /*#__PURE__*/React.createElement(PhoneMoreSheet, {
     onClose: () => setPhoneMoreOpen(false),
-    isOwnView, activeViewId, importedViews, setActiveViewId, userName,
-    openImport: () => importRef.current && importRef.current.click(),
-    exportData,
+    isOwnView,
     openIdeas: () => openIdeasSidebar(lastIdeaCatId || displayCats[0]?.id),
     openSeasons: openSeasonsSidebar,
     openPillars: () => openPillarsSidebar(),
     openSettings: openSettingsSidebar,
     version: APP_VERSION
-  }), /*#__PURE__*/React.createElement("input", {
-    ref: importRef,
-    type: "file",
-    accept: ".json",
-    style: { display: "none" },
-    onChange: e => {
-      const f = e.target.files?.[0];
-      if (f) importData(f);
-      e.target.value = "";
-    }
   }));
 return /*#__PURE__*/React.createElement("div", {
     style: phoneMode ? { fontFamily: "'DM Sans',sans-serif", background: PAPER, color: INK } : {
@@ -15119,9 +14593,7 @@ return /*#__PURE__*/React.createElement("div", {
       color: INK,
       transition: "padding-right 0.2s ease"
     }
-  }, phonePortrait ? phoneLayout : phoneLandscape ? phoneWideLayout : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PlannerTitle, {
-    activeView, isOwnView
-  }), /*#__PURE__*/React.createElement("div", {
+  }, phonePortrait ? phoneLayout : phoneLandscape ? phoneWideLayout : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PlannerTitle, null), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -15139,11 +14611,6 @@ return /*#__PURE__*/React.createElement("div", {
   // joining the flow and shoving the arrows sideways the moment it appears.
   /*#__PURE__*/React.createElement(WeekNav, {
     offset, setOffset, dates
-  }), /*#__PURE__*/React.createElement(PlanSwitcher, {
-    importRef, importedViews, activeViewId, setActiveViewId, userName,
-    showViewDropdown, setShowViewDropdown, setShowStartFreshConfirm,
-    viewDropdownRef, activeView, isOwnView, exportData,
-    openNamePrompt, removeImportedView
   })), (viewMode === "calendar" ? /*#__PURE__*/React.createElement(CalendarView, {
     ...calendarProps,
     dates: dates,
@@ -15200,19 +14667,7 @@ return /*#__PURE__*/React.createElement("div", {
       e.currentTarget.style.color = INK_3;
       e.currentTarget.style.textDecorationColor = FAINT;
     }
-  }, "The science behind I Love Mondays ↗"), /*#__PURE__*/React.createElement("input", {
-    ref: importRef,
-    type: "file",
-    accept: ".json",
-    style: {
-      display: "none"
-    },
-    onChange: e => {
-      const f = e.target.files?.[0];
-      if (f) importData(f);
-      e.target.value = "";
-    }
-  })), /*#__PURE__*/React.createElement("div", {
+  }, "The science behind I Love Mondays ↗")), /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
       marginBottom: 12
@@ -15242,8 +14697,9 @@ return /*#__PURE__*/React.createElement("div", {
     closeSidebar, openPillarsSidebar, reflectOnDraggedItem, handlePanelDrop,
     weekStart, selectedPillar, setPillarFocus, openSettingsSidebar,
     settingsPanel: /*#__PURE__*/React.createElement(SettingsPanel, {
-      userName, openNamePrompt, exportData,
-      setShowStartFreshConfirm, onClose: closeSidebar
+      userName, openNamePrompt, downloadBackup, readRestoreFile,
+      setShowStartFreshConfirm, onClose: closeSidebar,
+      paletteId, choosePalette, canEdit: isOwnView
     })
   }), openSeasonId && seasonsStore.get(openSeasonId) && /*#__PURE__*/React.createElement(SeasonReading, {
     entry: seasonsStore.get(openSeasonId),
@@ -15271,25 +14727,18 @@ return /*#__PURE__*/React.createElement("div", {
   }), showStartFreshConfirm && /*#__PURE__*/React.createElement(StartFreshDialog, {
     onClose: () => setShowStartFreshConfirm(false),
     onConfirm: startFresh
-  }), pendingImport && /*#__PURE__*/React.createElement(ImportDialog, {
-    pendingImport: pendingImport,
-    onClose: () => setPendingImport(null),
-    doImport: doImport
+  }), pendingRestore && /*#__PURE__*/React.createElement(RestoreDialog, {
+    backup: pendingRestore,
+    onClose: () => setPendingRestore(null),
+    onConfirm: confirmRestore
   }), showNamePrompt && /*#__PURE__*/React.createElement(NamePromptDialog, {
     namePromptVal: namePromptVal,
     setNamePromptVal: setNamePromptVal,
-    namePromptNext: namePromptNext,
     onClose: () => setShowNamePrompt(false),
     saveUserName: saveUserName
-  }), showExportOptions && /*#__PURE__*/React.createElement(ExportDialog, {
-    pendingExportName: pendingExportName,
-    exportIncludeReflections: exportIncludeReflections,
-    setExportIncludeReflections: setExportIncludeReflections,
-    onClose: () => setShowExportOptions(false),
-    doExport: doExport
-  }), importConfirm && /*#__PURE__*/React.createElement(ImportToast, {
-    importConfirm, setImportConfirm
-  }), editingItem && /*#__PURE__*/React.createElement(EventDialog, {
+  }), restoreNote && /*#__PURE__*/React.createElement(ImportToast, {
+    importConfirm: restoreNote, setImportConfirm: setRestoreNote
+  }),  editingItem && /*#__PURE__*/React.createElement(EventDialog, {
     dlg: dlg,
     cats: cats,
     onSave: saveEdit,
@@ -15339,11 +14788,26 @@ function GateScreen({ title, children }) {
       maxWidth: 380, width: "100%", textAlign: "center", boxSizing: "border-box" }
   }, /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 120, lineHeight: 0, margin: "18px 0 30px" }
-  }, React.createElement(RisingHeart, { width: "0.62em", height: "0.49em", margin: "0", halo: true, line: 3 })),
+  }, React.createElement(RisingHeart, { width: 0.62, margin: "0", halo: true, line: 3 })),
   /*#__PURE__*/React.createElement("h1", {
     style: { fontFamily: "'Fraunces',Georgia,serif", fontSize: 34, fontWeight: 600, color: INK, lineHeight: 1.15,
       letterSpacing: "-0.01em", margin: 0 }
   }, title), children));
+}
+
+// While sign-in is checked and the planner loads. On an installed phone app,
+// Android has just shown its own launch screen (the "Mon" icon on paper), so
+// this one copies it: same icon, same colour, nothing else. The two read as
+// one moment instead of two different logos flashing past.
+function LaunchScreen() {
+  return /*#__PURE__*/React.createElement("div", {
+    role: "status", "aria-label": "Opening your planner",
+    style: { position: "fixed", inset: 0, background: PAPER, display: "flex",
+      alignItems: "center", justifyContent: "center" }
+  }, /*#__PURE__*/React.createElement("img", {
+    src: "icon-192.png", alt: "", width: 128, height: 128,
+    onError: e => { e.currentTarget.style.visibility = "hidden"; }
+  }));
 }
 
 function GateText({ children, tone }) {
@@ -15424,8 +14888,7 @@ function AuthGate() {
     /*#__PURE__*/React.createElement(Root, null),
     /*#__PURE__*/React.createElement(RemoteChangeNotice, null));
   if (phase === "loading" || phase === "syncing") {
-    return /*#__PURE__*/React.createElement(GateScreen, { title: "I Love Mondays" },
-      /*#__PURE__*/React.createElement(GateText, null, phase === "syncing" ? "Opening your planner…" : "One moment…"));
+    return /*#__PURE__*/React.createElement(LaunchScreen, null);
   }
   if (phase === "unavailable") {
     return /*#__PURE__*/React.createElement(GateScreen, { title: "I Love Mondays" },
