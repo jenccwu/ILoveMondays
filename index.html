@@ -14688,7 +14688,7 @@ function Planner() {
     openEdit: isOwnView ? openEditById : null,
     openCreate: isOwnView ? openCreate : null
   };
-  const APP_VERSION = "v10.23.1";
+  const APP_VERSION = "v10.23.2";
   function phoneStepDay(delta) {
     setPhoneSlide(delta > 0 ? "next" : "prev");
     const i = phoneDay + delta;
@@ -15152,18 +15152,18 @@ function AuthGate() {
     error && /*#__PURE__*/React.createElement(GateText, { tone: "error" }, error));
 }
 
-// The account line under the version number, plus a quiet note when changes
-// are waiting to go up. Signing out lives in the Settings panel now.
+// A quiet sync note under the version number, shown only when changes
+// aren't going up. The account itself is named in Settings, beside Sign out.
 function AccountLine() {
   const c = useCloud();
   if (!c.user) return null;
   const note = c.status === "offline" ? "Offline, will sync later"
     : c.status === "error" ? "Not synced, retrying"
     : c.pending() ? "Saving…" : null;
+  if (!note) return null;
   return /*#__PURE__*/React.createElement("div", {
-    style: { fontSize: 10, color: FAINT, letterSpacing: "0.04em", marginTop: 4 }
-  }, note && /*#__PURE__*/React.createElement("span", { style: { color: INK_3, marginRight: 8 } }, note),
-    c.user.email || "Signed in");
+    style: { fontSize: 10, color: INK_3, letterSpacing: "0.04em", marginTop: 4 }
+  }, note);
 }
 
 function PreviewNotice() {
