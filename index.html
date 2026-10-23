@@ -605,6 +605,15 @@ const IS_PREVIEW = typeof window !== "undefined" && !APP_CHECK_HOSTS.includes(wi
 const SYNC_OWNER = "ilm-sync:owner";
 const SYNC_DIRTY = "ilm-sync:dirty";
 const SYNC_DEBOUNCE_MS = 800;
+// When each waiting key was last sent up, so a later load can tell "my copy
+// never arrived" from "it arrived and someone has changed it since".
+const SYNC_SENT = "ilm-sync:sent";
+const SYNC_RETRY_MS = 30000;
+// A request marked keepalive outlives the page that sent it, which is what
+// gets a change off a phone or tablet when the app is put away straight
+// after an edit. Browsers cap these at 64 kB in flight, so anything bigger
+// waits for the normal path.
+const SYNC_BEACON_BUDGET = 60000;
 // Old AI keys were credentials: they never left the device that entered them.
 const SYNC_SKIP = new Set([K.legacyAiKey, K.legacyApiKey]);
 
@@ -622,6 +631,10 @@ const cloud = {
   reloadOnShow: false,
   unsubscribe: null,
   subs: new Set(),
+  idToken: null,
+  appCheckToken: null,
+  retryTimer: null,
+  syncing: false,
 
   available() { return typeof firebase !== "undefined" && !!firebase.apps; },
   init() {
@@ -703,11 +716,26 @@ const cloud = {
   dirty() { const d = safeParse(lsGet(SYNC_DIRTY), []); return Array.isArray(d) ? d : []; },
   markDirty(key) {
     const d = this.dirty();
-    if (!d.includes(key)) { d.push(key); lsSet(SYNC_DIRTY, JSON.stringify(d)); }
+    if (!d.includes(key)) {
+      d.push(key); lsSet(SYNC_DIRTY, JSON.stringify(d));
+      if (d.length === 1) this.notify();
+    }
   },
   clearDirty(key) {
     const d = this.dirty().filter(k => k !== key);
     if (d.length) lsSet(SYNC_DIRTY, JSON.stringify(d)); else lsDel(SYNC_DIRTY);
+    const sent = this.sent();
+    if (key in sent) { delete sent[key]; this.saveSent(sent); }
+    if (!d.length) this.notify();
+  },
+  // True while this device holds changes the account hasn't confirmed.
+  pending() { return !!this.user && this.dirty().length > 0; },
+  sent() { const s = safeParse(lsGet(SYNC_SENT), {}); return s && typeof s === "object" && !Array.isArray(s) ? s : {}; },
+  saveSent(s) { if (Object.keys(s).length) lsSet(SYNC_SENT, JSON.stringify(s)); else lsDel(SYNC_SENT); },
+  markSent(keys) {
+    const s = this.sent(), now = Date.now();
+    keys.forEach(k => { s[k] = now; });
+    this.saveSent(s);
   },
   localPlannerKeys() {
     const out = [];
@@ -730,6 +758,7 @@ const cloud = {
   push(key) {
     if (!this.user) return Promise.resolve();
     const raw = lsGet(key);
+    this.markSent([key]);
     const ref = this.col().doc(this.docId(key));
     const op = raw == null
       ? ref.delete()
@@ -741,6 +770,7 @@ const cloud = {
     }).catch(err => {
       console.warn("Sync failed for", key, err);
       this.setStatus(navigator.onLine === false ? "offline" : "error");
+      this.scheduleRetry();
     }).finally(() => this.inflight.delete(p));
     this.inflight.add(p);
     return p;
@@ -750,6 +780,131 @@ const cloud = {
     this.timers.forEach(t => clearTimeout(t));
     this.timers.clear();
     return Promise.all(this.dirty().map(k => this.push(k)).concat([...this.inflight]));
+  },
+  scheduleRetry() {
+    if (this.retryTimer || !this.user) return;
+    this.retryTimer = setTimeout(() => { this.retryTimer = null; this.settle(); }, SYNC_RETRY_MS);
+  },
+
+  // Tokens are fetched ahead of time because the moment the app is put away
+  // is too late to wait for one.
+  watchTokens() {
+    if (this.tokenWatch) return;
+    this.tokenWatch = true;
+    try {
+      firebase.auth().onIdTokenChanged(u => {
+        if (!u) { this.idToken = null; return; }
+        u.getIdToken().then(t => { this.idToken = t; }).catch(() => {});
+      });
+    } catch {}
+    if (this.appCheck) {
+      try {
+        firebase.appCheck().onTokenChanged(r => { this.appCheckToken = r && r.token || null; });
+        firebase.appCheck().getToken(false).then(r => { this.appCheckToken = r && r.token || null; }).catch(() => {});
+      } catch {}
+    }
+  },
+  refreshTokens() {
+    try {
+      const u = firebase.auth().currentUser;
+      if (u) u.getIdToken().then(t => { this.idToken = t; }).catch(() => {});
+    } catch {}
+    if (this.appCheck) {
+      try { firebase.appCheck().getToken(false).then(r => { this.appCheckToken = r && r.token || null; }).catch(() => {}); } catch {}
+    }
+  },
+
+  // Sends every waiting change in one request that survives the app being
+  // closed or frozen. Whatever doesn't fit goes by the normal path, and the
+  // waiting list stays until the account confirms, so nothing is lost if
+  // this request never lands either.
+  beacon() {
+    if (IS_PREVIEW || !this.user || !this.idToken || typeof fetch !== "function") return;
+    const keys = this.dirty().filter(k => this.shouldSync(k));
+    if (!keys.length) return;
+    const pid = FIREBASE_CONFIG.projectId;
+    const base = "projects/" + pid + "/databases/(default)/documents/users/" + this.user.uid + "/kv/";
+    const writes = [], sentKeys = [], values = {};
+    let size = 200;
+    keys.forEach(k => {
+      const raw = lsGet(k);
+      const name = base + this.docId(k);
+      const w = raw == null ? { delete: name } : {
+        update: { name, fields: { k: { stringValue: k }, v: { stringValue: raw } } },
+        updateTransforms: [{ fieldPath: "t", setToServerValue: "REQUEST_TIME" }]
+      };
+      const len = JSON.stringify(w).length;
+      if (size + len > SYNC_BEACON_BUDGET) return;
+      size += len; writes.push(w); sentKeys.push(k); values[k] = raw;
+    });
+    if (!writes.length) return;
+    const headers = { "Content-Type": "application/json", "Authorization": "Bearer " + this.idToken };
+    if (this.appCheckToken) headers["X-Firebase-AppCheck"] = this.appCheckToken;
+    this.markSent(sentKeys);
+    try {
+      fetch("https://firestore.googleapis.com/v1/projects/" + pid + "/databases/(default)/documents:commit", {
+        method: "POST", keepalive: true, headers, body: JSON.stringify({ writes })
+      }).then(res => {
+        if (!res.ok) return;
+        sentKeys.forEach(k => { if (lsGet(k) === values[k]) this.clearDirty(k); });
+      }).catch(() => {});
+    } catch {}
+  },
+
+  // Decides each waiting key against the account's copy: already there, so
+  // stop waiting; changed elsewhere after this device last sent it, so take
+  // the newer one; otherwise send this device's copy up. `remote` maps key to
+  // { v, t } (t in ms) for keys the account holds. Returns keys taken from the
+  // account.
+  reconcile(remote) {
+    const sent = this.sent(), taken = [];
+    this.dirty().forEach(k => {
+      if (this.timers.has(k)) return;
+      const r = remote.get(k), local = lsGet(k);
+      if (r ? r.v === local : local == null) { this.clearDirty(k); return; }
+      if (r && sent[k] && r.t && r.t > sent[k]) {
+        if (r.v == null) lsDel(k); else lsSet(k, r.v);
+        this.clearDirty(k); taken.push(k); return;
+      }
+      this.push(k);
+    });
+    return taken;
+  },
+  remoteEntry(doc) {
+    const d = doc.data() || {};
+    const t = d.t && typeof d.t.toMillis === "function" ? d.t.toMillis() : 0;
+    return { k: d.k || decodeURIComponent(doc.id), v: d.v, t };
+  },
+  // Catches up anything still waiting: on return to the app, on reconnect,
+  // and from Sync now.
+  async settle() {
+    if (!this.user || IS_PREVIEW) return;
+    const keys = this.dirty().filter(k => !this.timers.has(k));
+    if (!keys.length) { if (this.status === "error") this.setStatus("ok"); return; }
+    const remote = new Map();
+    try {
+      const docs = await Promise.all(keys.map(k => this.col().doc(this.docId(k)).get()));
+      docs.forEach(doc => { if (doc.exists) { const e = this.remoteEntry(doc); remote.set(e.k, e); } });
+    } catch (err) {
+      this.setStatus(navigator.onLine === false ? "offline" : "error");
+      this.scheduleRetry();
+      return;
+    }
+    if (this.reconcile(remote).length) this.onRemoteChange();
+  },
+  // Settings' Sync now: send what's waiting, then reload, which always takes
+  // a fresh copy from the account.
+  async syncNow() {
+    if (!this.user || this.syncing) return;
+    this.syncing = true; this.notify();
+    await this.settle();
+    const done = Promise.all([...this.inflight]);
+    await Promise.race([done, new Promise(r => setTimeout(r, 10000))]);
+    if (this.dirty().length || this.status !== "ok") {
+      this.syncing = false; this.notify();
+      return;
+    }
+    this.reload();
   },
 
   // Brings this device in step with the account. Resolves "ready", or
@@ -763,9 +918,9 @@ const cloud = {
       this.localPlannerKeys().forEach(lsDel);
       lsDel(SYNC_DIRTY);
     }
+    this.watchTokens();
     let snap;
     try {
-      if (owner === user.uid) await this.flush();
       snap = await this.col().get();
     } catch (err) {
       if (owner === user.uid) {
@@ -776,7 +931,17 @@ const cloud = {
       throw err;
     }
     const remote = new Map();
-    snap.forEach(doc => { const d = doc.data(); if (d && typeof d.k === "string") remote.set(d.k, d.v); });
+    const entries = new Map();
+    snap.forEach(doc => {
+      const d = doc.data();
+      if (d && typeof d.k === "string") { const e = this.remoteEntry(doc); remote.set(d.k, d.v); entries.set(d.k, e); }
+    });
+    if (owner === user.uid && remote.size > 0) {
+      // Changes this device was still holding: keep the ones the account
+      // never got, so the copy below doesn't replace them.
+      this.reconcile(entries);
+      this.dirty().forEach(k => { const v = lsGet(k); if (v == null) remote.delete(k); else remote.set(k, v); });
+    }
 
     if (remote.size === 0) {
       // Nothing in the account yet: this device's planner (if any) becomes it.
@@ -842,13 +1007,15 @@ const cloud = {
 };
 
 if (typeof window !== "undefined") {
-  window.addEventListener("online", () => { cloud.flush(); });
+  window.addEventListener("online", () => { cloud.settle(); });
   window.addEventListener("offline", () => cloud.setStatus("offline"));
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) { cloud.flush(); return; }
-    if (cloud.reloadOnShow) cloud.reload();
+    if (document.hidden) { cloud.beacon(); cloud.flush(); return; }
+    if (cloud.reloadOnShow) { cloud.reload(); return; }
+    cloud.refreshTokens();
+    cloud.settle();
   });
-  window.addEventListener("pagehide", () => { cloud.flush(); });
+  window.addEventListener("pagehide", () => { cloud.beacon(); cloud.flush(); });
 }
 const PLAN_BG = "#F4EFE4";
 const PAPER = "#FAF4E8";
@@ -5998,7 +6165,7 @@ function CalendarView({
   // while the hours scroll. "day" (upright) also drops the day headings — the
   // strip of days above already says which day this is; "week" (sideways)
   // keeps them.
-  const colTemplate = `${CAL_LABEL_W}px repeat(${dates.length},1fr)`;
+  const colTemplate = `${CAL_LABEL_W}px repeat(${dates.length},minmax(0,1fr))`;
   return /*#__PURE__*/React.createElement(React.Fragment, null, toolbar, /*#__PURE__*/React.createElement("div", {
     style: compact ? { background: SURFACE } : {
       background: SURFACE,
@@ -11511,9 +11678,11 @@ function SettingsPanel({ userName, openNamePrompt, downloadBackup, readRestoreFi
   const c = useCloud();
   const restoreInput = useRef(null);
   // Silent when all is well; a few words only when changes aren't syncing.
-  const syncNote = !c.user ? "Preview, not synced"
+  const syncNote = !c.user ? "Preview, not synced" : null;
+  const syncDetail = c.syncing ? "Syncing…"
     : c.status === "offline" ? "Offline, will sync later"
-    : c.status === "error" ? "Not synced, retrying" : null;
+    : c.status === "error" ? "Not synced, retrying"
+    : c.pending() ? "Saving…" : null;
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PanelHeader, {
     eyebrow: "Settings",
     title: userName || "Your planner",
@@ -11556,6 +11725,11 @@ function SettingsPanel({ userName, openNamePrompt, downloadBackup, readRestoreFi
       className: "settings-sync-note",
       style: { fontSize: 12, color: INK_2, padding: "2px 2px 4px" }
     }, syncNote), c.user && /*#__PURE__*/React.createElement(SettingsRow, {
+      label: "Sync now",
+      detail: syncDetail,
+      chevron: false,
+      onClick: () => cloud.syncNow()
+    }), c.user && /*#__PURE__*/React.createElement(SettingsRow, {
       label: "Sign out",
       chevron: false,
       onClick: () => cloud.signOut()
@@ -13113,7 +13287,6 @@ function PhonePillars({ dates, todayStr, cats, pillarId, setPillarId, getItemsFo
   const planned = daysPlanned(cat.id);
   const left = goal != null ? Math.max(0, Math.round(goal) - done - planned) : 0;
   const thisWeek = dates.some(d => ymd(d) === todayStr);
-  const doneInk = hexLuma(deep) > 150 ? catInk(cat) : TILE_DONE_TEXT;
   const tabs = React.createElement("div", {
     role: "tablist", "aria-label": "Pillar",
     style: { display: "flex", alignItems: "center", gap: 5, overflowX: "auto", padding: "4px 14px 14px", flexShrink: 0, scrollbarWidth: "none" }
@@ -13166,21 +13339,27 @@ function PhonePillars({ dates, todayStr, cats, pillarId, setPillarId, getItemsFo
       React.createElement("div", { style: { flex: 1, minWidth: 0, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" } },
         items.map(it => {
           const [hh, mm] = it.sched ? it.sched.start.split(":").map(Number) : [null, null];
+          // Same mosaic as the desktop By pillar rows: this tab's pillar holds
+          // the field, any other pillars the item serves stack down the left
+          // edge as blocks — framed while planned, filled once done.
+          const accent = pillarAccent(it.allCats, it.isDone, cat, "left", undefined, it.id);
+          const ink = it.isDone ? accent.text : INK;
           return React.createElement("div", {
             key: it.id,
             style: { position: "relative", display: "flex", alignItems: "center", gap: 2, maxWidth: "100%", minHeight: 42,
-              borderRadius: 4, boxSizing: "border-box", overflow: "hidden",
-              background: it.isDone ? deep : TILE_PLAN_FILL, border: `1.5px solid ${it.isDone ? deep : cat.color}` }
-          }, React.createElement("button", {
+              borderRadius: TILE_RADIUS, boxSizing: "border-box", overflow: "hidden",
+              background: accent.fill, border: `${PLAN_BORDER_W}px solid ${accent.outline}` }
+          }, accentBar(accent, TILE_RADIUS), React.createElement("button", {
               onClick: () => isOwnView && openEditById(ds, it.id),
-              style: { minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", gap: 1, padding: "4px 2px 4px 10px",
+              style: { minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", gap: 1,
+                padding: `4px 2px 4px ${accent.blocks ? accent.bandW + 8 : 10}px`,
                 border: "none", background: "transparent", cursor: isOwnView ? "pointer" : "default", fontFamily: "inherit", textAlign: "left" }
             }, React.createElement("span", {
-                style: { fontSize: 13, fontWeight: 600, lineHeight: 1.2, color: it.isDone ? doneInk : INK,
+                style: { fontSize: 13, fontWeight: 600, lineHeight: 1.2, color: ink,
                   overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }
               }, stripLinks(it.text)),
               hh != null && React.createElement("span", {
-                style: { fontSize: 11, color: it.isDone ? doneInk : INK_3, opacity: it.isDone ? 0.85 : 1 }
+                style: { fontSize: 11, color: it.isDone ? ink : INK_3, opacity: it.isDone ? 0.85 : 1 }
               }, fmtTime(hh, mm))),
             isOwnView && React.createElement("button", {
               onClick: () => toggleDoneById(ds, cat.id, it.id),
@@ -13189,8 +13368,8 @@ function PhonePillars({ dates, todayStr, cats, pillarId, setPillarId, getItemsFo
                 display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 }
             }, React.createElement("span", {
               style: { width: 18, height: 18, borderRadius: "50%", boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center",
-                border: `2px solid ${it.isDone ? doneInk : PLAN_RING}`, background: it.isDone ? "transparent" : SURFACE }
-            }, it.isDone && React.createElement(PhoneIcon, { name: "check", size: 11, color: doneInk }))));
+                border: `2px solid ${it.isDone ? ink : PLAN_RING}`, background: it.isDone ? "transparent" : SURFACE }
+            }, it.isDone && React.createElement(PhoneIcon, { name: "check", size: 11, color: ink }))));
         }),
         isOwnView && React.createElement("button", {
           onClick: () => openCreate(ds, null, null, [cat.id]),
@@ -14154,7 +14333,7 @@ function Planner() {
   // Tend is excluded: a week spent entirely on errands should not read as a
   // full one. The count is meant to describe the life, not the maintenance.
   const totalFilled = displayCats.reduce((s, cat) => isTend(cat.id) ? s : s + dates.filter(d => entriesForCell(displayEntries, ymd(d), cat.id).length > 0).length, 0);
-  const colTemplate = `${LABEL_W}px repeat(7,1fr)`;
+  const colTemplate = `${LABEL_W}px repeat(7,minmax(0,1fr))`;
   const weekStart = ymd(dates[0]);
   const reflectedItemTexts = React.useMemo(() => {
     const entries = displayJournal[weekStart] || [];
@@ -14509,7 +14688,7 @@ function Planner() {
     openEdit: isOwnView ? openEditById : null,
     openCreate: isOwnView ? openCreate : null
   };
-  const APP_VERSION = "v10.15.2";
+  const APP_VERSION = "v10.23.1";
   function phoneStepDay(delta) {
     setPhoneSlide(delta > 0 ? "next" : "prev");
     const i = phoneDay + delta;
@@ -14979,7 +15158,8 @@ function AccountLine() {
   const c = useCloud();
   if (!c.user) return null;
   const note = c.status === "offline" ? "Offline, will sync later"
-    : c.status === "error" ? "Not synced, retrying" : null;
+    : c.status === "error" ? "Not synced, retrying"
+    : c.pending() ? "Saving…" : null;
   return /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 10, color: FAINT, letterSpacing: "0.04em", marginTop: 4 }
   }, note && /*#__PURE__*/React.createElement("span", { style: { color: INK_3, marginRight: 8 } }, note),
